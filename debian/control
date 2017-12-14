@@ -1,7 +1,10 @@
 Source: singularity-container
 Section: admin
 Priority: optional
-Maintainer: NeuroDebian Team <team@neuro.debian.net>
+Maintainer: Scibian Project <packaging@scibian.org>
+Vcs-Git: https://github.com/scibian/singularity-container.git
+Vcs-Browser: https://github.com/scibian/singularity-container
+
 Uploaders:
  Dave Love <fx@gnu.org>,
  Mehdi Dogguy <mehdi@debian.org>,

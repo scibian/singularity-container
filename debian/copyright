@@ -17,6 +17,7 @@ License: BSD-3-Clause-LBNL
 Files: debian/*
 Copyright: 2016, Dave Love <fx@gnu.org>
            2016-2017, Yaroslav Halchenko <debian@onerussian.com>
+           2017 Scibian Project <legal@scibian.org>
 License: BSD-2-clause
 
 License: BSD-3-Clause-LBNL
