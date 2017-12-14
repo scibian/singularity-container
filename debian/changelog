@@ -1,3 +1,9 @@
+singularity-container (2.4.1-1sci8u1) scibian8; urgency=medium
+
+  * Scibian8 rebuild.
+
+ -- Thomas Hamel <thomas-externe.hamel@edf.fr>  Thu, 14 Dec 2017 10:01:28 +0100
+
 singularity-container (2.4.1-1~bpo8+1scibian0) calibre9; urgency=medium
 
   * Imported Upstream version 2.4.1
