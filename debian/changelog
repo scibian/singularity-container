@@ -1,3 +1,9 @@
+singularity-container (2.4.1-1sci8u3) scibian8; urgency=medium
+
+  * debian: Remove duplicate vcs-* in control
+
+ -- Thomas Hamel <thomas-externe.hamel@edf.fr>  Thu, 14 Dec 2017 12:23:04 +0100
+
 singularity-container (2.4.1-1sci8u2) scibian8; urgency=medium
 
   * Fix extra newline after vcs-*
