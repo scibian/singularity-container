@@ -4,7 +4,6 @@ Priority: optional
 Maintainer: Scibian Project <packaging@scibian.org>
 Vcs-Git: https://github.com/scibian/singularity-container.git
 Vcs-Browser: https://github.com/scibian/singularity-container
-
 Uploaders:
  Dave Love <fx@gnu.org>,
  Mehdi Dogguy <mehdi@debian.org>,
