@@ -1,4 +1,5 @@
 /* 
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -23,6 +24,7 @@
 #ifndef __FILE_H_
 #define __FILE_H_
 
+void container_statdir_update(unsigned char);
 char *file_id(char *path);
 char *file_devino(char *path);
 #include <sys/stat.h>
@@ -39,10 +41,13 @@ int is_owner(char *path, uid_t uid);
 int is_blk(char *path);
 int is_chr(char *path);
 int s_mkpath(char *dir, mode_t mode);
+int container_mkpath_nopriv(char *dir, mode_t mode);
+int container_mkpath_priv(char *dir, mode_t mode);
 int s_rmdir(char *dir);
 int copy_file(char * source, char * dest);
 char *filecat(char *path);
-int fileput(char *path, char *string);
+int fileput_nopriv(char *path, char *string);
+int fileput_priv(char *path, char *string);
 int filelock(const char *const filepath, int *const fdptr);
 char *basedir(char *dir);
 

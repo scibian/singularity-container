@@ -1,4 +1,5 @@
 /* 
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -55,6 +56,9 @@ int _singularity_runtime_overlayfs(void) {
         ABORT(255);
     }
     singularity_priv_drop();
+
+    /* Don't remove the following line */
+    singularity_registry_set("OVERLAYFS_ENABLED", NULL);
 
     singularity_message(DEBUG, "Checking if overlayfs should be used\n");
     int try_overlay = ( strcmp("try", singularity_config_get_value(ENABLE_OVERLAY)) == 0 );
@@ -121,13 +125,11 @@ int _singularity_runtime_overlayfs(void) {
                 size = strdup("size=1m");
             }
 
-            singularity_priv_escalate();
             singularity_message(DEBUG, "Mounting overlay tmpfs: %s\n", overlay_mount);
             if ( singularity_mount("tmpfs", overlay_mount, "tmpfs", MS_NOSUID | MS_NODEV, size) < 0 ){
                 singularity_message(ERROR, "Failed to mount overlay tmpfs %s: %s\n", overlay_mount, strerror(errno));
                 ABORT(255);
             }
-            singularity_priv_drop();
 
             free(size);
         }
@@ -142,15 +144,16 @@ int _singularity_runtime_overlayfs(void) {
             ABORT(255);
         }
 
-        singularity_priv_escalate();
+        container_statdir_update(0);
+
         singularity_message(DEBUG, "Creating upper overlay directory: %s\n", overlay_upper);
-        if ( s_mkpath(overlay_upper, 0755) < 0 ) {
+        if ( container_mkpath_priv(overlay_upper, 0755) < 0 ) {
             singularity_message(ERROR, "Failed creating upper overlay directory %s: %s\n", overlay_upper, strerror(errno));
             ABORT(255);
         }
 
         singularity_message(DEBUG, "Creating overlay work directory: %s\n", overlay_work);
-        if ( s_mkpath(overlay_work, 0755) < 0 ) {
+        if ( container_mkpath_priv(overlay_work, 0755) < 0 ) {
             singularity_message(ERROR, "Failed creating overlay work directory %s: %s\n", overlay_work, strerror(errno));
             ABORT(255);
         }
@@ -161,17 +164,21 @@ int _singularity_runtime_overlayfs(void) {
             if ( (errno == EPERM) || ( try_overlay && ( errno == ENODEV ) ) ) {
                 singularity_message(VERBOSE, "Singularity overlay mount did not work (%s), continuing without it\n", strerror(errno));
                 singularity_message(DEBUG, "Unmounting overlay tmpfs: %s\n", overlay_mount);
+
+                singularity_priv_escalate();
                 umount(overlay_mount);
+                singularity_priv_drop();
             } else {
                 singularity_message(ERROR, "Could not mount Singularity overlay: %s\n", strerror(errno));
                 ABORT(255); 
             }
         }
-        singularity_priv_drop();
 
         free(overlay_upper);
         free(overlay_work);
         free(overlay_options);
+
+        container_statdir_update(0);
 
         if (result >= 0) {
             singularity_registry_set("OVERLAYFS_ENABLED", "1");
@@ -181,13 +188,13 @@ int _singularity_runtime_overlayfs(void) {
 
 
     // If we got here, assume we are not overlaying, so we must bind to final directory
-    singularity_priv_escalate();
     singularity_message(DEBUG, "Binding container directory to final home %s->%s\n", CONTAINER_MOUNTDIR, CONTAINER_FINALDIR);
     if ( singularity_mount(CONTAINER_MOUNTDIR, CONTAINER_FINALDIR, NULL, MS_BIND|MS_NOSUID|MS_REC|MS_NODEV, NULL) < 0 ) {
         singularity_message(ERROR, "Could not bind mount container to final home %s->%s: %s\n", CONTAINER_MOUNTDIR, CONTAINER_FINALDIR, strerror(errno));
         return 1;
     }
-    singularity_priv_drop();
+
+    container_statdir_update(1);
 
     return(0);
 }

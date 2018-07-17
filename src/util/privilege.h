@@ -1,4 +1,5 @@
 /* 
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -50,5 +51,8 @@
 
     // Returns the GID of the singularity user.
     gid_t singularity_priv_singularity_gid();
+    
+    // Aborts if host kernel doesn't support NO_NEW_PRIVS
+    void singularity_priv_check_nonewprivs();
 
 #endif /* __PRIVILEGE_H_ */

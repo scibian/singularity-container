@@ -1,4 +1,5 @@
 /* 
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -49,6 +50,7 @@ int singularity_image_type(struct image_object *object);
 extern int singularity_image_mount(struct image_object *image, char *mount_point);
 void singularity_limit_container_paths(struct image_object *object);
 void singularity_limit_container_owners(struct image_object *object);
+void singularity_limit_container_groups(struct image_object *object);
 
 #define LAUNCH_STRING "#!/usr/bin/env run-singularity\n"
 

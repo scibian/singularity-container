@@ -1,4 +1,5 @@
 /* 
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -68,6 +69,11 @@ int _singularity_runtime_files_passwd(void) {
 
     if ( tmpdir == NULL ) {
         singularity_message(ERROR, "Failed to obtain session directory\n");
+        ABORT(255);
+    }
+
+    if ( pwent == NULL ) {
+        singularity_message(ERROR, "Failed to obtain user identity information\n");
         ABORT(255);
     }
 
