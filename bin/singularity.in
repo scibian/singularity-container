@@ -1,5 +1,6 @@
 #!/bin/bash
 # 
+# Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
 # Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
 #
 # Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -21,6 +22,8 @@
 # 
 # 
 
+# Relax restrictive umasks that can cause several problems
+umask 0022
 
 prefix="@prefix@"
 exec_prefix="@exec_prefix@"
@@ -137,3 +140,4 @@ fi
 
 # We should never get here...
 exit 255
+

@@ -1,4 +1,5 @@
 /* 
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -24,6 +25,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <linux/limits.h>
 
 #include "util/message.h"
 
@@ -36,7 +39,7 @@
 struct tempfile {
     FILE *fp;
     int fd;
-    char filename[64];
+    char filename[PATH_MAX];
 };
 
 char *envar_get(char *name, char *allowed, int len);
@@ -57,6 +60,7 @@ char *random_string(int length);
 void free_tempfile(struct tempfile *tf);
 struct tempfile *make_tempfile(void);
 struct tempfile *make_logfile(char *label);
+void fd_cleanup(int (*close_fd)(int fd, struct stat *));
 
 // Given a const char * string containing a base-10 integer,
 // try to convert to an C integer.

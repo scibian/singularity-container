@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -30,6 +31,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <grp.h>
+#include <string.h>
+#include <dirent.h>
 
 #include "config.h"
 #include "util/file.h"
@@ -51,6 +54,7 @@ int _singularity_runtime_mount_dev(void) {
     if ( ( singularity_registry_get("CONTAIN") != NULL ) || ( strcmp("minimal", singularity_config_get_value(MOUNT_DEV)) == 0 ) ) {
         char *sessiondir = singularity_registry_get("SESSIONDIR");
         char *devdir = joinpath(sessiondir, "/dev");
+        char *nvopt = singularity_registry_get("NV"); 
 
         if ( is_dir(joinpath(container_dir, "/dev")) < 0 ) {
             int ret;
@@ -60,9 +64,7 @@ int _singularity_runtime_mount_dev(void) {
                 return(-1);
             }
 
-            singularity_priv_escalate();
-            ret = s_mkpath(joinpath(container_dir, "/dev"), 0755);
-            singularity_priv_drop();
+            ret = container_mkpath_priv(joinpath(container_dir, "/dev"), 0755);
 
             if ( ret < 0 ) {
                 singularity_message(ERROR, "Could not create /dev inside container\n");
@@ -71,13 +73,13 @@ int _singularity_runtime_mount_dev(void) {
         }
 
         singularity_message(DEBUG, "Creating temporary staged /dev\n");
-        if ( s_mkpath(devdir, 0755) != 0 ) {
+        if ( container_mkpath_nopriv(devdir, 0755) != 0 ) {
             singularity_message(ERROR, "Failed creating the session device directory %s: %s\n", devdir, strerror(errno));
             ABORT(255);
         }
 
         singularity_message(DEBUG, "Creating temporary staged /dev/shm\n");
-        if ( s_mkpath(joinpath(devdir, "/shm"), 0755) != 0 ) {
+        if ( container_mkpath_nopriv(joinpath(devdir, "/shm"), 0755) != 0 ) {
             singularity_message(ERROR, "Failed creating temporary /dev/shm %s: %s\n", joinpath(devdir, "/shm"), strerror(errno));
             ABORT(255);
         }
@@ -90,7 +92,7 @@ int _singularity_runtime_mount_dev(void) {
                 ABORT(255);
             }
             singularity_message(DEBUG, "Creating staged /dev/pts\n");
-            if ( s_mkpath(joinpath(devdir, "/pts"), 0755) != 0 ) {
+            if ( container_mkpath_nopriv(joinpath(devdir, "/pts"), 0755) != 0 ) {
                 singularity_message(ERROR, "Failed creating /dev/pts %s: %s\n", joinpath(devdir, "/pts"), strerror(errno));
                 ABORT(255);
             }
@@ -102,7 +104,26 @@ int _singularity_runtime_mount_dev(void) {
         bind_dev(sessiondir, "/dev/random");
         bind_dev(sessiondir, "/dev/urandom");
 
-        singularity_priv_escalate();
+        /* if the user passed the --nv flag and the --contain flag, still bind
+        nvidia devices */
+        if ( nvopt != NULL ) {
+            DIR *dir;
+            struct dirent *dp; 
+
+            if ( ( dir = opendir("/dev") ) == NULL ) {
+                singularity_message(ERROR, "Could not open /dev on host system");
+                ABORT(255);
+            }
+
+            while ( ( dp = readdir(dir) ) != NULL ) {
+                if ( strstr(dp->d_name, "nvidia") != NULL ) {
+                    bind_dev(sessiondir, joinpath("/dev", dp->d_name) );
+                }
+            }
+
+            closedir(dir);
+        }
+
         singularity_message(DEBUG, "Mounting tmpfs for staged /dev/shm\n");
         if ( singularity_mount("/dev/shm", joinpath(devdir, "/shm"), "tmpfs", MS_NOSUID, "") < 0 ) {
             singularity_message(ERROR, "Failed to mount %s: %s\n", joinpath(devdir, "/shm"), strerror(errno));
@@ -163,13 +184,11 @@ int _singularity_runtime_mount_dev(void) {
 
         singularity_message(DEBUG, "Mounting minimal staged /dev into container\n");
         if ( singularity_mount(devdir, joinpath(container_dir, "/dev"), NULL, MS_BIND|MS_REC, NULL) < 0 ) {
-            singularity_priv_drop();
             singularity_message(WARNING, "Could not stage dev tree: '%s' -> '%s': %s\n", devdir, joinpath(container_dir, "/dev"), strerror(errno));
             free(sessiondir);
             free(devdir);
             return(-1);
         }
-        singularity_priv_drop();
 
         free(sessiondir);
         free(devdir);
@@ -180,13 +199,11 @@ int _singularity_runtime_mount_dev(void) {
     singularity_message(DEBUG, "Checking configuration file for 'mount dev'\n");
     if ( singularity_config_get_bool_char(MOUNT_DEV) > 0 ) {
         if ( is_dir(joinpath(container_dir, "/dev")) == 0 ) {
-                singularity_priv_escalate();
                 singularity_message(VERBOSE, "Bind mounting /dev\n");
                 if ( singularity_mount("/dev", joinpath(container_dir, "/dev"), NULL, MS_BIND|MS_NOSUID|MS_REC, NULL) < 0 ) {
                     singularity_message(ERROR, "Could not bind mount container's /dev: %s\n", strerror(errno));
                     ABORT(255);
                 }
-                singularity_priv_drop();
         } else {
             singularity_message(WARNING, "Not mounting /dev, container has no bind directory\n");
         }
@@ -207,9 +224,7 @@ static int bind_dev(char *tmpdir, char *dev) {
             int ret;
             singularity_message(VERBOSE2, "Creating bind point within container: %s\n", dev);
 
-            singularity_priv_escalate();
-            ret = fileput(path, "");
-            singularity_priv_drop();
+            ret = fileput_priv(path, "");
 
             if ( ret < 0 ) {
                 singularity_message(WARNING, "Can not create %s: %s\n", dev, strerror(errno));
@@ -221,15 +236,12 @@ static int bind_dev(char *tmpdir, char *dev) {
         return(-1);
     }
 
-    singularity_priv_escalate();
     singularity_message(DEBUG, "Mounting device %s at %s\n", dev, path);
     if ( singularity_mount(dev, path, NULL, MS_BIND, NULL) < 0 ) {
-        singularity_priv_drop();
         singularity_message(WARNING, "Could not mount %s: %s\n", dev, strerror(errno));
         free(path);
         return(-1);
     }
-    singularity_priv_drop();
 
     free(path);
 

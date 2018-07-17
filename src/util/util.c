@@ -1,4 +1,5 @@
 /* 
+ * Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
  * Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
  *
  * Copyright (c) 2015-2017, Gregory M. Kurtzer. All rights reserved.
@@ -39,9 +40,11 @@
 #include <linux/limits.h>
 #include <ctype.h>
 #include <pwd.h>
+#include <dirent.h>
 
 #include "config.h"
 #include "util/util.h"
+#include "util/file.h"
 #include "util/message.h"
 #include "util/privilege.h"
 #include "util/registry.h"
@@ -188,6 +191,8 @@ char *joinpath(const char * path1, const char * path2_in) {
         singularity_message(ERROR, "Overly-long path name.\n");
         ABORT(255);
     }
+
+    free(tmp_path1);
 
     return(ret);
 }
@@ -375,6 +380,11 @@ void free_tempfile(struct tempfile *tf) {
 struct tempfile *make_tempfile(void) {
    int fd;
    struct tempfile *tf;
+   char *tmpdir = singularity_registry_get("TMPDIR");
+
+   if (tmpdir == NULL) {
+       tmpdir = "/tmp";
+   }
 
    tf = malloc(sizeof(struct tempfile));
    if (tf == NULL) {
@@ -382,7 +392,7 @@ struct tempfile *make_tempfile(void) {
        ABORT(255);
    }
 
-   strncpy(tf->filename, "/tmp/vb.XXXXXXXXXX", sizeof(tf->filename) - 1);
+   snprintf(tf->filename, sizeof(tf->filename) - 1, "%s/vb.XXXXXXXXXX", tmpdir);
    tf->filename[sizeof(tf->filename) - 1] = '\0';
    if ((fd = mkstemp(tf->filename)) == -1 || (tf->fp = fdopen(fd, "w+")) == NULL) {
        if (fd != -1) {
@@ -401,6 +411,11 @@ struct tempfile *make_logfile(char *label) {
 
     char *daemon = singularity_registry_get("DAEMON_NAME");
     char *image = basename(singularity_registry_get("IMAGE"));
+    char *tmpdir = singularity_registry_get("TMPDIR");
+
+    if (tmpdir == NULL) {
+        tmpdir = "/tmp";
+    }
         
     tf = malloc(sizeof(struct tempfile));
     if (tf == NULL) {
@@ -408,7 +423,7 @@ struct tempfile *make_logfile(char *label) {
         ABORT(255);
     }    
 
-    if ( snprintf(tf->filename, sizeof(tf->filename) - 1, "/tmp/%s.%s.%s.XXXXXX", image, daemon, label) > sizeof(tf->filename) - 1 ) {
+    if ( snprintf(tf->filename, sizeof(tf->filename) - 1, "%s/%s.%s.%s.XXXXXX", tmpdir, image, daemon, label) > sizeof(tf->filename) - 1 ) {
         singularity_message(ERROR, "Label string too long\n");
         ABORT(255);
     }
@@ -426,4 +441,46 @@ struct tempfile *make_logfile(char *label) {
     singularity_message(DEBUG, "Logging container's %s at: %s\n", label, tf->filename);
     
     return(tf);
+}
+
+// iter on /proc/self/fd and call close_fd callback to determine file descriptors to close
+void fd_cleanup(int (*close_fd)(int fd, struct stat *st)) {
+    int fd_proc;
+    DIR *dir;
+    struct dirent *dirent;
+
+    singularity_message(DEBUG, "Cleanup file descriptor table\n");
+
+    if ( ( fd_proc = open("/proc/self/fd", O_RDONLY) ) < 0 ) {
+        singularity_message(ERROR, "Failed to open directory /proc/self/fd: %s\n", strerror(errno));
+        ABORT(255);
+    }
+
+    if ( ( dir = fdopendir(fd_proc) ) == NULL ) {
+        singularity_message(ERROR, "Failed to list directory /proc/self/fd: %s\n", strerror(errno));
+        ABORT(255);
+    }
+
+    while ( ( dirent = readdir(dir) ) ) {
+        struct stat st;
+        long int fd;
+
+        if ( strcmp(dirent->d_name, ".") == 0 || strcmp(dirent->d_name, "..") == 0 ) {
+            continue;
+        }
+        if ( str2int(dirent->d_name, &fd) < 0 ) {
+            continue;
+        }
+        if ( fd == fd_proc || fstat(fd, &st) < 0 ) {
+            continue;
+        }
+        if ( close_fd(fd, &st) ) {
+            close(fd);
+        }
+    }
+
+    if ( closedir(dir) < 0 ) {
+        singularity_message(ERROR, "Failed to close directory /proc/self/fd: %s\n", strerror(errno));
+        ABORT(255);
+    }
 }
