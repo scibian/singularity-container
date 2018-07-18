@@ -14,6 +14,7 @@ Build-Depends:
  dh-autoreconf,
  help2man,
  python,
+ libarchive-dev,
 Standards-Version: 3.9.8
 Homepage: http://singularity.lbl.gov
 
