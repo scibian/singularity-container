@@ -1,3 +1,9 @@
+singularity-container (2.5.1-1sci8u1) scibian8; urgency=medium
+
+  * upstream 2.5.1  
+
+ -- Nicolas Meaux <nicolas-externe.meaux@edf.fr>  Wed, 18 Jul 2018 11:51:22 +0200
+
 singularity-container (2.4.1-1sci8u3) scibian8; urgency=medium
 
   * debian: Remove duplicate vcs-* in control
