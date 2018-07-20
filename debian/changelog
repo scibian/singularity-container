@@ -1,3 +1,9 @@
+singularity-container (2.5.1-1sci9u1) scibian9; urgency=medium
+
+  * upstream 2.5.2 scibian9
+
+ -- Nicolas Meaux <nicolas-externe.meaux@edf.fr>  Fri, 20 Jul 2018 17:34:38 +0200
+
 singularity-container (2.5.1-2sci8u1) scibian8; urgency=medium
 
   * adding libarchive-dev in build dep 
