@@ -1,3 +1,9 @@
+singularity-container (2.5.2-1sci9u1) scibian9; urgency=medium
+
+  * put a correct version
+
+ -- Nicolas Meaux <nicolas-externe.meaux@edf.fr>  Mon, 23 Jul 2018 10:55:42 +0200
+
 singularity-container (2.5.1-1sci9u1) scibian9; urgency=medium
 
   * upstream 2.5.2 scibian9
