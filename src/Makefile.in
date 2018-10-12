@@ -91,8 +91,8 @@ host_triplet = @host@
 target_triplet = @target@
 lexec_PROGRAMS = action$(EXEEXT) builddef$(EXEEXT) cleanupd$(EXEEXT) \
 	docker-extract$(EXEEXT) get-section$(EXEEXT) \
-	image-type$(EXEEXT) mount$(EXEEXT) prepheader$(EXEEXT) \
-	start$(EXEEXT) $(BUILD_SUID)
+	get-configvals$(EXEEXT) image-type$(EXEEXT) mount$(EXEEXT) \
+	prepheader$(EXEEXT) start$(EXEEXT) $(BUILD_SUID)
 EXTRA_PROGRAMS = action-suid$(EXEEXT) mount-suid$(EXEEXT) \
 	start-suid$(EXEEXT)
 subdir = src
@@ -174,6 +174,16 @@ docker_extract_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC \
 	$(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=link $(CCLD) \
 	$(AM_CFLAGS) $(CFLAGS) $(docker_extract_LDFLAGS) $(LDFLAGS) -o \
 	$@
+am_get_configvals_OBJECTS = get_configvals-get-configvals.$(OBJEXT) \
+	util/get_configvals-util.$(OBJEXT) \
+	util/get_configvals-config_parser.$(OBJEXT) \
+	util/get_configvals-message.$(OBJEXT) \
+	util/get_configvals-registry.$(OBJEXT) \
+	util/get_configvals-file.$(OBJEXT) \
+	util/get_configvals-privilege.$(OBJEXT) \
+	util/get_configvals-suid.$(OBJEXT)
+get_configvals_OBJECTS = $(am_get_configvals_OBJECTS)
+get_configvals_LDADD = $(LDADD)
 am_get_section_OBJECTS = get_section-get-section.$(OBJEXT) \
 	util/get_section-util.$(OBJEXT) \
 	util/get_section-file.$(OBJEXT) \
@@ -275,14 +285,15 @@ am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
 SOURCES = $(action_SOURCES) $(action_suid_SOURCES) $(builddef_SOURCES) \
 	$(cleanupd_SOURCES) $(docker_extract_SOURCES) \
+	$(get_configvals_SOURCES) $(get_section_SOURCES) \
+	$(image_type_SOURCES) $(mount_SOURCES) $(mount_suid_SOURCES) \
+	$(prepheader_SOURCES) $(start_SOURCES) $(start_suid_SOURCES)
+DIST_SOURCES = $(action_SOURCES) $(action_suid_SOURCES) \
+	$(builddef_SOURCES) $(cleanupd_SOURCES) \
+	$(docker_extract_SOURCES) $(get_configvals_SOURCES) \
 	$(get_section_SOURCES) $(image_type_SOURCES) $(mount_SOURCES) \
 	$(mount_suid_SOURCES) $(prepheader_SOURCES) $(start_SOURCES) \
 	$(start_suid_SOURCES)
-DIST_SOURCES = $(action_SOURCES) $(action_suid_SOURCES) \
-	$(builddef_SOURCES) $(cleanupd_SOURCES) \
-	$(docker_extract_SOURCES) $(get_section_SOURCES) \
-	$(image_type_SOURCES) $(mount_SOURCES) $(mount_suid_SOURCES) \
-	$(prepheader_SOURCES) $(start_SOURCES) $(start_suid_SOURCES)
 RECURSIVE_TARGETS = all-recursive check-recursive cscopelist-recursive \
 	ctags-recursive dvi-recursive html-recursive info-recursive \
 	install-data-recursive install-dvi-recursive \
@@ -401,6 +412,8 @@ LT_SYS_LIBRARY_PATH = @LT_SYS_LIBRARY_PATH@
 MAKEINFO = @MAKEINFO@
 MANIFEST_TOOL = @MANIFEST_TOOL@
 MKDIR_P = @MKDIR_P@
+MKSQUASHFS_CHECK = @MKSQUASHFS_CHECK@
+MKSQUASHFS_PATH = @MKSQUASHFS_PATH@
 NM = @NM@
 NMEDIT = @NMEDIT@
 OBJDUMP = @OBJDUMP@
@@ -517,6 +530,8 @@ prepheader_LDADD =
 prepheader_CPPFLAGS = $(AM_CPPFLAGS)
 get_section_SOURCES = get-section.c util/util.c util/file.c util/message.c util/privilege.c util/config_parser.c util/registry.c
 get_section_CPPFLAGS = $(AM_CPPFLAGS)
+get_configvals_SOURCES = get-configvals.c util/util.c util/config_parser.c util/message.c util/registry.c util/file.c util/privilege.c util/suid.c
+get_configvals_CPPFLAGS = $(AM_CPPFLAGS)
 image_type_SOURCES = image-type.c util/util.c util/message.c util/config_parser.c util/file.c
 image_type_LDADD = lib/image/libsingularity-image.la
 image_type_CPPFLAGS = $(AM_CPPFLAGS)
@@ -727,6 +742,24 @@ util/docker_extract-suid.$(OBJEXT): util/$(am__dirstamp) \
 docker-extract$(EXEEXT): $(docker_extract_OBJECTS) $(docker_extract_DEPENDENCIES) $(EXTRA_docker_extract_DEPENDENCIES) 
 	@rm -f docker-extract$(EXEEXT)
 	$(AM_V_CCLD)$(docker_extract_LINK) $(docker_extract_OBJECTS) $(docker_extract_LDADD) $(LIBS)
+util/get_configvals-util.$(OBJEXT): util/$(am__dirstamp) \
+	util/$(DEPDIR)/$(am__dirstamp)
+util/get_configvals-config_parser.$(OBJEXT): util/$(am__dirstamp) \
+	util/$(DEPDIR)/$(am__dirstamp)
+util/get_configvals-message.$(OBJEXT): util/$(am__dirstamp) \
+	util/$(DEPDIR)/$(am__dirstamp)
+util/get_configvals-registry.$(OBJEXT): util/$(am__dirstamp) \
+	util/$(DEPDIR)/$(am__dirstamp)
+util/get_configvals-file.$(OBJEXT): util/$(am__dirstamp) \
+	util/$(DEPDIR)/$(am__dirstamp)
+util/get_configvals-privilege.$(OBJEXT): util/$(am__dirstamp) \
+	util/$(DEPDIR)/$(am__dirstamp)
+util/get_configvals-suid.$(OBJEXT): util/$(am__dirstamp) \
+	util/$(DEPDIR)/$(am__dirstamp)
+
+get-configvals$(EXEEXT): $(get_configvals_OBJECTS) $(get_configvals_DEPENDENCIES) $(EXTRA_get_configvals_DEPENDENCIES) 
+	@rm -f get-configvals$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(get_configvals_OBJECTS) $(get_configvals_LDADD) $(LIBS)
 util/get_section-util.$(OBJEXT): util/$(am__dirstamp) \
 	util/$(DEPDIR)/$(am__dirstamp)
 util/get_section-file.$(OBJEXT): util/$(am__dirstamp) \
@@ -856,6 +889,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/builddef-builddef.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cleanupd-cleanupd.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/docker_extract-docker-extract.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/get_configvals-get-configvals.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/get_section-get-section.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/image_type-image-type.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mount-mount.Po@am__quote@
@@ -898,6 +932,13 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/docker_extract-registry.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/docker_extract-suid.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/docker_extract-util.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_configvals-config_parser.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_configvals-file.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_configvals-message.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_configvals-privilege.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_configvals-registry.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_configvals-suid.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_configvals-util.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_section-config_parser.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_section-file.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@util/$(DEPDIR)/get_section-message.Po@am__quote@
@@ -1526,6 +1567,118 @@ util/docker_extract-suid.obj: util/suid.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/suid.c' object='util/docker_extract-suid.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(docker_extract_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/docker_extract-suid.obj `if test -f 'util/suid.c'; then $(CYGPATH_W) 'util/suid.c'; else $(CYGPATH_W) '$(srcdir)/util/suid.c'; fi`
+
+get_configvals-get-configvals.o: get-configvals.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT get_configvals-get-configvals.o -MD -MP -MF $(DEPDIR)/get_configvals-get-configvals.Tpo -c -o get_configvals-get-configvals.o `test -f 'get-configvals.c' || echo '$(srcdir)/'`get-configvals.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/get_configvals-get-configvals.Tpo $(DEPDIR)/get_configvals-get-configvals.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='get-configvals.c' object='get_configvals-get-configvals.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o get_configvals-get-configvals.o `test -f 'get-configvals.c' || echo '$(srcdir)/'`get-configvals.c
+
+get_configvals-get-configvals.obj: get-configvals.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT get_configvals-get-configvals.obj -MD -MP -MF $(DEPDIR)/get_configvals-get-configvals.Tpo -c -o get_configvals-get-configvals.obj `if test -f 'get-configvals.c'; then $(CYGPATH_W) 'get-configvals.c'; else $(CYGPATH_W) '$(srcdir)/get-configvals.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/get_configvals-get-configvals.Tpo $(DEPDIR)/get_configvals-get-configvals.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='get-configvals.c' object='get_configvals-get-configvals.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o get_configvals-get-configvals.obj `if test -f 'get-configvals.c'; then $(CYGPATH_W) 'get-configvals.c'; else $(CYGPATH_W) '$(srcdir)/get-configvals.c'; fi`
+
+util/get_configvals-util.o: util/util.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-util.o -MD -MP -MF util/$(DEPDIR)/get_configvals-util.Tpo -c -o util/get_configvals-util.o `test -f 'util/util.c' || echo '$(srcdir)/'`util/util.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-util.Tpo util/$(DEPDIR)/get_configvals-util.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/util.c' object='util/get_configvals-util.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-util.o `test -f 'util/util.c' || echo '$(srcdir)/'`util/util.c
+
+util/get_configvals-util.obj: util/util.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-util.obj -MD -MP -MF util/$(DEPDIR)/get_configvals-util.Tpo -c -o util/get_configvals-util.obj `if test -f 'util/util.c'; then $(CYGPATH_W) 'util/util.c'; else $(CYGPATH_W) '$(srcdir)/util/util.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-util.Tpo util/$(DEPDIR)/get_configvals-util.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/util.c' object='util/get_configvals-util.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-util.obj `if test -f 'util/util.c'; then $(CYGPATH_W) 'util/util.c'; else $(CYGPATH_W) '$(srcdir)/util/util.c'; fi`
+
+util/get_configvals-config_parser.o: util/config_parser.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-config_parser.o -MD -MP -MF util/$(DEPDIR)/get_configvals-config_parser.Tpo -c -o util/get_configvals-config_parser.o `test -f 'util/config_parser.c' || echo '$(srcdir)/'`util/config_parser.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-config_parser.Tpo util/$(DEPDIR)/get_configvals-config_parser.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/config_parser.c' object='util/get_configvals-config_parser.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-config_parser.o `test -f 'util/config_parser.c' || echo '$(srcdir)/'`util/config_parser.c
+
+util/get_configvals-config_parser.obj: util/config_parser.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-config_parser.obj -MD -MP -MF util/$(DEPDIR)/get_configvals-config_parser.Tpo -c -o util/get_configvals-config_parser.obj `if test -f 'util/config_parser.c'; then $(CYGPATH_W) 'util/config_parser.c'; else $(CYGPATH_W) '$(srcdir)/util/config_parser.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-config_parser.Tpo util/$(DEPDIR)/get_configvals-config_parser.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/config_parser.c' object='util/get_configvals-config_parser.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-config_parser.obj `if test -f 'util/config_parser.c'; then $(CYGPATH_W) 'util/config_parser.c'; else $(CYGPATH_W) '$(srcdir)/util/config_parser.c'; fi`
+
+util/get_configvals-message.o: util/message.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-message.o -MD -MP -MF util/$(DEPDIR)/get_configvals-message.Tpo -c -o util/get_configvals-message.o `test -f 'util/message.c' || echo '$(srcdir)/'`util/message.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-message.Tpo util/$(DEPDIR)/get_configvals-message.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/message.c' object='util/get_configvals-message.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-message.o `test -f 'util/message.c' || echo '$(srcdir)/'`util/message.c
+
+util/get_configvals-message.obj: util/message.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-message.obj -MD -MP -MF util/$(DEPDIR)/get_configvals-message.Tpo -c -o util/get_configvals-message.obj `if test -f 'util/message.c'; then $(CYGPATH_W) 'util/message.c'; else $(CYGPATH_W) '$(srcdir)/util/message.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-message.Tpo util/$(DEPDIR)/get_configvals-message.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/message.c' object='util/get_configvals-message.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-message.obj `if test -f 'util/message.c'; then $(CYGPATH_W) 'util/message.c'; else $(CYGPATH_W) '$(srcdir)/util/message.c'; fi`
+
+util/get_configvals-registry.o: util/registry.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-registry.o -MD -MP -MF util/$(DEPDIR)/get_configvals-registry.Tpo -c -o util/get_configvals-registry.o `test -f 'util/registry.c' || echo '$(srcdir)/'`util/registry.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-registry.Tpo util/$(DEPDIR)/get_configvals-registry.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/registry.c' object='util/get_configvals-registry.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-registry.o `test -f 'util/registry.c' || echo '$(srcdir)/'`util/registry.c
+
+util/get_configvals-registry.obj: util/registry.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-registry.obj -MD -MP -MF util/$(DEPDIR)/get_configvals-registry.Tpo -c -o util/get_configvals-registry.obj `if test -f 'util/registry.c'; then $(CYGPATH_W) 'util/registry.c'; else $(CYGPATH_W) '$(srcdir)/util/registry.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-registry.Tpo util/$(DEPDIR)/get_configvals-registry.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/registry.c' object='util/get_configvals-registry.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-registry.obj `if test -f 'util/registry.c'; then $(CYGPATH_W) 'util/registry.c'; else $(CYGPATH_W) '$(srcdir)/util/registry.c'; fi`
+
+util/get_configvals-file.o: util/file.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-file.o -MD -MP -MF util/$(DEPDIR)/get_configvals-file.Tpo -c -o util/get_configvals-file.o `test -f 'util/file.c' || echo '$(srcdir)/'`util/file.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-file.Tpo util/$(DEPDIR)/get_configvals-file.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/file.c' object='util/get_configvals-file.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-file.o `test -f 'util/file.c' || echo '$(srcdir)/'`util/file.c
+
+util/get_configvals-file.obj: util/file.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-file.obj -MD -MP -MF util/$(DEPDIR)/get_configvals-file.Tpo -c -o util/get_configvals-file.obj `if test -f 'util/file.c'; then $(CYGPATH_W) 'util/file.c'; else $(CYGPATH_W) '$(srcdir)/util/file.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-file.Tpo util/$(DEPDIR)/get_configvals-file.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/file.c' object='util/get_configvals-file.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-file.obj `if test -f 'util/file.c'; then $(CYGPATH_W) 'util/file.c'; else $(CYGPATH_W) '$(srcdir)/util/file.c'; fi`
+
+util/get_configvals-privilege.o: util/privilege.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-privilege.o -MD -MP -MF util/$(DEPDIR)/get_configvals-privilege.Tpo -c -o util/get_configvals-privilege.o `test -f 'util/privilege.c' || echo '$(srcdir)/'`util/privilege.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-privilege.Tpo util/$(DEPDIR)/get_configvals-privilege.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/privilege.c' object='util/get_configvals-privilege.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-privilege.o `test -f 'util/privilege.c' || echo '$(srcdir)/'`util/privilege.c
+
+util/get_configvals-privilege.obj: util/privilege.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-privilege.obj -MD -MP -MF util/$(DEPDIR)/get_configvals-privilege.Tpo -c -o util/get_configvals-privilege.obj `if test -f 'util/privilege.c'; then $(CYGPATH_W) 'util/privilege.c'; else $(CYGPATH_W) '$(srcdir)/util/privilege.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-privilege.Tpo util/$(DEPDIR)/get_configvals-privilege.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/privilege.c' object='util/get_configvals-privilege.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-privilege.obj `if test -f 'util/privilege.c'; then $(CYGPATH_W) 'util/privilege.c'; else $(CYGPATH_W) '$(srcdir)/util/privilege.c'; fi`
+
+util/get_configvals-suid.o: util/suid.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-suid.o -MD -MP -MF util/$(DEPDIR)/get_configvals-suid.Tpo -c -o util/get_configvals-suid.o `test -f 'util/suid.c' || echo '$(srcdir)/'`util/suid.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-suid.Tpo util/$(DEPDIR)/get_configvals-suid.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/suid.c' object='util/get_configvals-suid.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-suid.o `test -f 'util/suid.c' || echo '$(srcdir)/'`util/suid.c
+
+util/get_configvals-suid.obj: util/suid.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT util/get_configvals-suid.obj -MD -MP -MF util/$(DEPDIR)/get_configvals-suid.Tpo -c -o util/get_configvals-suid.obj `if test -f 'util/suid.c'; then $(CYGPATH_W) 'util/suid.c'; else $(CYGPATH_W) '$(srcdir)/util/suid.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) util/$(DEPDIR)/get_configvals-suid.Tpo util/$(DEPDIR)/get_configvals-suid.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='util/suid.c' object='util/get_configvals-suid.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_configvals_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o util/get_configvals-suid.obj `if test -f 'util/suid.c'; then $(CYGPATH_W) 'util/suid.c'; else $(CYGPATH_W) '$(srcdir)/util/suid.c'; fi`
 
 get_section-get-section.o: get-section.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(get_section_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT get_section-get-section.o -MD -MP -MF $(DEPDIR)/get_section-get-section.Tpo -c -o get_section-get-section.o `test -f 'get-section.c' || echo '$(srcdir)/'`get-section.c

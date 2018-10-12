@@ -33,7 +33,7 @@ localstatedir="${prefix}/var"
 bindir="${exec_prefix}/bin"
 home=`dirname  "$0"`
 
-SINGULARITY_version="2.5.2-HEAD.b258b65"
+SINGULARITY_version="2.6.0-HEAD.579c415"
 SINGULARITY_libexecdir="$libexecdir"
 SINGULARITY_sysconfdir="$sysconfdir"
 SINGULARITY_localstatedir="$localstatedir"

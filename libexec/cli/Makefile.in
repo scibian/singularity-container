@@ -102,7 +102,7 @@ DIST_COMMON = $(srcdir)/Makefile.am $(dist_cliexec_SCRIPTS) \
 	$(dist_cliexec_DATA) $(am__DIST_COMMON)
 mkinstalldirs = $(install_sh) -d
 CONFIG_HEADER = $(top_builddir)/src/config.h
-CONFIG_CLEAN_FILES =
+CONFIG_CLEAN_FILES = build.exec
 CONFIG_CLEAN_VPATH_FILES =
 am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
 am__vpath_adj = case $$p in \
@@ -154,7 +154,7 @@ am__can_run_installinfo = \
   esac
 DATA = $(dist_cliexec_DATA)
 am__tagged_files = $(HEADERS) $(SOURCES) $(TAGS_FILES) $(LISP)
-am__DIST_COMMON = $(srcdir)/Makefile.in
+am__DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/build.exec.in
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 ACLOCAL = @ACLOCAL@
 AMTAR = @AMTAR@
@@ -204,6 +204,8 @@ LT_SYS_LIBRARY_PATH = @LT_SYS_LIBRARY_PATH@
 MAKEINFO = @MAKEINFO@
 MANIFEST_TOOL = @MANIFEST_TOOL@
 MKDIR_P = @MKDIR_P@
+MKSQUASHFS_CHECK = @MKSQUASHFS_CHECK@
+MKSQUASHFS_PATH = @MKSQUASHFS_PATH@
 NM = @NM@
 NMEDIT = @NMEDIT@
 OBJDUMP = @OBJDUMP@
@@ -338,7 +340,8 @@ dist_cliexec_DATA = apps.info \
                     shell.info \
                     test.info
 
-MAINTAINERCLEANFILES = Makefile.in
+MAINTAINERCLEANFILES = Makefile.in build.exec
+DISTCLEANFILES = build.exec
 all: all-am
 
 .SUFFIXES:
@@ -371,6 +374,8 @@ $(top_srcdir)/configure:  $(am__configure_deps)
 $(ACLOCAL_M4):  $(am__aclocal_m4_deps)
 	cd $(top_builddir) && $(MAKE) $(AM_MAKEFLAGS) am--refresh
 $(am__aclocal_m4_deps):
+build.exec: $(top_builddir)/config.status $(srcdir)/build.exec.in
+	cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@
 install-dist_cliexecSCRIPTS: $(dist_cliexec_SCRIPTS)
 	@$(NORMAL_INSTALL)
 	@list='$(dist_cliexec_SCRIPTS)'; test -n "$(cliexecdir)" || list=; \
@@ -503,6 +508,7 @@ clean-generic:
 distclean-generic:
 	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
 	-test . = "$(srcdir)" || test -z "$(CONFIG_CLEAN_VPATH_FILES)" || rm -f $(CONFIG_CLEAN_VPATH_FILES)
+	-test -z "$(DISTCLEANFILES)" || rm -f $(DISTCLEANFILES)
 
 maintainer-clean-generic:
 	@echo "This command is intended for maintainers to use"

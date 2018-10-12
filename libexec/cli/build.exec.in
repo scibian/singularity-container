@@ -36,7 +36,7 @@ else
     exit 1
 fi
 
-MKSQUASHFS=""
+MKSQUASHFS="@MKSQUASHFS_PATH@"
 
 if ! singularity_which ${MKSQUASHFS:-mksquashfs} > /dev/null 2>&1; then
     message ERROR "You must install squashfs-tools to build images\n"
