@@ -1,3 +1,15 @@
+singularity-container (2.6.0-1sci8u1) scibian8; urgency=medium
+
+  * put a correct version
+
+ -- Said AMIROUCHE <said-exerne.amirouche@edf.fr>  Mon, 15 Oct 2018 10:04:35 +0200
+
+singularity-container (2.5.2-1sci8u2) scibian8; urgency=medium
+
+  * upstream 2.6.0
+
+ -- Said AMIROUCHE <said-exerne.amirouche@edf.fr>  Mon, 15 Oct 2018 10:03:12 +0200
+
 singularity-container (2.5.2-1sci8u1) scibian8; urgency=medium
 
   * upstream 2.5.2 
