@@ -1,14 +1,20 @@
+singularity-container (2.6.1-0sci9u1) scibian9; urgency=medium
+
+  * New release : 2.6.1 
+
+ -- Said AMIROUCHE <said-externe.amirouche@edf.fr>  Thu, 13 Dec 2018 16:56:04 +0100
+
 singularity-container (2.6.0-1sci9u1) scibian9; urgency=medium
 
   * put a correct version
 
- -- Said AMIROUCHE <said-exerne.amirouche@edf.fr>  Fri, 12 Oct 2018 18:20:41 +0200
+ -- Said AMIROUCHE <said-externe.amirouche@edf.fr>  Fri, 12 Oct 2018 18:20:41 +0200
 
 singularity-container (2.5.2-1sci9u2) scibian9; urgency=medium
 
   * upstream 2.6.0 scibian9
 
- -- Said AMIROUCHE <said-exerne.amirouche@edf.fr>  Fri, 12 Oct 2018 18:19:17 +0200
+ -- Said AMIROUCHE <said-externe.amirouche@edf.fr>  Fri, 12 Oct 2018 18:19:17 +0200
 
 singularity-container (2.5.2-1sci9u1) scibian9; urgency=medium
 
