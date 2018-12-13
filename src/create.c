@@ -29,17 +29,17 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
-#include <sys/mount.h>
 
 #include "config.h"
 #include "util/file.h"
 #include "util/util.h"
 #include "util/registry.h"
+#include "lib/image/image.h"
+#include "lib/runtime/runtime.h"
 #include "util/config_parser.h"
 #include "util/privilege.h"
 #include "util/suid.h"
-#include "lib/image/image.h"
-#include "lib/runtime/runtime.h"
+#include "util/fork.h"
 
 #ifndef SYSCONFDIR
 #error SYSCONFDIR not defined
@@ -48,6 +48,9 @@
 
 int main(int argc, char **argv) {
     struct image_object image;
+    long int size = 768;
+    char *size_s;
+    char *mkfs_cmd[4];
 
     singularity_config_init(joinpath(SYSCONFDIR, "/singularity/singularity.conf"));
 
@@ -57,51 +60,49 @@ int main(int argc, char **argv) {
     singularity_registry_init();
     singularity_priv_drop();
 
-    singularity_runtime_autofs();
-
-    if ( singularity_registry_get("WRITABLE") != NULL ) {
-        singularity_message(VERBOSE3, "Instantiating writable container image object\n");
-        image = singularity_image_init(singularity_registry_get("IMAGE"), O_RDWR);
-    } else {
-        singularity_message(VERBOSE3, "Instantiating read only container image object\n");
-        image = singularity_image_init(singularity_registry_get("IMAGE"), O_RDONLY);
+    if ( ( size_s = singularity_registry_get("IMAGESIZE") ) != NULL ) {
+        if ( str2int(size_s, &size) == 0 ) {
+            singularity_message(VERBOSE, "Converted size string to long int: %ld\n", size);
+        } else {
+            singularity_message(ERROR, "Could not convert container size to integer\n");
+            ABORT(255);
+        }
     }
 
-    if ( is_owner(CONTAINER_MOUNTDIR, 0) != 0 ) {
-        singularity_message(ERROR, "Root must own container mount directory: %s\n", CONTAINER_MOUNTDIR);
+    singularity_message(INFO, "Initializing Singularity image subsystem\n");
+    image = singularity_image_init(singularity_registry_get("IMAGE"));
+
+    singularity_message(INFO, "Opening image file: %s\n", image.name);
+//    singularity_image_open(&image, O_CREAT | O_RDWR);
+
+    singularity_message(INFO, "Creating %ldMiB image\n", size);
+    singularity_image_create(&image, size);
+
+    singularity_message(INFO, "Binding image to loop\n");
+    singularity_image_bind(&image);
+
+    if ( singularity_image_loopdev(&image) == NULL ) {
+        singularity_message(ERROR, "Image was not bound correctly.\n");
         ABORT(255);
     }
 
-    singularity_registry_set("DAEMON_START", NULL);
-    singularity_registry_set("DAEMON_JOIN", NULL);
+    mkfs_cmd[0] = strdup("/sbin/mkfs.ext3");
+    mkfs_cmd[1] = strdup("-q");
+    mkfs_cmd[2] = strdup(singularity_image_loopdev(&image));
+    mkfs_cmd[3] = NULL;
 
-    singularity_runtime_ns(SR_NS_MNT);
-
-    singularity_image_mount(&image, CONTAINER_FINALDIR);
-
-    singularity_priv_drop_perm();
-
-    envar_set("SINGULARITY_MOUNTPOINT", CONTAINER_FINALDIR, 1);
-
-    if ( argc > 1 ) {
-
-        singularity_message(VERBOSE, "Running command: %s\n", argv[1]);
-        singularity_message(DEBUG, "Calling exec...\n");
-        execvp(argv[1], &argv[1]); // Flawfinder: ignore (Yes flawfinder, we are exec'ing)
-
-        singularity_message(ERROR, "Exec failed: %s: %s\n", argv[1], strerror(errno));
-        ABORT(255);
-
-    } else {
-
-        singularity_message(INFO, "%s is mounted at: %s\n\n", singularity_image_name(&image), CONTAINER_FINALDIR);
-        envar_set("PS1", "Singularity> ", 1);
-
-        execl("/bin/sh", "/bin/sh", NULL); // Flawfinder: ignore (Yes flawfinder, this is what we want, sheesh, so demanding!)
-
-        singularity_message(ERROR, "Exec of /bin/sh failed: %s\n", strerror(errno));
+    singularity_message(DEBUG, "Cleaning environment\n");
+    if ( envclean() != 0 ) {
+        singularity_message(ERROR, "Failed sanitizing the environment\n");
         ABORT(255);
     }
+
+    singularity_priv_escalate();
+    singularity_message(INFO, "Creating file system within image\n");
+    singularity_fork_exec(0, mkfs_cmd);
+    singularity_priv_drop();
+
+    singularity_message(INFO, "Image is done: %s\n", image.path);
 
     return(0);
 }
