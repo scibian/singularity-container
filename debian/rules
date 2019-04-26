@@ -1,37 +1,63 @@
 #!/usr/bin/make -f
 
-srcpkg = $(shell LC_ALL=C dpkg-parsechangelog | grep '^Source:' | cut -d ' ' -f 2,2)
-debver = $(shell LC_ALL=C dpkg-parsechangelog | grep '^Version:' | cut -d ' ' -f 2,2 )
-uver = $(shell echo $(debver) | cut -d '-' -f 1,1 )
+include /usr/share/dpkg/architecture.mk
+include /usr/share/dpkg/pkg-info.mk
 
 #DH_VERBOSE=1
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+# Causes static variable to become having multiple instances, so we need to strip it away
+# See https://github.com/singularityware/singularity/issues/1947
+export DEB_LDFLAGS_MAINT_STRIP=-Wl,-Bsymbolic-functions
 
 PKGDIR=debian/singularity-container
 export SINGULARITY_CACHEDIR=$(PKGDIR)/var/lib/singularity/cache
 
+export GOPATH=/usr/share/gocode:$(CURDIR)/go
+SRCDIR = go/src/github.com/sylabs/singularity
+
+export DESTDIR:=$(CURDIR)/$(PKGDIR)/
+export DH_GOPKG=.
+
 %:
-	dh $@  --with autoreconf
+	dh $@ --with golang
 
 override_dh_auto_configure:
-	dh_auto_configure -- --localstatedir=/var/lib
+# prepare source directory the way the build system wants it
+# https://www.sylabs.io/guides/3.0/user-guide/quick_start.html#compile-the-singularity-binary
+	mkdir -p $(SRCDIR)
+	find -maxdepth 1 ! -name debian ! -name go ! -name ".git*" ! -name "."\
+	  -exec cp -r -t $(SRCDIR) {} +
+# perform the configuration
+	cd $(SRCDIR) \
+	&& ./mconfig \
+	-V $(DEB_VERSION_UPSTREAM) \
+	--prefix=/usr \
+	--sysconfdir=/etc \
+	--libexecdir=/usr/lib/$(DEB_HOST_MULTIARCH) \
+	--localstatedir=/var/lib
+
+override_dh_auto_build:
+	make -C $(SRCDIR)/builddir
+
+override_dh_auto_test:
+	make -C $(SRCDIR)/builddir check
 
 override_dh_auto_install:
-	dh_auto_install
+	make -C $(SRCDIR)/builddir install
 	: # move bash completions into now new standard location
 	mv $(PKGDIR)/etc/bash_completion.d $(PKGDIR)/usr/share/bash-completion/completions
 
 override_dh_installman:
 	: # Very sloppy man pages for now
-	debian/generate_manpages $(PKGDIR) $(debver)
+	debian/generate_manpages $(PKGDIR) $(DEB_VERSION)
 	dh_installman
-
-override_dh_installdocs:
-	dh_installdocs README.md CONTRIBUTORS.md
-
-override_dh_auto_test:
 
 override_dh_fixperms:
 	dh_fixperms
 	chown root.root $(PKGDIR)/usr/lib/*/singularity/bin/*
 	chmod 4755 $(PKGDIR)/usr/lib/*/singularity/bin/*-suid
+
+override_dh_auto_clean:
+	-test -d $(SRCDIR) && $(RM) -r go
+	dh_auto_clean
+
