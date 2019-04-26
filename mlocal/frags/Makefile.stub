@@ -1,0 +1,92 @@
+all: $(ALL)
+
+.PHONY: man
+man:
+	$(V)go run -tags "$(GO_TAGS)" $(SOURCEDIR)/cmd/docs/docs.go man --dir $(DESTDIR)$(MANDIR)/man1
+
+.PHONY: collect
+collect:
+	@printf " DEPENDS\n"
+	$(V)mkdir -p $(BUILDDIR)
+	$(V):>$(BUILDDIR)/mergeddeps
+	$(V)for i in `find $(BUILDDIR) -name '*.o.d'`; do		\
+		(awk -v path="$${i%/*.*}" '/^.+:/ {			\
+			print path "/" $$0; next }{ print }' < $$i	\
+			>> $(BUILDDIR)/mergeddeps)			\
+	done
+
+.PHONY: check
+check: $(go_OBJ)
+	@echo " CHECK go fmt"
+	$(V)cd $(SOURCEDIR) && \
+		( test -z "`go fmt -n ./... | sed 's/ -w / /' | sh | tee /dev/stderr`" || \
+		   ( echo "The above files have formatting errors."; \
+		     echo "Use 'go fmt github.com/sylabs/singularity/...' to correct the errors."; \
+		     false ) >&2 )
+	@echo "       PASS"
+	@echo " CHECK go vet"
+	$(V)cd $(SOURCEDIR) && go vet -tags "$(GO_TAGS)" -all ./...
+	@echo "       PASS"
+	@echo " CHECK go lint"
+	$(V)cd $(SOURCEDIR) && golint -set_exit_status `go list ./...`
+	@echo "       PASS"
+
+.PHONY: dist
+dist:
+	$(V)(cd $(SOURCEDIR) && $(SOURCEDIR)/scripts/make-dist.sh)
+
+.PHONY: test
+test:
+	@echo " TEST sudo go test"
+	@# avoid travis 10 minutes of silence timeout
+	$(V)M=0; eval 'while [ $$M -le 20 ]; do sleep 60; M=`expr $$M + 1`; echo "Still testing ($$M) ..."; done &' ; \
+	trap "kill $$! || true" 0; \
+	cd $(SOURCEDIR) && sudo -E `which go` test -count=1 -timeout=20m -tags "$(GO_TAGS)" -failfast -cover -race ./...
+	@echo "       PASS"
+
+.PHONY: testall
+testall: vendor-check check test
+
+.PHONY: rpm
+rpm: dist
+	@echo " BUILD RPM"
+	$(V)(set -x; cd $(SOURCEDIR) && \
+	  if [ -n "$(RPMPREFIX)" ]; then \
+	    rpmbuild $(RPMCLEAN) -ta \
+	      --define '_prefix $(RPMPREFIX)' \
+	      --define '_sysconfdir $(RPMPREFIX)/etc' \
+	      --define '_localstatedir $(RPMPREFIX)/var' \
+	      --define '_mandir $(RPMPREFIX)/share/man' \
+	      $(SOURCEDIR)/singularity-$(SHORT_VERSION).tar.gz; \
+	  else \
+	    rpmbuild $(RPMCLEAN) -ta \
+	      $(SOURCEDIR)/singularity-$(SHORT_VERSION).tar.gz; \
+	  fi)
+
+.PHONY: cscope
+cscope:
+	@printf " CSCOPE\n"
+	$(V)(cscope -k -R -q -u -b -v `find $(SOURCEDIR) -name '*.[chS]'` \
+		>/dev/null 2>&1 || true)
+
+.PHONY: clean
+clean:
+	@printf " CLEAN\n"
+	$(V)rm -rf $(BUILDDIR)/mergeddeps cscope.* $(CLEANFILES)
+
+.PHONY: install
+install: $(INSTALLFILES)
+	@echo " DONE"
+
+# generate the vendor folder with dep
+.PHONY: vendor
+vendor:
+	@echo " VENDOR"
+	$(V)dep ensure >/dev/null
+
+.PHONY: vendor-check
+vendor-check:
+	@echo " VENDOR CHECK"
+	$(V)dep check
+
+-include $(BUILDDIR)/mergeddeps
