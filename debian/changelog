@@ -1,6 +1,7 @@
-singularity-container (3.1.1-0sci9u1) UNRELEASED; urgency=medium
+singularity-container (3.1.1-0sci9u1) scibian9; urgency=medium
 
   * New uptream version 3.1.1 
+  * New scibian Release 
 
  -- MHamed Bouaziz <mhamed-externe.bouaziz@edf.fr>  Mon, 29 Apr 2019 11:46:44 +0200
 
