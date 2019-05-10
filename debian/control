@@ -10,6 +10,8 @@ Build-Depends: debhelper (>= 9),
                golint,
                help2man,
                libarchive-dev,
+               libssl-dev,
+               uuid-dev,
                python
 Standards-Version: 4.1.3
 Homepage: http://www.sylabs.io
