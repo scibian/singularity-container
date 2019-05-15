@@ -2,26 +2,30 @@ Source: singularity-container
 Section: admin
 Priority: optional
 Maintainer: Scibian Project <packaging@scibian.org>
+Uploaders: M'hamed Bouaziz <mhamed-externe.bouaziz@edf.fr>,
+Build-Depends: debhelper (>= 9),
+               dh-autoreconf,
+               dh-golang,
+               golang-1.11,
+               golint,
+               help2man,
+               libarchive-dev,
+               libssl-dev,
+               uuid-dev,
+               python
+Standards-Version: 4.1.3
+Homepage: http://www.sylabs.io
 Vcs-Git: https://github.com/scibian/singularity-container.git
 Vcs-Browser: https://github.com/scibian/singularity-container
-Uploaders:
- Dave Love <fx@gnu.org>,
- Mehdi Dogguy <mehdi@debian.org>,
- Yaroslav Halchenko <debian@onerussian.com>,
- Afif Elghraoui <afif@debian.org>,
-Build-Depends:
- debhelper (>= 9),
- dh-autoreconf,
- help2man,
- python,
- libarchive-dev,
-Standards-Version: 3.9.8
-Homepage: http://singularity.lbl.gov
 
-# "singularity" is a packaged game (but the contents don't clash)
 Package: singularity-container
 Architecture: any
-Depends: ${misc:Depends}, ${shlibs:Depends}, python
+Depends: python,
+         squashfs-tools,
+         ca-certificates,
+         ${misc:Depends},
+         ${shlibs:Depends}
+Recommends: e2fsprogs,
 Description: container platform focused on supporting "Mobility of Compute"
  Mobility of Compute encapsulates the development to compute model
  where developers can work in an environment of their choosing and
@@ -32,4 +36,3 @@ Description: container platform focused on supporting "Mobility of Compute"
  other container solutions do not apply to Singularity making it an
  ideal solution for users (both computational and non-computational)
  and HPC centers.
-
