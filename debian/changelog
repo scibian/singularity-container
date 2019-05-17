@@ -1,3 +1,13 @@
+singularity-container (3.1.1-0sci8u1) scibian8; urgency=medium
+
+  * New upstream 3.1.1.
+  * For this version, I have included golint source code to build it during 
+    the building of this package. This approach is used by golang and the reason 
+    is that singularity-container depends on golint and to build golint there is 
+    a lot of packages to backport. 
+
+ -- MHamed Bouaziz <mhamed-externe.bouaziz@edf.fr>  Fri, 17 May 2019 11:32:52 +0200
+
 singularity-container (2.6.0-1sci8u1) scibian8; urgency=medium
 
   * put a correct version
