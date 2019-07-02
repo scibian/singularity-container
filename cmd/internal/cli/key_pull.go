@@ -18,7 +18,7 @@ import (
 func init() {
 	KeyPullCmd.Flags().SetInterspersed(false)
 
-	KeyPullCmd.Flags().StringVarP(&keyServerURL, "url", "u", defaultKeyServer, "specify the key server URL")
+	KeyPullCmd.Flags().StringVarP(&keyServerURI, "url", "u", defaultKeyServer, "specify the key server URL")
 	KeyPullCmd.Flags().SetAnnotation("url", "envkey", []string{"URL"})
 }
 
@@ -28,7 +28,9 @@ var KeyPullCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
 	PreRun:                sylabsToken,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := doKeyPullCmd(args[0], keyServerURL); err != nil {
+		handleKeyFlags(cmd)
+
+		if err := doKeyPullCmd(args[0], keyServerURI); err != nil {
 			sylog.Errorf("pull failed: %s", err)
 			os.Exit(2)
 		}
@@ -77,7 +79,7 @@ func doKeyPullCmd(fingerprint string, url string) error {
 		}
 	}
 
-	fmt.Printf("%v key(s) fetched and stored in local cache %s\n", count, sypgp.PublicPath())
+	fmt.Printf("%v key(s) added to keyring of trust %s\n", count, sypgp.PublicPath())
 
 	return nil
 }

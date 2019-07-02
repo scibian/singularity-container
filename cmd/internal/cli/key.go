@@ -7,6 +7,7 @@ package cli
 
 import (
 	"errors"
+
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 )
@@ -16,11 +17,10 @@ const (
 )
 
 var (
-	keyServerURL string // -u command line option
+	keyServerURI string // -u command line option
 )
 
 func init() {
-	SingularityCmd.AddCommand(KeysCmd)
 	SingularityCmd.AddCommand(KeyCmd)
 
 	// key commands
@@ -29,28 +29,9 @@ func init() {
 	KeyCmd.AddCommand(KeySearchCmd)
 	KeyCmd.AddCommand(KeyPullCmd)
 	KeyCmd.AddCommand(KeyPushCmd)
-
-	// keys commands
-	KeysCmd.AddCommand(KeyNewPairCmd)
-	KeysCmd.AddCommand(KeyListCmd)
-	KeysCmd.AddCommand(KeySearchCmd)
-	KeysCmd.AddCommand(KeyPullCmd)
-	KeysCmd.AddCommand(KeyPushCmd)
-}
-
-// KeysCmd is the 'keys' command that allows management of key stores
-var KeysCmd = &cobra.Command{
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return errors.New("Invalid command")
-	},
-	DisableFlagsInUseLine: true,
-	Hidden:                true,
-
-	Use:           docs.KeysUse,
-	Short:         docs.KeyShort,
-	Long:          docs.KeyLong,
-	Example:       docs.KeyExample,
-	SilenceErrors: true,
+	KeyCmd.AddCommand(KeyImportCmd)
+	KeyCmd.AddCommand(KeyExportCmd)
+	KeyCmd.AddCommand(KeyRemoveCmd)
 }
 
 // KeyCmd is the 'key' command that allows management of key stores
@@ -59,6 +40,7 @@ var KeyCmd = &cobra.Command{
 		return errors.New("Invalid command")
 	},
 	DisableFlagsInUseLine: true,
+	Aliases:               []string{"keys"},
 
 	Use:           docs.KeyUse,
 	Short:         docs.KeyShort,
