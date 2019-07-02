@@ -51,6 +51,7 @@
     - Michael Bauer <m@sylabs.io>, <bauerm@umich.edu>
     - Michael Herzberg <michael@mherzberg.de>
     - Michael Milton <ttmigueltt@gmail.com>
+    - Michael Moore <michael.moore@nuance.com>
     - Nathan Lin <nathan.lin@yale.edu>
     - Oleksandr Moskalenko <om@rc.ufl.edu>
     - Oliver Freyermuth <freyermuth@physik.uni-bonn.de>
@@ -62,6 +63,7 @@
     - Rémy Dernat <remy.dernat@umontpellier.fr>
     - Richard Neuboeck <hawk@tbi.univie.ac.at>
     - Sasha Yakovtseva <sasha@sylabs.io>, <sashayakovtseva@gmail.com>
+    - Satish Chebrolu  <satish@sylabs.io>
     - Tarcisio Fedrizzi <tarcisio.fedrizzi@gmail.com>
     - Thomas Hamel <hmlth@t-hamel.fr>
     - Vanessa Sochat <vsochat@stanford.edu>
