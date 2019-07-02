@@ -1,3 +1,9 @@
+singularity-container (3.2.0-0sci9u1) scibian9; urgency=medium
+
+  * New scibian release.
+
+ -- AMIROUCHE Said <said-externe.amirouche@edf.fr>  Tue, 02 Jul 2019 10:47:43 +0200
+
 singularity-container (3.1.1-0sci9u1) scibian9; urgency=medium
 
   * New uptream version 3.1.1 
