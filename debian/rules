@@ -8,12 +8,12 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 # Causes static variable to become having multiple instances, so we need to strip it away
 # See https://github.com/singularityware/singularity/issues/1947
 export DEB_LDFLAGS_MAINT_STRIP=-Wl,-Bsymbolic-functions
+export GOROOT=/usr/lib/go-1.11/
 export PATH:=/usr/lib/go-1.11/bin:$(CURDIR)/go/bin:$(PATH)
 
 PKGDIR=debian/singularity-container
 export SINGULARITY_CACHEDIR=$(PKGDIR)/var/lib/singularity/cache
-
-export GOPATH=/usr/share/gocode:$(CURDIR)/go
+export GOPATH=$(CURDIR)/go
 SRCDIR = go/src/github.com/sylabs/singularity
 
 export DESTDIR:=$(CURDIR)/$(PKGDIR)/
@@ -26,12 +26,12 @@ override_dh_auto_configure:
 # prepare source directory the way the build system wants it
 # https://www.sylabs.io/guides/3.0/user-guide/quick_start.html#compile-the-singularity-binary
 	mkdir -p $(SRCDIR)
+	unset GOROOT
+
 	find -maxdepth 1 ! -name debian ! -name go ! -name ".git*" ! -name "."\
 	  -exec cp -r -t $(SRCDIR) {} +
 # Prepare and install golint
-	cp -r vendor/golang.org/ go/src
-	cd go/src/golang.org/x/lint/golint \
-	&& go install
+	go get golang.org/x/lint/golint
 # perform the configuration
 	cd $(SRCDIR) \
 	&& ./mconfig \
