@@ -1,3 +1,10 @@
+singularity-container (3.2.0-0sci8u2) scibian8; urgency=medium
+
+  * New release for Calibre9
+  * Fix Golint in rules
+
+ -- AMIROUCHE Said <said-externe.amirouche@edf.fr>  Wed, 10 Jul 2019 16:17:13 +0200
+
 singularity-container (3.2.0-0sci8u1) scibian8; urgency=medium
 
   * New release for Calibre9. 
