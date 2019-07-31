@@ -1,3 +1,10 @@
+singularity-container (3.2.1-0sci9u1.1) scibian9; urgency=medium
+
+  * New upstream version 3.2.1
+  * Add patch to handle gpgkering for debootstrap using DEB_GPG_KEYRING env variable
+
+ -- Cristian RUIZ <cristian-externe.ruiz@edf.fr>  Wed, 31 Jul 2019 08:07:21 +0200
+
 singularity-container (3.2.0-0sci9u1) scibian9; urgency=medium
 
   * New scibian release.
