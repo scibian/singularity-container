@@ -1,0 +1,37 @@
+Index: singularity-container/internal/pkg/build/sources/conveyorPacker_debootstrap.go
+===================================================================
+--- singularity-container.orig/internal/pkg/build/sources/conveyorPacker_debootstrap.go
++++ singularity-container/internal/pkg/build/sources/conveyorPacker_debootstrap.go
+@@ -27,9 +27,9 @@ type DebootstrapConveyorPacker struct {
+ // Get downloads container information from the specified source
+ func (cp *DebootstrapConveyorPacker) Get(b *types.Bundle) (err error) {
+ 	cp.b = b
+-
+ 	// check for debootstrap on system(script using "singularity_which" not sure about its importance)
+ 	debootstrapPath, err := exec.LookPath("debootstrap")
++	cmd_line:= []string{`--variant=minbase`, `--exclude=openssl,udev,debconf-i18n,e2fsprogs`}
+ 	if err != nil {
+ 		return fmt.Errorf("debootstrap is not in PATH... Perhaps 'apt-get install' it: %v", err)
+ 	}
+@@ -42,8 +42,20 @@ func (cp *DebootstrapConveyorPacker) Get
+ 		return fmt.Errorf("You must be root to build with debootstrap")
+ 	}
+ 
++	cmd_line = append(cmd_line,`--include=apt,`+cp.include)
++
++	if os.Getenv("DEB_GPG_KEYRING") != ""{
++		// cmd_line = append(cmd_line,`--no-check-gpg`)
++		cmd_line = append(cmd_line,`--keyring=`+os.Getenv("DEB_GPG_KEYRING"))
++	}
++	cmd_line = append(cmd_line,`--arch=`+runtime.GOARCH)
++	cmd_line = append(cmd_line,cp.osversion)
++	cmd_line = append(cmd_line,cp.b.Rootfs())
++	cmd_line = append(cmd_line,cp.mirrorurl)
++
+ 	// run debootstrap command
+-	cmd := exec.Command(debootstrapPath, `--variant=minbase`, `--exclude=openssl,udev,debconf-i18n,e2fsprogs`, `--include=apt,`+cp.include, `--arch=`+runtime.GOARCH, cp.osversion, cp.b.Rootfs(), cp.mirrorurl)
++	cmd := exec.Command(debootstrapPath,cmd_line...)
++
+ 	cmd.Stdout = os.Stdout
+ 	cmd.Stderr = os.Stderr
+ 
