@@ -44,9 +44,6 @@ override_dh_auto_configure:
 override_dh_auto_build:
 	make -C $(SRCDIR)/builddir
 
-override_dh_auto_test:
-	make -C $(SRCDIR)/builddir check
-
 override_dh_auto_install:
 	make -C $(SRCDIR)/builddir install
 	: # move bash completions into now new standard location
