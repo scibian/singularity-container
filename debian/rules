@@ -18,7 +18,7 @@ SRCDIR = go/src/github.com/sylabs/singularity
 
 export DESTDIR:=$(CURDIR)/$(PKGDIR)/
 export DH_GOPKG=.
-
+export XDG_CACHE_HOME=$(CURDIR)/.cache/
 %:
 	dh $@ --with golang
 
