@@ -1,3 +1,9 @@
+singularity-container (3.2.1-0sci9u2) scibian9; urgency=medium
+
+  * Add variable XDG_CACHE_HOME to set the cache directory when compiling with go
+
+ -- Cristian RUIZ <cristian-externe.ruiz@edf.fr>  Wed, 21 Aug 2019 14:00:41 +0200
+
 singularity-container (3.2.1-0sci9u1.1) scibian9; urgency=medium
 
   * New upstream version 3.2.1
