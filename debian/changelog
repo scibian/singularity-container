@@ -1,3 +1,13 @@
+singularity-container (3.2.1-0sci8u1) scibian8; urgency=medium
+
+  * New upstream version 3.2.1
+  * Add patch to handle gpgkering for debootstrap using DEB_GPG_KEYRING env variable
+  * Remove singularity tests from package building
+  * Add XDG_CACHE_HOME to set the cache directory when compiling with go
+  * Remove golint as most of the code build dont use it	
+
+ -- Cristian RUIZ <cristian-externe.ruiz@edf.fr>  Thu, 22 Aug 2019 10:10:59 +0200
+
 singularity-container (3.2.0-0sci8u2) scibian8; urgency=medium
 
   * New release for Calibre9
