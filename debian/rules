@@ -30,9 +30,6 @@ override_dh_auto_configure:
 
 	find -maxdepth 1 ! -name debian ! -name go ! -name ".git*" ! -name "."\
 	  -exec cp -r -t $(SRCDIR) {} +
-# Prepare and install golint
-	go get golang.org/x/lint/golint
-# perform the configuration
 	cd $(SRCDIR) \
 	&& ./mconfig \
 	-V $(DEB_VERSION_UPSTREAM) \
