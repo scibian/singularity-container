@@ -1,3 +1,9 @@
+singularity-container (3.2.1-0sci9u4) scibian9; urgency=medium
+
+  * Rebuild scibian9 version to include golang security patches update
+
+ -- Cristian RUIZ <cristian-externe.ruiz@edf.fr>  Tue, 11 Feb 2020 15:09:10 +0100
+
 singularity-container (3.2.1-0sci9u3) scibian9; urgency=medium
 
   * Remove singularity tests from package building 
