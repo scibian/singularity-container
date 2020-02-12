@@ -1,3 +1,9 @@
+singularity-container (3.2.1-0sci8u2) scibian8; urgency=medium
+
+  * Rebuild with new version of golang-1.11 which includes security updates
+
+ -- Cristian RUIZ <cristian-externe.ruiz@edf.fr>  Wed, 12 Feb 2020 14:27:30 +0100
+
 singularity-container (3.2.1-0sci8u1) scibian8; urgency=medium
 
   * New upstream version 3.2.1
