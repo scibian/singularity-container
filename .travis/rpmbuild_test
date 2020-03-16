@@ -2,50 +2,32 @@
 
 # this script runs as root under docker
 
-deps_file=".travis/deps/${OS_TYPE}_deps"
-
-if [[ -e "${deps_file}" ]]; then
-    source "${deps_file}"
-else
-    echo "${OS_TYPE} not supported yet, please create ${deps_file}!"
-    exit 1
-fi
-
 # build and install
-install_autogen_deps
-./autogen.sh
+yum install -y rpm-build make yum-utils gcc binutils util-linux-ng which
+yum install -y openssl-devel libuuid-devel libseccomp-devel e2fsprogs
+yum install -y epel-release
+yum install -y golang
 
-# the final spec file is only created after configure, but we need it before to
-# parse it for build dependencies.
-sed 's/@PACKAGE_VERSION@/0/' < singularity.spec.in > singularity_tmp.spec
-
-install_configure_deps
-./configure
-make dist
-rpmbuild -ta *.tar.gz
-
-install_rpms
-
-if [ "$OS_VERSION" = 6 ]; then
-    echo "the python tests have not yet been ported to centos6 python, and will be skipped."
-fi
-
-install_test_deps
-
-# correct test.sh for the ./configure arguments from the %configure macro
-# inside the rpmbuild sandbox
-sed -i "
-s@^prefix=.*@prefix=$(rpm -E '%{_prefix}')@
-s@^libexecdir=.*@libexecdir=$(rpm -E '%{_libexecdir}')@
-s@^sysconfdir=.*@sysconfdir=$(rpm -E '%{_sysconfdir}')@
-s@^localstatedir=.*@localstatedir=$(rpm -E '%{_localstatedir}')@
-" test.sh
-
-# run the test suite
-sed -i 's,^prefix=.*,prefix=/usr,' test.sh
-sed -i 's,^sysconfdir=.*,sysconfdir=/etc,' test.sh
-sed -i 's,^localstatedir=.*,localstatedir=/var,' test.sh
-useradd -u 1000 --create-home testuser
+# switch to an unprivileged user with sudo privileges
+yum install -y sudo
+# We need Git existing here prior to the run
+yum install -y git
+useradd -u 1000 --create-home -s /bin/bash testuser
 echo "Defaults:testuser env_keep=DOCKER_HOST" >>/etc/sudoers
 echo "testuser ALL=(ALL) NOPASSWD: ALL" >>/etc/sudoers
-su testuser -c "make test"
+chown -R testuser .
+
+su testuser -c '
+  set -x
+  set -e
+  ./mconfig
+  sudo yum-builddep -y singularity.spec
+  make -C builddir rpm
+  sudo yum install -y $HOME/rpmbuild/RPMS/*/*.rpm
+  BLD=`echo $HOME/rpmbuild/BUILD/singularity-*`
+  export GOPATH=$BLD/gopath
+  PATH=$GOPATH/bin:$PATH
+
+  cd $GOPATH/src/github.com/sylabs/singularity
+  make -C builddir test
+'
