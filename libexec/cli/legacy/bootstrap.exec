@@ -1,18 +1,23 @@
 #!/bin/bash
-# 
+#
 # Copyright (c) 2017-2018, SyLabs, Inc. All rights reserved.
 # Copyright (c) 2017, SingularityWare, LLC. All rights reserved.
-# 
+#
 # See the COPYRIGHT.md file at the top-level directory of this distribution and at
 # https://github.com/singularityware/singularity/blob/master/COPYRIGHT.md.
-# 
+#
 # This file is part of the Singularity Linux container project. It is subject to the license
 # terms in the LICENSE.md file found in the top-level directory of this distribution and
 # at https://github.com/singularityware/singularity/blob/master/LICENSE.md. No part
 # of Singularity, including this file, may be copied, modified, propagated, or distributed
 # except according to the terms contained in the LICENSE.md file.
 #
-#
+# This file also contains content that is covered under the LBNL/DOE/UC modified
+# 3-clause BSD license and is subject to the license terms in the LICENSE-LBNL.md
+# file found in the top-level directory of this distribution and at
+# https://github.com/singularityware/singularity/blob/master/LICENSE-LBNL.md.
+
+
 
 ## Basic sanity
 if [ -z "$SINGULARITY_libexecdir" ]; then
@@ -35,14 +40,20 @@ SINGULARITY_CHECKLEVEL=3
 while true; do
     case ${1:-} in
         -h|--help|help)
-            exec "$SINGULARITY_libexecdir/singularity/cli/help.exec" "$SINGULARITY_COMMAND"
+            if [ -e "$SINGULARITY_libexecdir/singularity/cli/$SINGULARITY_COMMAND.help" ]; then
+                cat "$SINGULARITY_libexecdir/singularity/cli/$SINGULARITY_COMMAND.help"
+            else
+                message ERROR "No help exists for this command\n"
+                exit 1
+            fi
+            exit
         ;;
         -T|--notest)
             shift
             SINGULARITY_NOTEST=1
             export SINGULARITY_NOTEST
         ;;
-        -f|-F|--force)
+        -f|--force)
             shift
             SINGULARITY_REBOOTSTRAP=1
             export SINGULARITY_REBOOTSTRAP
@@ -52,6 +63,11 @@ while true; do
             SINGULARITY_BUILDSECTION="$1"
             export SINGULARITY_BUILDSECTION
             shift
+        ;;
+        --nobase)
+            shift
+            SINGULARITY_BUILDNOBASE=1
+            export SINGULARITY_BUILDNOBASE
         ;;
         -c|--check|--checks)
             SINGULARITY_CHECKS="yes"
@@ -84,18 +100,11 @@ while true; do
     esac
 done
 
-if [ -f "$SINGULARITY_libexecdir/singularity/cli/$SINGULARITY_COMMAND.info" ]; then
-    . "$SINGULARITY_libexecdir/singularity/cli/$SINGULARITY_COMMAND.info"
-else
-    message ERROR "Could not find the info file for: $SINGULARITY_COMMAND\n"
-    ABORT 255
-fi
-
 if [ -z "${1:-}" ]; then
-    if [ -n "${USAGE:-}" ]; then
-        echo "USAGE: $USAGE"
+    if [ -e "$SINGULARITY_libexecdir/singularity/cli/$SINGULARITY_COMMAND.help" ]; then
+        head -n 1 "$SINGULARITY_libexecdir/singularity/cli/$SINGULARITY_COMMAND.help"
     else
-        echo "To see usage summary type: singularity help $SINGULARITY_COMMAND"
+        message ERROR "To see usage summary, try: singularity help $SINGULARITY_COMMAND\n"
     fi
     exit 0
 fi
@@ -108,18 +117,10 @@ export SINGULARITY_IMAGE SINGULARITY_WRITABLE SINGULARITY_BUILDDEF SINGUARITY_li
 shift
 shift
 
-message WARNING "The bootstrap command is deprecated and will be removed in a future release.\n"
-message WARNING "Use the build command like so:\n"
-message WARNING "singularity build ${SINGULARITY_IMAGE} ${SINGULARITY_BUILDDEF}\n"
-
-if [ -x "${SINGULARITY_bindir}/singularity" -a -n "${SINGULARITY_REBOOTSTRAP:-}" ]; then
-    ${SINGULARITY_bindir}/singularity build -f -w  ${SINGULARITY_IMAGE} ${SINGULARITY_BUILDDEF}
-    exit 0
-elif [ -x "${SINGULARITY_bindir}/singularity" ]; then
-    ${SINGULARITY_bindir}/singularity build -w  ${SINGULARITY_IMAGE} ${SINGULARITY_BUILDDEF}
-    exit 0
+if [ -x "$SINGULARITY_libexecdir/singularity/bin/bootstrap" ]; then
+    exec "$SINGULARITY_libexecdir/singularity/bin/bootstrap"
 else
-    message ERROR "Could not locate the Singularity binary: $SINGULARITY_bindir/singularity\n"
+    message ERROR "Could not locate the Singularity binary: $SINGULARITY_libexecdir/singularity/bin/bootstrap\n"
     exit 1
 fi
 
