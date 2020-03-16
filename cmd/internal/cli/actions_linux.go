@@ -8,6 +8,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -17,23 +18,38 @@ import (
 	"time"
 
 	"github.com/opencontainers/runtime-tools/generate"
-	"github.com/sylabs/singularity/internal/pkg/util/nvidiautils"
+	"github.com/sylabs/singularity/internal/pkg/plugin"
 	"github.com/sylabs/singularity/pkg/image"
 	"github.com/sylabs/singularity/pkg/image/unpacker"
+	"github.com/sylabs/singularity/pkg/util/nvidia"
 
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/instance"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engines/config"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engines/config/oci"
-	singularityConfig "github.com/sylabs/singularity/internal/pkg/runtime/engines/singularity/config"
 	"github.com/sylabs/singularity/internal/pkg/security"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/env"
 	"github.com/sylabs/singularity/internal/pkg/util/exec"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
+	singularityConfig "github.com/sylabs/singularity/pkg/runtime/engines/singularity/config"
 )
+
+// EnsureRootPriv ensures that a command is executed with root privileges.
+// To customize the output, arguments can be used to specify the context (e.g., "oci", "plugin"),
+// where the first argument (string) will be displayed before the command itself.
+func EnsureRootPriv(cmd *cobra.Command, args []string) {
+	if os.Geteuid() != 0 {
+		if len(args) >= 1 && len(args[0]) > 0 {
+			// The first argument is the context
+			sylog.Fatalf("command '%s %s' requires root privileges", args[0], cmd.Name())
+		} else {
+			sylog.Fatalf("command %s requires root privileges", cmd.Name())
+		}
+	}
+}
 
 func convertImage(filename string, unsquashfsPath string) (string, error) {
 	img, err := image.Init(filename, false)
@@ -41,6 +57,10 @@ func convertImage(filename string, unsquashfsPath string) (string, error) {
 		return "", fmt.Errorf("could not open image %s: %s", filename, err)
 	}
 	defer img.File.Close()
+
+	if !img.HasRootFs() {
+		return "", fmt.Errorf("no root filesystem found in %s", filename)
+	}
 
 	// squashfs only
 	if img.Partitions[0].Type != image.SQUASHFS {
@@ -152,14 +172,15 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 	})
 
 	if strings.HasPrefix(image, "instance://") {
+		if name != "" {
+			sylog.Fatalf("Starting an instance from another is not allowed")
+		}
 		instanceName := instance.ExtractName(image)
 		file, err := instance.Get(instanceName, instance.SingSubDir)
 		if err != nil {
 			sylog.Fatalf("%s", err)
 		}
-		if !file.Privileged {
-			UserNamespace = true
-		}
+		UserNamespace = file.UserNs
 		generator.AddProcessEnv("SINGULARITY_CONTAINER", file.Image)
 		generator.AddProcessEnv("SINGULARITY_NAME", filepath.Base(file.Image))
 		engineConfig.SetImage(image)
@@ -182,9 +203,9 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 			sylog.Verbosef("binding nvidia files into container")
 		}
 
-		libs, bins, err := nvidiautils.GetNvidiaPath(buildcfg.SINGULARITY_CONFDIR, userPath)
+		libs, bins, err := nvidia.Paths(buildcfg.SINGULARITY_CONFDIR, userPath)
 		if err != nil {
-			sylog.Infof("Unable to capture nvidia bind points: %v", err)
+			sylog.Warningf("Unable to capture NVIDIA bind points: %v", err)
 		} else {
 			if len(bins) == 0 {
 				sylog.Infof("Could not find any NVIDIA binaries on this host!")
@@ -332,7 +353,10 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		if err != nil {
 			sylog.Fatalf("failed to retrieve user information for UID %d: %s", os.Getuid(), err)
 		}
-		procname = instance.ProcName(name, pwd.Name)
+		procname, err = instance.ProcName(name, pwd.Name)
+		if err != nil {
+			sylog.Fatalf("%s", err)
+		}
 	} else {
 		generator.SetProcessArgs(args)
 		procname = "Singularity runtime parent"
@@ -417,6 +441,8 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		generator.AddProcessEnv("SINGULARITY_CONTAINER", dir)
 	}
 
+	plugin.FlagHookCallbacks(engineConfig)
+
 	cfg := &config.Common{
 		EngineName:   singularityConfig.Name,
 		ContainerID:  name,
@@ -429,17 +455,21 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 	}
 
 	if engineConfig.GetInstance() {
-		stdout, stderr, err := instance.SetLogFile(name, int(uid), instance.SingSubDir)
+		stdout, stderr, err := instance.SetLogFile(name, int(uid), instance.LogSubDir)
 		if err != nil {
 			sylog.Fatalf("failed to create instance log files: %s", err)
 		}
 
-		start, err := stderr.Seek(0, os.SEEK_END)
+		start, err := stderr.Seek(0, io.SeekEnd)
 		if err != nil {
 			sylog.Warningf("failed to get standard error stream offset: %s", err)
 		}
 
 		cmd, err := exec.PipeCommand(starter, []string{procname}, Env, configData)
+		if err != nil {
+			sylog.Warningf("failed to prepare command: %s", err)
+		}
+
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 
@@ -450,7 +480,7 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 			// by instance process, wait a bit to catch all errors
 			time.Sleep(100 * time.Millisecond)
 
-			end, err := stderr.Seek(0, os.SEEK_END)
+			end, err := stderr.Seek(0, io.SeekEnd)
 			if err != nil {
 				sylog.Warningf("failed to get standard error stream offset: %s", err)
 			}

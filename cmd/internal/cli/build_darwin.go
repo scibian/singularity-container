@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -27,9 +27,11 @@ func run(cmd *cobra.Command, args []string) {
 		sylog.Fatalf("Only remote builds are supported on this platform")
 	}
 
+	handleRemoteBuildFlags(cmd)
+
 	// Submiting a remote build requires a valid authToken
 	if authToken == "" {
-		sylog.Fatalf("Unable to submit build job: %v", authWarning)
+		sylog.Fatalf("Unable to submit build job: %v", remoteWarning)
 	}
 
 	def, err := definitionFromSpec(spec)
