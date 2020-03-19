@@ -1,7 +1,12 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
+
+// This file is been deprecated and will disappear on with version 3.3
+// of singularity. The functionality has been moved to e2e/imgbuild/imgbuild.go
+
+// +build integration_test
 
 package main
 
@@ -18,10 +23,36 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sylabs/singularity/internal/pkg/client/cache"
 	"github.com/sylabs/singularity/internal/pkg/test"
+	testCache "github.com/sylabs/singularity/internal/pkg/test/tool/cache"
 )
 
 var testFileContent = "Test file content\n"
+
+func setupCache(t *testing.T) (*cache.Handle, func()) {
+	dir := testCache.MakeDir(t, "")
+	h, err := cache.NewHandle(cache.Config{BaseDir: dir})
+	if err != nil {
+		testCache.DeleteDir(t, dir)
+		t.Fatalf("failed to create an image cache handle: %s", err)
+	}
+	return h, func() {
+		testCache.DeleteDir(t, dir)
+	}
+}
+
+func setupCmdCache(t *testing.T, cmd *exec.Cmd, tag string) {
+	dir, err := ioutil.TempDir("", tag+"-")
+	if err != nil {
+		t.Fatalf("failed to create temporary directory: %s", err)
+	}
+	env := cache.DirEnv + "=" + dir
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, env)
+}
 
 func imageVerify(t *testing.T, imagePath string, labels bool) {
 	type testSpec struct {
@@ -30,17 +61,52 @@ func imageVerify(t *testing.T, imagePath string, labels bool) {
 		expectSuccess bool
 	}
 	tests := []testSpec{
-		{"False", []string{"false"}, false},
-		{"RunScript", []string{"test", "-f", "/.singularity.d/runscript"}, true},
-		{"OneBase", []string{"test", "-f", "/.singularity.d/env/01-base.sh"}, true},
-		{"ActionsShell", []string{"test", "-f", "/.singularity.d/actions/shell"}, true},
-		{"ActionsExec", []string{"test", "-f", "/.singularity.d/actions/exec"}, true},
-		{"ActionsRun", []string{"test", "-f", "/.singularity.d/actions/run"}, true},
-		{"Environment", []string{"test", "-L", "/environment"}, true},
-		{"Singularity", []string{"test", "-L", "/singularity"}, true},
+		{
+			name:     "False",
+			execArgs: []string{"false"},
+		},
+		{
+			name:          "RunScript",
+			execArgs:      []string{"test", "-f", "/.singularity.d/runscript"},
+			expectSuccess: true,
+		},
+		{
+			name:          "OneBase",
+			execArgs:      []string{"test", "-f", "/.singularity.d/env/01-base.sh"},
+			expectSuccess: true,
+		},
+		{
+			name:          "ActionsShell",
+			execArgs:      []string{"test", "-f", "/.singularity.d/actions/shell"},
+			expectSuccess: true,
+		},
+		{
+			name:          "ActionsExec",
+			execArgs:      []string{"test", "-f", "/.singularity.d/actions/exec"},
+			expectSuccess: true,
+		},
+		{
+			name:          "ActionsRun",
+			execArgs:      []string{"test", "-f", "/.singularity.d/actions/run"},
+			expectSuccess: true,
+		},
+		{
+			name:          "Environment",
+			execArgs:      []string{"test", "-L", "/environment"},
+			expectSuccess: true,
+		},
+		{
+			name:          "Singularity",
+			execArgs:      []string{"test", "-L", "/singularity"},
+			expectSuccess: true,
+		},
 	}
 	if labels && *runDisabled { // TODO
-		tests = append(tests, testSpec{"Labels", []string{"test", "-f", "/.singularity.d/labels.json"}, true})
+		tests = append(tests, testSpec{
+			name:          "Labels",
+			execArgs:      []string{"test", "-f", "/.singularity.d/labels.json"},
+			expectSuccess: true,
+		})
 	}
 
 	for _, tt := range tests {
@@ -63,7 +129,7 @@ type buildOpts struct {
 	env     []string
 }
 
-func imageBuild(opts buildOpts, imagePath, buildSpec string) ([]byte, error) {
+func imageBuild(imgCache *cache.Handle, opts buildOpts, imagePath, buildSpec string) ([]byte, error) {
 	var argv []string
 	argv = append(argv, "build")
 	if opts.force {
@@ -74,8 +140,11 @@ func imageBuild(opts buildOpts, imagePath, buildSpec string) ([]byte, error) {
 	}
 	argv = append(argv, imagePath, buildSpec)
 
+	cacheEnvStr := cache.DirEnv + "=" + imgCache.GetBasedir()
+
 	cmd := exec.Command(cmdPath, argv...)
-	cmd.Env = opts.env
+	cmd.Env = append(opts.env, cacheEnvStr)
+	cmd.Env = append(cmd.Env, os.Environ()...)
 
 	return cmd.CombinedOutput()
 }
@@ -87,16 +156,51 @@ func TestBuild(t *testing.T) {
 		buildSpec  string
 		sandbox    bool
 	}{
-		{"BusyBox", "", "../../examples/busybox/Singularity", false},
-		{"BusyBoxSandbox", "", "../../examples/busybox/Singularity", true},
-		{"Debootstrap", "debootstrap", "../../examples/debian/Singularity", true},
-		{"DockerURI", "", "docker://busybox", true},
-		{"DockerDefFile", "", "../../examples/docker/Singularity", true},
-		{"SHubURI", "", "shub://GodloveD/busybox", true},
-		{"SHubDefFile", "", "../../examples/shub/Singularity", true},
-		{"LibraryDefFile", "", "../../examples/library/Singularity", true},
-		{"Yum", "yum", "../../examples/centos/Singularity", true},
-		{"Zypper", "zypper", "../../examples/opensuse/Singularity", true},
+		{
+			name:      "BusyBox",
+			buildSpec: "../../examples/busybox/Singularity",
+		},
+		{
+			name:      "BusyBoxSandbox",
+			buildSpec: "../../examples/busybox/Singularity",
+			sandbox:   true,
+		},
+		{
+			name:       "Debootstrap",
+			dependency: "debootstrap",
+			buildSpec:  "../../examples/debian/Singularity",
+			sandbox:    true,
+		},
+		{
+			name:      "DockerURI",
+			buildSpec: "docker://busybox",
+			sandbox:   true,
+		},
+		{
+			name:      "DockerDefFile",
+			buildSpec: "../../examples/docker/Singularity",
+			sandbox:   true,
+		},
+		{
+			name:      "LibraryDefFile",
+			buildSpec: "../../examples/library/Singularity",
+			sandbox:   true,
+		},
+		{
+			name:       "Yum",
+			dependency: "yum",
+			buildSpec:  "../../examples/centos/Singularity",
+			sandbox:    true,
+		},
+		{
+			name:       "Zypper",
+			dependency: "zypper",
+			buildSpec:  "../../examples/opensuse/Singularity",
+			sandbox:    true,
+		},
+		// TODO(mem): reenable this; disabled while shub is down
+		// {"SHubURI", "", "shub://GodloveD/busybox", true},
+		// {"SHubDefFile", "", "../../examples/shub/Singularity", true},
 	}
 
 	for _, tt := range tests {
@@ -107,6 +211,10 @@ func TestBuild(t *testing.T) {
 				}
 			}
 
+			// Set a clean image cache for every test
+			imgCache, cleanup := setupCache(t)
+			defer cleanup()
+
 			opts := buildOpts{
 				sandbox: tt.sandbox,
 			}
@@ -114,7 +222,7 @@ func TestBuild(t *testing.T) {
 			imagePath := path.Join(testDir, "container")
 			defer os.RemoveAll(imagePath)
 
-			if b, err := imageBuild(opts, imagePath, tt.buildSpec); err != nil {
+			if b, err := imageBuild(imgCache, opts, imagePath, tt.buildSpec); err != nil {
 				t.Log(string(b))
 				t.Fatalf("unexpected failure: %v", err)
 			}
@@ -188,7 +296,11 @@ func TestMultipleBuilds(t *testing.T) {
 						sandbox: ts.sandbox,
 					}
 
-					if b, err := imageBuild(opts, ts.imagePath, ts.buildSpec); err != nil {
+					// Set a clean image cache for every tests
+					imgCache, cleanup := setupCache(t)
+					defer cleanup()
+
+					if b, err := imageBuild(imgCache, opts, ts.imagePath, ts.buildSpec); err != nil {
 						t.Log(string(b))
 						t.Fatalf("unexpected failure: %v", err)
 					}
@@ -202,10 +314,14 @@ func TestMultipleBuilds(t *testing.T) {
 func TestBadPath(t *testing.T) {
 	test.EnsurePrivilege(t)
 
+	// Set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+
 	imagePath := path.Join(testDir, "container")
 	defer os.RemoveAll(imagePath)
 
-	if b, err := imageBuild(buildOpts{}, imagePath, "/some/dumb/path"); err == nil {
+	if b, err := imageBuild(imgCache, buildOpts{}, imagePath, "/some/dumb/path"); err == nil {
 		t.Log(string(b))
 		t.Fatal("unexpected success")
 	}
@@ -234,40 +350,46 @@ func TestMultiStageDefinition(t *testing.T) {
 		correct DefFileDetail // a bit hacky, but this allows us to check final image for correct artifacts
 	}{
 		// Simple copy from stage one to final stage
-		{"FileCopySimple", false, true, []DefFileDetail{
-			{
-				Bootstrap: "docker",
-				From:      "alpine:latest",
-				Stage:     "one",
-				Files: []FilePair{
-					{
-						Src: tmpfile.Name(),
-						Dst: "StageOne2.txt",
+		{
+			name:    "FileCopySimple",
+			sandbox: true,
+			dfd: []DefFileDetail{
+				{
+					Bootstrap: "docker",
+					From:      "alpine:latest",
+					Stage:     "one",
+					Files: []FilePair{
+						{
+							Src: tmpfile.Name(),
+							Dst: "StageOne2.txt",
+						},
+						{
+							Src: tmpfile.Name(),
+							Dst: "StageOne.txt",
+						},
 					},
-					{
-						Src: tmpfile.Name(),
-						Dst: "StageOne.txt",
+				},
+				{
+					Bootstrap: "docker",
+					From:      "alpine:latest",
+					FilesFrom: []FileSection{
+						{
+							Stage: "one",
+							Files: []FilePair{
+								{
+									Src: "StageOne2.txt",
+									Dst: "StageOneCopy2.txt",
+								},
+								{
+									Src: "StageOne.txt",
+									Dst: "StageOneCopy.txt",
+								},
+							},
+						},
 					},
 				},
 			},
-			{
-				Bootstrap: "docker",
-				From:      "alpine:latest",
-				FilesFrom: []FileSection{
-					{
-						"one",
-						[]FilePair{
-							{
-								Src: "StageOne2.txt",
-								Dst: "StageOneCopy2.txt",
-							},
-							{
-								Src: "StageOne.txt",
-								Dst: "StageOneCopy.txt",
-							},
-						}}},
-			}},
-			DefFileDetail{
+			correct: DefFileDetail{
 				Files: []FilePair{
 					{
 						Src: tmpfile.Name(),
@@ -281,8 +403,10 @@ func TestMultiStageDefinition(t *testing.T) {
 			},
 		},
 		// Complex copy of files from stage one and two to stage three, then final copy from three to final stage
-		{"FileCopyComplex", false, true,
-			[]DefFileDetail{
+		{
+			name:    "FileCopyComplex",
+			sandbox: true,
+			dfd: []DefFileDetail{
 				{
 					Bootstrap: "docker",
 					From:      "alpine:latest",
@@ -342,7 +466,8 @@ func TestMultiStageDefinition(t *testing.T) {
 									Dst: "StageTwoCopy.txt",
 								},
 							},
-						}},
+						},
+					},
 				},
 				{
 					Bootstrap: "docker",
@@ -367,10 +492,12 @@ func TestMultiStageDefinition(t *testing.T) {
 									Src: "StageTwoCopy.txt",
 									Dst: "StageTwoCopyFinal.txt",
 								},
-							}}},
+							},
+						},
+					},
 				},
 			},
-			DefFileDetail{
+			correct: DefFileDetail{
 				Files: []FilePair{
 					{
 						Src: tmpfile.Name(),
@@ -406,7 +533,11 @@ func TestMultiStageDefinition(t *testing.T) {
 			imagePath := path.Join(testDir, "container")
 			defer os.RemoveAll(imagePath)
 
-			if b, err := imageBuild(opts, imagePath, defFile); err != nil {
+			// Set a clean image cache for every test
+			imgCache, cleanup := setupCache(t)
+			defer cleanup()
+
+			if b, err := imageBuild(imgCache, opts, imagePath, defFile); err != nil {
 				t.Log(string(b))
 				t.Fatalf("unexpected failure: %v", err)
 			}
@@ -696,6 +827,9 @@ func TestBuildDefinition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, test.WithPrivilege(func(t *testing.T) {
+			// Set a clean image cache for every test
+			imgCache, cleanup := setupCache(t)
+			defer cleanup()
 
 			defFile := prepareDefFile(tt.dfd)
 			defer os.Remove(defFile)
@@ -707,7 +841,7 @@ func TestBuildDefinition(t *testing.T) {
 			imagePath := path.Join(testDir, "container")
 			defer os.RemoveAll(imagePath)
 
-			if b, err := imageBuild(opts, imagePath, defFile); err != nil {
+			if b, err := imageBuild(imgCache, opts, imagePath, defFile); err != nil {
 				t.Log(string(b))
 				t.Fatalf("unexpected failure: %v", err)
 			}
@@ -910,11 +1044,11 @@ func verifyFile(t *testing.T, original, copy string) error {
 	}
 
 	if ofi.Size() != cfi.Size() {
-		return fmt.Errorf("Incorrect file sizes. Original: %v, Copy: %v", ofi.Size(), cfi.Size())
+		return fmt.Errorf("incorrect file sizes. original: %v, copy: %v", ofi.Size(), cfi.Size())
 	}
 
 	if ofi.Mode() != cfi.Mode() {
-		return fmt.Errorf("Incorrect file modes. Original: %v, Copy: %v", ofi.Mode(), cfi.Mode())
+		return fmt.Errorf("incorrect file modes. original: %v, copy: %v", ofi.Mode(), cfi.Mode())
 	}
 
 	o, err := ioutil.ReadFile(original)
@@ -928,7 +1062,7 @@ func verifyFile(t *testing.T, original, copy string) error {
 	}
 
 	if !bytes.Equal(o, c) {
-		return fmt.Errorf("Incorrect file content")
+		return fmt.Errorf("incorrect file content")
 	}
 
 	return nil
@@ -942,7 +1076,7 @@ func verifyHelp(t *testing.T, fileName string, contents []string) error {
 
 	// do perm check
 	if fi.Mode().Perm() != 0644 {
-		return fmt.Errorf("Incorrect help script perms: %v", fi.Mode().Perm())
+		return fmt.Errorf("incorrect help script perms: %v", fi.Mode().Perm())
 	}
 
 	s, err := ioutil.ReadFile(fileName)
@@ -953,7 +1087,7 @@ func verifyHelp(t *testing.T, fileName string, contents []string) error {
 	helpScript := string(s)
 	for _, c := range contents {
 		if !strings.Contains(helpScript, c) {
-			return fmt.Errorf("Missing help script content")
+			return fmt.Errorf("missing help script content")
 		}
 	}
 
@@ -968,7 +1102,7 @@ func verifyScript(t *testing.T, fileName string, contents []string) error {
 
 	// do perm check
 	if fi.Mode().Perm() != 0755 {
-		return fmt.Errorf("Incorrect script perms: %v", fi.Mode().Perm())
+		return fmt.Errorf("incorrect script perms: %v", fi.Mode().Perm())
 	}
 
 	s, err := ioutil.ReadFile(fileName)
@@ -979,7 +1113,7 @@ func verifyScript(t *testing.T, fileName string, contents []string) error {
 	script := string(s)
 	for _, c := range contents {
 		if !strings.Contains(script, c) {
-			return fmt.Errorf("Missing script content")
+			return fmt.Errorf("missing script content")
 		}
 	}
 
@@ -993,7 +1127,13 @@ func verifyEnv(t *testing.T, imagePath string, env []string, flags []string) err
 	}
 	args = append(args, imagePath, "env")
 
+	// We always prefer to run tests with a clean temporary image cache rather
+	// than using the cache of the user running the test.
+	// In order to unit test using the singularity cli that is thread-safe,
+	// we prepare a temporary cache that the process running the command will
+	// use.
 	cmd := exec.Command(cmdPath, args...)
+	setupCmdCache(t, cmd, "image-cache")
 	b, err := cmd.CombinedOutput()
 
 	out := string(b)
@@ -1004,7 +1144,7 @@ func verifyEnv(t *testing.T, imagePath string, env []string, flags []string) err
 
 	for _, e := range env {
 		if !strings.Contains(out, e) {
-			return fmt.Errorf("Environment is missing: %v", e)
+			return fmt.Errorf("environment is missing: %v", e)
 		}
 	}
 
@@ -1025,7 +1165,7 @@ func verifyLabels(t *testing.T, imagePath string, labels map[string]string) erro
 
 	for k, v := range labels {
 		if l, ok := fileLabels[k]; !ok || v != l {
-			return fmt.Errorf("Missing label: %v:%v", k, v)
+			return fmt.Errorf("missing label: %v:%v", k, v)
 		}
 	}
 
@@ -1038,7 +1178,7 @@ func verifyLabels(t *testing.T, imagePath string, labels map[string]string) erro
 
 	for _, l := range defaultLabels {
 		if _, ok := fileLabels[l]; !ok {
-			return fmt.Errorf("Missing label: %v", l)
+			return fmt.Errorf("missing label: %v", l)
 		}
 	}
 
@@ -1059,7 +1199,7 @@ func verifyAppLabels(t *testing.T, imagePath, appName string, labels map[string]
 
 	for k, v := range labels {
 		if l, ok := fileLabels[k]; !ok || v != l {
-			return fmt.Errorf("Missing label: %v:%v", k, v)
+			return fmt.Errorf("missing label: %v:%v", k, v)
 		}
 	}
 

@@ -60,7 +60,8 @@ Enterprise Performance Computing (EPC)`
 
       library://  an image library (default https://cloud.sylabs.io/library)
       docker://   a Docker registry (default Docker Hub)
-      shub://     a Singularity registry (default Singularity Hub)`
+      shub://     a Singularity registry (default Singularity Hub)
+      oras://     a supporting OCI registry`
 
 	BuildExample string = `
 
@@ -162,7 +163,8 @@ Enterprise Performance Computing (EPC)`
 	CacheUse   string = `cache`
 	CacheShort string = `Manage the local cache`
 	CacheLong  string = `
-  Manage your local singularity cache. You can list/clean using the specific types.`
+  Manage your local Singularity cache. You can list/clean using the specific 
+  types.`
 	CacheExample string = `
   All group commands have their own help output:
 
@@ -175,8 +177,11 @@ Enterprise Performance Computing (EPC)`
 	CacheCleanUse   string = `clean [clean options...]`
 	CacheCleanShort string = `Clean your local Singularity cache`
 	CacheCleanLong  string = `
-  This will clean your local cache (stored at $HOME/.singularity/cache if SINGULARITY_CACHEDIR is not set).
-  By default only blob cache is cleaned, use '--all' to clean the entire cache.`
+  This will clean your local cache (stored at $HOME/.singularity/cache if
+  SINGULARITY_CACHEDIR is not set). By default the entire cache is cleaned, use
+  --name or --type flags to override this behavior. Note: if you use Singularity
+  as root, cache will be stored in '/root/.singularity/.cache', to clean that
+  cache, you will need to run 'cache clean --all' as root, or with 'sudo'.`
 	CacheCleanExample string = `
   All group commands have their own help output:
 
@@ -190,7 +195,8 @@ Enterprise Performance Computing (EPC)`
 	CacheListUse   string = `list [list options...]`
 	CacheListShort string = `List your local Singularity cache`
 	CacheListLong  string = `
-  This will list your local cache (stored at $HOME/.singularity/cache if SINGULARITY_CACHEDIR is not set).`
+  This will list your local cache (stored at $HOME/.singularity/cache if
+  SINGULARITY_CACHEDIR is not set).`
 	CacheListExample string = `
   All group commands have their own help output:
 
@@ -204,8 +210,8 @@ Enterprise Performance Computing (EPC)`
 	KeyUse   string = `key [key options...]`
 	KeyShort string = `Manage OpenPGP keys`
 	KeyLong  string = `
-  Manage OpenPGP keys both locally via a Singularity keychain
-  and remotely via a Sylabs Cloud Keystore.`
+  Manage your trusted, public and private keys in your keyring
+  (default: '~/.singularity/sypgp' if 'SINGULARITY_SYPGPDIR' is not set.)`
 	KeyExample string = `
   All group commands have their own help output:
 
@@ -221,28 +227,26 @@ Enterprise Performance Computing (EPC)`
 	KeyImportUse   string = `import [import options...] <input-key>`
 	KeyImportShort string = `Import a local key into the local keyring`
 	KeyImportLong  string = `
-  The 'key import' command allows you to add a key to your local keyring
-  from a specific file.`
+  The 'key import' command allows you to add a key to your local keyring from a 
+  specific file.`
 	KeyImportExample string = `
-  $ singularity key import ./my-key.asc
-  `
+  $ singularity key import ./my-key.asc`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// key export
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	KeyExportUse   string = `export [export options...] <key-fingerprint> <output-file>`
+	KeyExportUse   string = `export [export options...] <output-file>`
 	KeyExportShort string = `Export a public or private key into a specific file`
 	KeyExportLong  string = `
   The 'key export' command allows you to export a key and save it to a file.`
 	KeyExportExample string = `
   Exporting a private key:
   
-  $ singularity key export --secret <path_to_file>
+  $ singularity key export --secret ./private.asc
 
   Exporting a public key:
   
-  $ singularity key export <path_to_file>
-  `
+  $ singularity key export ./public.asc`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// key newpair
@@ -254,7 +258,8 @@ Enterprise Performance Computing (EPC)`
   keys to be stored in the default user local key store location (e.g., 
   $HOME/.singularity/sypgp).`
 	KeyNewPairExample string = `
-  $ singularity key newpair`
+  $ singularity key newpair
+  $ singularity key newpair --password=psk --name=your-name --comment="key comment" --email=mail@email.com --push=false`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// key list
@@ -262,10 +267,11 @@ Enterprise Performance Computing (EPC)`
 	KeyListUse   string = `list`
 	KeyListShort string = `List keys in your local keyring`
 	KeyListLong  string = `
-  The 'key list' command allows you to list public/private keys from the 
-  default user's local keyring location (i.e., $HOME/.singularity/sypgp).`
+  List your local keys in your keyring. Will list public (trusted) keys
+  by default.`
 	KeyListExample string = `
-  $ singularity key list`
+  $ singularity key list
+  $ singularity key list --secret`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// key search
@@ -274,17 +280,16 @@ Enterprise Performance Computing (EPC)`
 	KeySearchShort string = `Search for keys on a key server`
 	KeySearchLong  string = `
   The 'key search' command allows you to connect to a key server and look for
-  public keys matching the argument passed to the command line. You can
-  also search for a key by fingerprint or key ID by adding '0x' before the
-  fingerprint. (Maximum 100 search entities)`
+  public keys matching the argument passed to the command line. You can  
+  search by name, email, or fingerprint / key ID. (Maximum 100 search entities)`
 	KeySearchExample string = `
   $ singularity key search sylabs.io
 
-  # note the '0x' before the fingerprint:
-  $ singularity key search 0x8883491F4268F173C6E5DC49EDECE4F3F38D871E
+  # search by fingerprint:
+  $ singularity key search 8883491F4268F173C6E5DC49EDECE4F3F38D871E
 
-  # search by key ID: (again, there's '0x' before the ID)
-  $ singularity key search 0xF38D871E`
+  # search by key ID:
+  $ singularity key search F38D871E`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// key pull
@@ -304,19 +309,31 @@ Enterprise Performance Computing (EPC)`
 	KeyPushUse   string = `push [push options...] <fingerprint>`
 	KeyPushShort string = `Upload a public key to a key server`
 	KeyPushLong  string = `
-  The 'key push' command allows you to connect to a key server and upload 
-  public keys from the local key store.`
+  The 'key push' command allows you to connect to a key server and upload public
+  keys from the local key store.`
 	KeyPushExample string = `
   $ singularity key push 8883491F4268F173C6E5DC49EDECE4F3F38D871E`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// key remove
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	KeyRemoveUse     string = `remove <fingerprint>`
-	KeyRemoveShort   string = `Remove a local public key from your keyring`
-	KeyRemoveLong    string = `The 'key remove' command will remove a local public key.`
+	KeyRemoveUse   string = `remove <fingerprint>`
+	KeyRemoveShort string = `Remove a local public key from your keyring`
+	KeyRemoveLong  string = `
+  The 'key remove' command will remove a local public key from
+  your keyring.`
 	KeyRemoveExample string = `
   $ singularity key remove D87FE3AF5C1F063FCBCC9B02F812842B5EEE5934`
+
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// delete
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	DeleteUse   string = `delete [arch] <imageRef>`
+	DeleteShort string = `Deletes requested image from the library`
+	DeleteLong  string = `
+  The 'delete' command allows you to delete an image from a remote library.`
+	DeleteExample string = `
+  $ singularity delete --arch=amd64 library://username/project/image:1.0`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// capability
@@ -327,7 +344,10 @@ Enterprise Performance Computing (EPC)`
   Capabilities allow you to have fine grained control over the permissions that
   your containers need to run.
 
-  NOTE: capability add/drop commands requires root to run.`
+  NOTE: capability add/drop commands require root to run. Granting capabilities 
+  to users allows them to escalate privilege inside the container and will
+  likely give them a route to privilege escalation on the host system as well.
+  Do not add capabilities to users who should not have root on the host system.`
 	CapabilityExample string = `
   All group commands have their own help output:
 
@@ -340,9 +360,11 @@ Enterprise Performance Computing (EPC)`
 	CapabilityAddUse   string = `add [add options...] <capabilities>`
 	CapabilityAddShort string = `Add capabilities to a user or group (requires root)`
 	CapabilityAddLong  string = `
-  Add Linux capabilities to a user or group. NOTE: This command requires root to run.
+  Add Linux capabilities to a user or group. NOTE: This command requires root to 
+  run.
 
-  The capabilities argument must be separated by commas and is not case sensitive.
+  The capabilities argument must be separated by commas and is not case 
+  sensitive.
 
   To see available capabilities, type "singularity capability avail" or refer to
   capabilities manual "man 7 capabilities".`
@@ -360,9 +382,11 @@ Enterprise Performance Computing (EPC)`
 	CapabilityDropUse   string = `drop [drop options...] <capabilities>`
 	CapabilityDropShort string = `Remove capabilities from a user or group (requires root)`
 	CapabilityDropLong  string = `
-  Remove Linux capabilities from an user/group. NOTE: This command requires root to run.
+  Remove Linux capabilities from a user/group. NOTE: This command requires root 
+  to run.
 
-  The capabilities argument must be separated by commas and is not case sensitive.
+  The capabilities argument must be separated by commas and is not case 
+  sensitive.
 
   To see available capabilities, type "singularity capability avail" or refer to
   capabilities manual "man 7 capabilities"`
@@ -432,7 +456,9 @@ Enterprise Performance Computing (EPC)`
 
   docker://*          A container hosted on Docker Hub
 
-  shub://*            A container hosted on Singularity Hub`
+  shub://*            A container hosted on Singularity Hub
+
+  oras://*            A container hosted on a supporting OCI registry`
 	ExecUse   string = `exec [exec options...] <container> <command>`
 	ExecShort string = `Run a command within a container`
 	ExecLong  string = `
@@ -462,20 +488,27 @@ Enterprise Performance Computing (EPC)`
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// instance list
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	InstanceListUse   string = `list [list options...]`
+	InstanceListUse   string = `list [list options...] [<instance name glob>]`
 	InstanceListShort string = `List all running and named Singularity instances`
 	InstanceListLong  string = `
   The instance list command allows you to view the Singularity container
   instances that are currently running in the background.`
 	InstanceListExample string = `
   $ singularity instance list
-  DAEMON NAME      PID      CONTAINER IMAGE
-  test            11963     /home/mibauer/singularity/sinstance/test.sif
+  INSTANCE NAME      PID       IMAGE
+  test               11963     /home/mibauer/singularity/sinstance/test.sif
+  test2              11964     /home/mibauer/singularity/sinstance/test.sif
+  lolcow             11965     /home/mibauer/singularity/sinstance/lolcow.sif
+
+  $ singularity instance list 'test*'
+  INSTANCE NAME      PID       IMAGE
+  test               11963     /home/mibauer/singularity/sinstance/test.sif
+  test2              11964     /home/mibauer/singularity/sinstance/test.sif
 
   $ sudo singularity instance list -u mibauer
-  DAEMON NAME      PID      CONTAINER IMAGE
-  test            11963     /home/mibauer/singularity/sinstance/test.sif
-  test2           16219     /home/mibauer/singularity/sinstance/test.sif`
+  INSTANCE NAME      PID       IMAGE
+  test               11963     /home/mibauer/singularity/sinstance/test.sif
+  test2              16219     /home/mibauer/singularity/sinstance/test.sif`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// instance start
@@ -538,7 +571,7 @@ Enterprise Performance Computing (EPC)`
 	PullShort string = `Pull an image from a URI`
 	PullLong  string = `
   The 'pull' command allows you to download or build a container from a given
-  URI.  Supported URIs include:
+  URI. Supported URIs include:
 
   library: Pull an image from the currently configured library
       library://user/collection/container[:tag]
@@ -546,8 +579,14 @@ Enterprise Performance Computing (EPC)`
   docker: Pull an image from Docker Hub
       docker://user/image:tag
     
-  shub: Pull an image from Singularity Hub to CWD
-      shub://user/image:tag`
+  shub: Pull an image from Singularity Hub
+      shub://user/image:tag
+
+  oras: Pull a SIF image from a supporting OCI registry
+      oras://registry/namespace/image:tag
+
+  http, https: Pull an image using the http(s?) protocol
+      https://library.sylabs.io/v1/imagefile/library/default/alpine:latest`
 	PullExample string = `
   From Sylabs cloud library
   $ singularity pull alpine.sif library://alpine:latest
@@ -556,32 +595,48 @@ Enterprise Performance Computing (EPC)`
   $ singularity pull tensorflow.sif docker://tensorflow/tensorflow:latest
 
   From Shub
-  $ singularity pull singularity-images.sif shub://vsoch/singularity-images`
+  $ singularity pull singularity-images.sif shub://vsoch/singularity-images
+
+  From supporting OCI registry (e.g. Azure Container Registry)
+  $ singularity pull image.sif oras://<username>.azurecr.io/namespace/image:tag`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// push
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	PushUse   string = `push [push options...] <image> library://user/collection/container[:tag]`
-	PushShort string = `Upload image to the provided library (default is "cloud.sylabs.io")`
+	PushUse   string = `push [push options...] <image> <URI>`
+	PushShort string = `Upload image to the provided URI`
 	PushLong  string = `
-  The Singularity push command allows you to upload your sif image to a library
-  of your choosing. It's always good practice to sign your containers before
-  pushing them to the library. An auth token is required to push to the remote,
-  so you may need to configure if first with 'singularity remote'.`
+  The 'push' command allows you to upload a SIF container to a given
+  URI.  Supported URIs include:
+
+  library:
+      library://user/collection/container[:tag]
+
+  oras:
+      oras://registry/namespace/repo:tag
+
+
+  NOTE: It's always good practice to sign your containers before
+  pushing them to the library. An auth token is required to push to the library,
+  so you may need to configure it first with 'singularity remote'.`
 	PushExample string = `
-  $ singularity push /home/user/my.sif library://user/collection/my.sif:latest`
+  To Library
+  $ singularity push /home/user/my.sif library://user/collection/my.sif:latest
+
+  To supported OCI registry
+  $ singularity push /home/user/my.sif oras://registry/namespace/image:tag`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// search
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	SearchUse   string = `search [search options...] <search query>`
-	SearchShort string = `Search a Library for images`
+	SearchUse   string = `search [search options...] <search_query>`
+	SearchShort string = `Search a Container Library for images`
 	SearchLong  string = `
-  The Singularity search command allows you to search within a container library 
-  of your choosing.  The container library defaults to cloud.sylabs.io when no 
-  other library argument is given.`
+  Search a Container Library for users and containers matching the search query.
+  (default cloud.sylabs.io)`
 	SearchExample string = `
-  $ singularity search lolcow`
+  $ singularity search lolcow
+  $ singularity search centos`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// run
@@ -652,7 +707,9 @@ Enterprise Performance Computing (EPC)`
   The sign command allows a user to create a cryptographic signature on either a 
   single data object or a list of data objects within the same SIF group. By 
   default without parameters, the command searches for the primary partition and 
-  creates a verification block that is then added to the SIF container file.`
+  creates a verification block that is then added to the SIF container file.
+  
+  To generate a keypair, see 'singularity help key newpair'`
 	SignExample string = `
   $ singularity sign container.sif`
 
@@ -677,10 +734,9 @@ Enterprise Performance Computing (EPC)`
 	RunHelpUse   string = `run-help <image path>`
 	RunHelpShort string = `Show the user-defined help for an image`
 	RunHelpLong  string = `
-  Show the help for an image.
-
-  The help text is from the '%help' section of the definition file. If you are using the '--apps' option,
-  the help text is instead from that app's '%apphelp' section.`
+  The help text is from the '%help' section of the definition file. If you are 
+  using the '--apps' option, the help text is instead from that app's '%apphelp' 
+  section.`
 	RunHelpExample string = `
   $ cat my_container.def
   Bootstrap: docker
@@ -710,35 +766,40 @@ Enterprise Performance Computing (EPC)`
 	InspectUse   string = `inspect [inspect options...] <image path>`
 	InspectShort string = `Show metadata for an image`
 	InspectLong  string = `
-  Inspect will show you labels, environment variables, and scripts associated 
-  with the image determined by the flags you pass.`
+  Inspect will show you labels, environment variables, apps and scripts associated 
+  with the image determined by the flags you pass. By default, they will be shown in 
+  plain text. If you would like to list them in json format, you should use the --json flag.
+  `
 	InspectExample string = `
-  $ singularity inspect ubuntu.sif`
-
-	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	// Apps
-	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	AppsUse   string = `apps <image path>`
-	AppsShort string = `List available apps within a container`
-	AppsLong  string = `
-  List applications (apps) installed in a container, located at
-  /scif/apps. See http://containers-ftw.org/SCI-F/
+  $ singularity inspect ubuntu.sif
   
-  To access apps, use shell, exec, run, inspect with --app <appname>
+  If you want to list the applications (apps) installed in a container (located at
+  /scif/apps) you should run inspect command with --list-apps <container-image> flag.
+  ( See https://sci-f.github.io for more information on SCIF apps)
 
   The following environment variables are available to you when called 
   from the shell inside the container. The top variables are relevant 
   to the active app (--app <app>) and the bottom available for all 
-  apps regardless of the active app:
+  apps regardless of the active app. Both sets of variables are also available during development (at build time).
 
   ACTIVE APP ENVIRONMENT:
-
-      SCIF_APPNAME       the name of the application
-      SCIF_APPROOT       the application base (/scif/apps/<app>)
+      SCIF_APPNAME       the name for the active application
+      SCIF_APPROOT       the installation folder for the application created at /scif/apps/<app>
       SCIF_APPMETA       the application metadata folder
-      SCIF_APPDATA       the data base folder for active app
+      SCIF_APPDATA       the data folder created for the application at /scif/data/<app>
         SCIF_APPINPUT    expected input folder within data base folder
         SCIF_APPOUTPUT   the output data folder within data base folder
+
+      SCIF_APPENV        points to the application's custom environment.sh file in its metadata folder
+      SCIF_APPLABELS     is the application's labels.json in the metadata folder
+      SCIF_APPBIN        is the bin folder for the app, which is automatically added to the $PATH when the app is active
+      SCIF_APPLIB        is the application's library folder that is added to the LD_LIBRARY_PATH
+      SCIF_APPRUN        is the runscript
+      SCIF_APPHELP       is the help file for the runscript
+      SCIF_APPTEST       is the testing script (test.sh) associated with the applicatio
+      SCIF_APPNAME       the name for the active application
+      SCIF_APPFILES      the files section associated with the application that are added to
+
 
   GLOBAL APP ENVIRONMENT:
     
@@ -747,15 +808,18 @@ Enterprise Performance Computing (EPC)`
       SCIF_APPROOT_<app>    root for application <app>
       SCIF_APPDATA_<app>    data root for application <app>
 
+  To list all your apps:
 
-For additional help, please visit our public documentation pages which are
-found at:
+  $ singularity inspect --list-apps ubuntu.sif 
 
-  https://www.sylabs.io/docs/`
-	AppsExample string = `
-  $ singularity apps ubuntu.img
-   bar
-   foo`
+  To list only labels in the json format from an image:
+
+  $ singularity inspect --json --labels ubuntu.sif
+
+  To verify you own a single application on your container image, use the --app <appname> flag:
+
+  $ singularity inspect --app <appname> ubuntu.sif`
+
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// Test
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -803,28 +867,32 @@ found at:
 	OciCreateUse   string = `create -b <bundle_path> [create options...] <container_ID>`
 	OciCreateShort string = `Create a container from a bundle directory (root user only)`
 	OciCreateLong  string = `
-  Create invoke create operation to create a container instance from an OCI bundle directory`
+  Create invoke create operation to create a container instance from an OCI 
+  bundle directory`
 	OciCreateExample string = `
   $ singularity oci create -b ~/bundle mycontainer`
 
 	OciStartUse   string = `start <container_ID>`
 	OciStartShort string = `Start container process (root user only)`
 	OciStartLong  string = `
-  Start invoke start operation to start a previously created container identified by container ID.`
+  Start invoke start operation to start a previously created container 
+  identified by container ID.`
 	OciStartExample string = `
   $ singularity oci start mycontainer`
 
 	OciStateUse   string = `state <container_ID>`
 	OciStateShort string = `Query state of a container (root user only)`
 	OciStateLong  string = `
-  State invoke state operation to query state of a created/running/stopped container identified by container ID.`
+  State invoke state operation to query state of a created/running/stopped 
+  container identified by container ID.`
 	OciStateExample string = `
   $ singularity oci state mycontainer`
 
 	OciKillUse   string = `kill [kill options...] <container_ID>`
 	OciKillShort string = `Kill a container (root user only)`
 	OciKillLong  string = `
-  Kill invoke kill operation to kill processes running within container identified by container ID.`
+  Kill invoke kill operation to kill processes running within container 
+  identified by container ID.`
 	OciKillExample string = `
   $ singularity oci kill mycontainer INT
   $ singularity oci kill mycontainer -s INT`
@@ -832,21 +900,24 @@ found at:
 	OciDeleteUse   string = `delete <container_ID>`
 	OciDeleteShort string = `Delete container (root user only)`
 	OciDeleteLong  string = `
-  Delete invoke delete operation to delete resources that were created for container identified by container ID.`
+  Delete invoke delete operation to delete resources that were created for 
+  container identified by container ID.`
 	OciDeleteExample string = `
   $ singularity oci delete mycontainer`
 
 	OciAttachUse   string = `attach <container_ID>`
 	OciAttachShort string = `Attach console to a running container process (root user only)`
 	OciAttachLong  string = `
-  Attach will attach console to a running container process running within container identified by container ID.`
+  Attach will attach console to a running container process running within 
+  container identified by container ID.`
 	OciAttachExample string = `
   $ singularity oci attach mycontainer`
 
 	OciExecUse   string = `exec <container_ID> <command> <args>`
 	OciExecShort string = `Execute a command within container (root user only)`
 	OciExecLong  string = `
-  Exec will execute the provided command/arguments within container identified by container ID.`
+  Exec will execute the provided command/arguments within container identified 
+  by container ID.`
 	OciExecExample string = `
   $ singularity oci exec mycontainer id`
 
@@ -867,8 +938,8 @@ found at:
 	OciUpdateUse   string = `update [update options...] <container_ID>`
 	OciUpdateShort string = `Update container cgroups resources (root user only)`
 	OciUpdateLong  string = `
-  Update will update cgroups resources for the specified container ID.
-  Container must be in a RUNNING or CREATED state.`
+  Update will update cgroups resources for the specified container ID. Container 
+  must be in a RUNNING or CREATED state.`
 	OciUpdateExample string = `
   $ singularity oci update --from-file /tmp/cgroups-update.json mycontainer
 
@@ -886,7 +957,8 @@ found at:
 	OciResumeUse   string = `resume <container_ID>`
 	OciResumeShort string = `Resumes all processes previously paused inside the container (root user only)`
 	OciResumeLong  string = `
-  Resume will resume all processes previously paused for the specified container ID.`
+  Resume will resume all processes previously paused for the specified container 
+  ID.`
 	OciResumeExample string = `
   $ singularity oci resume mycontainer`
 
@@ -900,7 +972,58 @@ found at:
 	OciUmountUse   string = `umount <bundle_path>`
 	OciUmountShort string = `Umount delete bundle (root user only)`
 	OciUmountLong  string = `
-  Umount will umount an OCI bundle previously mounted with singularity oci mount.`
+  Umount will umount an OCI bundle previously mounted with singularity oci 
+  mount.`
 	OciUmountExample string = `
   $ singularity oci umount /var/lib/singularity/bundles/example`
+
+	ConfigUse   string = `config`
+	ConfigShort string = `Manage various singularity configuration (root user only)`
+	ConfigLong  string = `
+  The config command allows root user to manage various configuration like fakeroot
+  user mapping entries.`
+	ConfigExample string = `
+  All config commands have their own help output:
+
+  $ singularity help config fakeroot
+  $ singularity config fakeroot --help`
+
+	ConfigFakerootUse   string = `fakeroot <option> <user>`
+	ConfigFakerootShort string = `Manage fakeroot user mappings entries (root user only)`
+	ConfigFakerootLong  string = `
+  The config fakeroot command allow a root user to add/remove/enable/disable fakeroot
+  user mappings.`
+	ConfigFakerootExample string = `
+  To add a fakeroot user mapping for vagrant user:
+  $ singularity config fakeroot --add vagrant
+
+  To remove a fakeroot user mapping for vagrant user:
+  $ singularity config fakeroot --remove vagrant
+
+  To disable a fakeroot user mapping for vagrant user:
+  $ singularity config fakeroot --disable vagrant
+
+  To enable a fakeroot user mapping for vagrant user:
+  $ singularity config fakeroot --enable vagrant`
+
+	ConfigGlobalUse   string = `global <option> <directive> [value,...]`
+	ConfigGlobalShort string = `Edit singularity.conf from command line (root user only)`
+	ConfigGlobalLong  string = `
+  The config global command allow administrators to set/unset/get/reset configuration
+  directives of singularity.conf from command line.`
+	ConfigGlobalExample string = `
+  To add a path to "bind path" directive:
+  $ singularity config global --set "bind path" /etc/resolv.conf
+
+  To remove a path from "bind path" directive:
+  $ singularity config global --unset "bind path" /etc/resolv.conf
+
+  To set "bind path" to the default value:
+  $ singularity config global --reset "bind path"
+
+  To get "bind path" directive value:
+  $ singularity config global --get "bind path"
+
+  To display the resulting configuration instead of writing it to file:
+  $ singularity config global --dry-run --set "bind path" /etc/resolv.conf`
 )

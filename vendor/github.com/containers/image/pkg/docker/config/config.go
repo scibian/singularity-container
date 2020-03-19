@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/containers/image/types"
@@ -27,19 +26,19 @@ type dockerConfigFile struct {
 	CredHelpers map[string]string           `json:"credHelpers,omitempty"`
 }
 
-const (
-	defaultPath       = "/run"
-	authCfg           = "containers"
-	authCfgFileName   = "auth.json"
-	dockerCfg         = ".docker"
-	dockerCfgFileName = "config.json"
-	dockerLegacyCfg   = ".dockercfg"
-)
-
 var (
+	defaultPerUIDPathFormat = filepath.FromSlash("/run/containers/%d/auth.json")
+	xdgRuntimeDirPath       = filepath.FromSlash("containers/auth.json")
+	dockerHomePath          = filepath.FromSlash(".docker/config.json")
+	dockerLegacyHomePath    = ".dockercfg"
+
+	enableKeyring = false
+
 	// ErrNotLoggedIn is returned for users not logged into a registry
 	// that they are trying to logout of
 	ErrNotLoggedIn = errors.New("not logged in")
+	// ErrNotSupported is returned for unsupported methods
+	ErrNotSupported = errors.New("not supported")
 )
 
 // SetAuthentication stores the username and password in the auth.json file
@@ -49,6 +48,18 @@ func SetAuthentication(sys *types.SystemContext, registry, username, password st
 			return false, setAuthToCredHelper(ch, registry, username, password)
 		}
 
+		// Set the credentials to kernel keyring if enableKeyring is true.
+		// The keyring might not work in all environments (e.g., missing capability) and isn't supported on all platforms.
+		// Hence, we want to fall-back to using the authfile in case the keyring failed.
+		// However, if the enableKeyring is false, we want adhere to the user specification and not use the keyring.
+		if enableKeyring {
+			err := setAuthToKernelKeyring(registry, username, password)
+			if err == nil {
+				logrus.Debugf("credentials for (%s, %s) were stored in the kernel keyring\n", registry, username)
+				return false, nil
+			}
+			logrus.Debugf("failed to authenticate with the kernel keyring, falling back to authfiles. %v", err)
+		}
 		creds := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
 		newCreds := dockerAuthConfig{Auth: creds}
 		auths.AuthConfigs[registry] = newCreds
@@ -61,10 +72,19 @@ func SetAuthentication(sys *types.SystemContext, registry, username, password st
 // If an entry is not found empty strings are returned for the username and password
 func GetAuthentication(sys *types.SystemContext, registry string) (string, string, error) {
 	if sys != nil && sys.DockerAuthConfig != nil {
+		logrus.Debug("Returning credentials from DockerAuthConfig")
 		return sys.DockerAuthConfig.Username, sys.DockerAuthConfig.Password, nil
 	}
 
-	dockerLegacyPath := filepath.Join(homedir.Get(), dockerLegacyCfg)
+	if enableKeyring {
+		username, password, err := getAuthFromKernelKeyring(registry)
+		if err == nil {
+			logrus.Debug("returning credentials from kernel keyring")
+			return username, password, nil
+		}
+	}
+
+	dockerLegacyPath := filepath.Join(homedir.Get(), dockerLegacyHomePath)
 	var paths []string
 	pathToAuth, err := getPathToAuth(sys)
 	if err == nil {
@@ -75,34 +95,22 @@ func GetAuthentication(sys *types.SystemContext, registry string) (string, strin
 		// Logging the error as a warning instead and moving on to pulling the image
 		logrus.Warnf("%v: Trying to pull image in the event that it is a public image.", err)
 	}
-	paths = append(paths, filepath.Join(homedir.Get(), dockerCfg, dockerCfgFileName), dockerLegacyPath)
+	paths = append(paths, filepath.Join(homedir.Get(), dockerHomePath), dockerLegacyPath)
 
 	for _, path := range paths {
 		legacyFormat := path == dockerLegacyPath
 		username, password, err := findAuthentication(registry, path, legacyFormat)
 		if err != nil {
+			logrus.Debugf("Credentials not found")
 			return "", "", err
 		}
 		if username != "" && password != "" {
+			logrus.Debugf("Returning credentials from %s", path)
 			return username, password, nil
 		}
 	}
+	logrus.Debugf("Credentials not found")
 	return "", "", nil
-}
-
-// GetUserLoggedIn returns the username logged in to registry from either
-// auth.json or XDG_RUNTIME_DIR
-// Used to tell the user if someone is logged in to the registry when logging in
-func GetUserLoggedIn(sys *types.SystemContext, registry string) (string, error) {
-	path, err := getPathToAuth(sys)
-	if err != nil {
-		return "", err
-	}
-	username, _, _ := findAuthentication(registry, path, false)
-	if username != "" {
-		return username, nil
-	}
-	return "", nil
 }
 
 // RemoveAuthentication deletes the credentials stored in auth.json
@@ -111,6 +119,16 @@ func RemoveAuthentication(sys *types.SystemContext, registry string) error {
 		// First try cred helpers.
 		if ch, exists := auths.CredHelpers[registry]; exists {
 			return false, deleteAuthFromCredHelper(ch, registry)
+		}
+
+		// Next if keyring is enabled try kernel keyring
+		if enableKeyring {
+			err := deleteAuthFromKernelKeyring(registry)
+			if err == nil {
+				logrus.Debugf("credentials for %s were deleted from the kernel keyring", registry)
+				return false, nil
+			}
+			logrus.Debugf("failed to delete credentials from the kernel keyring, falling back to authfiles")
 		}
 
 		if _, ok := auths.AuthConfigs[registry]; ok {
@@ -135,15 +153,15 @@ func RemoveAllAuthentication(sys *types.SystemContext) error {
 
 // getPath gets the path of the auth.json file
 // The path can be overriden by the user if the overwrite-path flag is set
-// If the flag is not set and XDG_RUNTIME_DIR is ser, the auth.json file is saved in XDG_RUNTIME_DIR/containers
-// Otherwise, the auth.json file is stored in /run/user/UID/containers
+// If the flag is not set and XDG_RUNTIME_DIR is set, the auth.json file is saved in XDG_RUNTIME_DIR/containers
+// Otherwise, the auth.json file is stored in /run/containers/UID
 func getPathToAuth(sys *types.SystemContext) (string, error) {
 	if sys != nil {
 		if sys.AuthFilePath != "" {
 			return sys.AuthFilePath, nil
 		}
 		if sys.RootForImplicitAbsolutePaths != "" {
-			return filepath.Join(sys.RootForImplicitAbsolutePaths, defaultPath, strconv.Itoa(os.Getuid()), authCfg, authCfgFileName), nil
+			return filepath.Join(sys.RootForImplicitAbsolutePaths, fmt.Sprintf(defaultPerUIDPathFormat, os.Getuid())), nil
 		}
 	}
 
@@ -155,14 +173,12 @@ func getPathToAuth(sys *types.SystemContext) (string, error) {
 		if os.IsNotExist(err) {
 			// This means the user set the XDG_RUNTIME_DIR variable and either forgot to create the directory
 			// or made a typo while setting the environment variable,
-			// so return an error referring to $XDG_RUNTIME_DIR instead of …/authCfgFileName inside.
+			// so return an error referring to $XDG_RUNTIME_DIR instead of xdgRuntimeDirPath inside.
 			return "", errors.Wrapf(err, "%q directory set by $XDG_RUNTIME_DIR does not exist. Either create the directory or unset $XDG_RUNTIME_DIR.", runtimeDir)
-		} // else ignore err and let the caller fail accessing …/authCfgFileName.
-		runtimeDir = filepath.Join(runtimeDir, authCfg)
-	} else {
-		runtimeDir = filepath.Join(defaultPath, authCfg, strconv.Itoa(os.Getuid()))
+		} // else ignore err and let the caller fail accessing xdgRuntimeDirPath.
+		return filepath.Join(runtimeDir, xdgRuntimeDirPath), nil
 	}
-	return filepath.Join(runtimeDir, authCfgFileName), nil
+	return fmt.Sprintf(defaultPerUIDPathFormat, os.Getuid()), nil
 }
 
 // readJSONFile unmarshals the authentications stored in the auth.json file and returns it
@@ -172,9 +188,12 @@ func readJSONFile(path string, legacyFormat bool) (dockerConfigFile, error) {
 	var auths dockerConfigFile
 
 	raw, err := ioutil.ReadFile(path)
-	if os.IsNotExist(err) {
-		auths.AuthConfigs = map[string]dockerAuthConfig{}
-		return auths, nil
+	if err != nil {
+		if os.IsNotExist(err) {
+			auths.AuthConfigs = map[string]dockerAuthConfig{}
+			return auths, nil
+		}
+		return dockerConfigFile{}, err
 	}
 
 	if legacyFormat {

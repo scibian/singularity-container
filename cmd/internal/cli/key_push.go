@@ -6,7 +6,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 
@@ -17,22 +19,17 @@ import (
 	"github.com/sylabs/singularity/pkg/sypgp"
 )
 
-func init() {
-	KeyPushCmd.Flags().SetInterspersed(false)
-
-	KeyPushCmd.Flags().StringVarP(&keyServerURI, "url", "u", defaultKeyServer, "specify the key server URL")
-	KeyPushCmd.Flags().SetAnnotation("url", "envkey", []string{"URL"})
-}
-
 // KeyPushCmd is `singularity key list' and lists local store OpenPGP keys
 var KeyPushCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
 	PreRun:                sylabsToken,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.TODO()
+
 		handleKeyFlags(cmd)
 
-		if err := doKeyPushCmd(args[0], keyServerURI); err != nil {
+		if err := doKeyPushCmd(ctx, args[0], keyServerURI); err != nil {
 			sylog.Errorf("push failed: %s", err)
 			os.Exit(2)
 		}
@@ -44,8 +41,9 @@ var KeyPushCmd = &cobra.Command{
 	Example: docs.KeyPushExample,
 }
 
-func doKeyPushCmd(fingerprint string, url string) error {
-	el, err := sypgp.LoadPubKeyring()
+func doKeyPushCmd(ctx context.Context, fingerprint string, url string) error {
+	keyring := sypgp.NewHandle("")
+	el, err := keyring.LoadPubKeyring()
 	if err != nil {
 		return err
 	}
@@ -68,7 +66,7 @@ func doKeyPushCmd(fingerprint string, url string) error {
 	}
 	entity := keys[0].Entity
 
-	if err = sypgp.PushPubkey(entity, url, authToken); err != nil {
+	if err = sypgp.PushPubkey(ctx, http.DefaultClient, entity, url, authToken); err != nil {
 		return err
 	}
 

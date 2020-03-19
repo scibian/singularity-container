@@ -6,12 +6,16 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/containernetworking/cni/libcni"
 	"github.com/containernetworking/cni/pkg/types"
@@ -82,17 +86,17 @@ func GetAllNetworkConfigList(cniPath *CNIPath) ([]*libcni.NetworkConfigList, err
 		if strings.HasSuffix(file, ".conflist") {
 			conf, err := libcni.ConfListFromFile(file)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s: %s", file, err)
 			}
 			networks = append(networks, conf)
 		} else {
 			conf, err := libcni.ConfFromFile(file)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s: %s", file, err)
 			}
 			confList, err := libcni.ConfListFromConf(conf)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s: %s", file, err)
 			}
 			networks = append(networks, confList)
 		}
@@ -279,19 +283,19 @@ func (m *Setup) SetArgs(args []string) error {
 				if len(ports) != 1 && len(ports) != 2 {
 					return fmt.Errorf("portmap port argument is badly formatted")
 				}
-				if n, err := strconv.ParseInt(ports[0], 0, 16); err == nil {
+				if n, err := strconv.ParseUint(ports[0], 0, 16); err == nil {
 					pm.HostPort = int(n)
-					if pm.HostPort <= 0 {
-						return fmt.Errorf("host port must be greater than zero")
+					if pm.HostPort <= 0 || pm.HostPort > 65535 {
+						return fmt.Errorf("host port must be greater than 0 and less than 65535")
 					}
 				} else {
 					return fmt.Errorf("can't convert host port '%s': %s", ports[0], err)
 				}
 				if len(ports) == 2 {
-					if n, err := strconv.ParseInt(ports[1], 0, 16); err == nil {
+					if n, err := strconv.ParseUint(ports[1], 0, 16); err == nil {
 						pm.ContainerPort = int(n)
-						if pm.ContainerPort <= 0 {
-							return fmt.Errorf("container port must be greater than zero")
+						if pm.ContainerPort <= 0 || pm.ContainerPort > 65535 {
+							return fmt.Errorf("container port must be greater than 0 and less than 65535")
 						}
 					} else {
 						return fmt.Errorf("can't convert container port '%s': %s", ports[1], err)
@@ -334,7 +338,10 @@ func (m *Setup) GetNetworkIP(network string, version string) (net.IP, error) {
 
 	for i := 0; i < len(m.networkConfList); i++ {
 		if m.networkConfList[i].Name == n {
-			res, _ := current.GetResult(m.result[i])
+			res, err := current.NewResultFromResult(m.result[i])
+			if err != nil {
+				return nil, fmt.Errorf("could not convert result: %v", err)
+			}
 			for _, ipResult := range res.IPs {
 				if ipResult.Version == version {
 					return ipResult.Address.IP, nil
@@ -364,6 +371,59 @@ func (m *Setup) GetNetworkInterface(network string) (string, error) {
 	return "", fmt.Errorf("no interface found for network %s", network)
 }
 
+// SetPortProtection provides a basic mechanism to prevent port hijacking
+func (m *Setup) SetPortProtection(network string, lowPort int) error {
+	idx := -1
+	for i := 0; i < len(m.networkConfList); i++ {
+		if m.networkConfList[i].Name == network {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("no configuration found for network %s", network)
+	}
+
+	entries, ok := m.runtimeConf[idx].CapabilityArgs["portMappings"].([]PortMapEntry)
+	if !ok {
+		return nil
+	}
+	for _, e := range entries {
+		sockProt := unix.IPPROTO_TCP
+		sockType := unix.SOCK_STREAM
+
+		if e.HostPort <= lowPort {
+			return fmt.Errorf("not authorized to map port under %d", lowPort)
+		}
+		if e.Protocol == "udp" {
+			sockProt = unix.IPPROTO_UDP
+			sockType = unix.SOCK_DGRAM
+		}
+		fd, err := unix.Socket(unix.AF_INET, sockType, sockProt)
+		if err != nil {
+			return fmt.Errorf("failed to create %s socket on port %d: %s", e.Protocol, e.HostPort, err)
+		}
+		err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+		if err != nil {
+			return fmt.Errorf("failed to set reuseport for %s socket on port %d: %s", e.Protocol, e.HostPort, err)
+		}
+		sockAddr := &unix.SockaddrInet4{
+			Port: e.HostPort,
+		}
+		err = unix.Bind(fd, sockAddr)
+		if err != nil {
+			return fmt.Errorf("failed to bind %s socket on port %d: %s", e.Protocol, e.HostPort, err)
+		}
+		if sockType == unix.SOCK_STREAM {
+			err = unix.Listen(fd, 1)
+			if err != nil {
+				return fmt.Errorf("failed to listen on %s socket port %d: %s", e.Protocol, e.HostPort, err)
+			}
+		}
+	}
+	return nil
+}
+
 // SetEnvPath allows to define custom paths for PATH environment
 // variables used during CNI plugin execution
 func (m *Setup) SetEnvPath(envPath string) {
@@ -371,16 +431,16 @@ func (m *Setup) SetEnvPath(envPath string) {
 }
 
 // AddNetworks brings up networks interface in container
-func (m *Setup) AddNetworks() error {
-	return m.command("ADD")
+func (m *Setup) AddNetworks(ctx context.Context) error {
+	return m.command(ctx, "ADD")
 }
 
 // DelNetworks tears down networks interface in container
-func (m *Setup) DelNetworks() error {
-	return m.command("DEL")
+func (m *Setup) DelNetworks(ctx context.Context) error {
+	return m.command(ctx, "DEL")
 }
 
-func (m *Setup) command(command string) error {
+func (m *Setup) command(ctx context.Context, command string) error {
 	if m.envPath != "" {
 		backupEnv := os.Environ()
 		os.Clearenv()
@@ -390,13 +450,18 @@ func (m *Setup) command(command string) error {
 
 	config := &libcni.CNIConfig{Path: []string{m.cniPath.Plugin}}
 
+	// set a timeout context for the execution of the CNI plugin
+	// to interrupt its execution if it takes more than 5 seconds
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	if command == "ADD" {
 		m.result = make([]types.Result, len(m.networkConfList))
 		for i := 0; i < len(m.networkConfList); i++ {
 			var err error
-			if m.result[i], err = config.AddNetworkList(m.networkConfList[i], m.runtimeConf[i]); err != nil {
+			if m.result[i], err = config.AddNetworkList(ctx, m.networkConfList[i], m.runtimeConf[i]); err != nil {
 				for j := i - 1; j >= 0; j-- {
-					if err := config.DelNetworkList(m.networkConfList[j], m.runtimeConf[j]); err != nil {
+					if err := config.DelNetworkList(ctx, m.networkConfList[j], m.runtimeConf[j]); err != nil {
 						return err
 					}
 				}
@@ -405,7 +470,7 @@ func (m *Setup) command(command string) error {
 		}
 	} else if command == "DEL" {
 		for i := 0; i < len(m.networkConfList); i++ {
-			if err := config.DelNetworkList(m.networkConfList[i], m.runtimeConf[i]); err != nil {
+			if err := config.DelNetworkList(ctx, m.networkConfList[i], m.runtimeConf[i]); err != nil {
 				return err
 			}
 		}

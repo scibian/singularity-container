@@ -12,17 +12,13 @@ import (
 	"github.com/sylabs/singularity/pkg/sypgp"
 )
 
-func init() {
-	KeyRemoveCmd.Flags().SetInterspersed(false)
-}
-
 // KeyRemoveCmd is `singularity key remove <fingerprint>' command
 var KeyRemoveCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
 	Run: func(cmd *cobra.Command, args []string) {
-
-		err := sypgp.RemovePubKey(args[0])
+		keyring := sypgp.NewHandle("")
+		err := keyring.RemovePubKey(args[0])
 		if err != nil {
 			sylog.Fatalf("Unable to remove public key: %s", err)
 		}

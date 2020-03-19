@@ -6,7 +6,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -15,22 +17,17 @@ import (
 	"github.com/sylabs/singularity/pkg/sypgp"
 )
 
-func init() {
-	KeyPullCmd.Flags().SetInterspersed(false)
-
-	KeyPullCmd.Flags().StringVarP(&keyServerURI, "url", "u", defaultKeyServer, "specify the key server URL")
-	KeyPullCmd.Flags().SetAnnotation("url", "envkey", []string{"URL"})
-}
-
 // KeyPullCmd is `singularity key pull' and fetches public keys from a key server
 var KeyPullCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
 	PreRun:                sylabsToken,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.TODO()
+
 		handleKeyFlags(cmd)
 
-		if err := doKeyPullCmd(args[0], keyServerURI); err != nil {
+		if err := doKeyPullCmd(ctx, args[0], keyServerURI); err != nil {
 			sylog.Errorf("pull failed: %s", err)
 			os.Exit(2)
 		}
@@ -42,22 +39,24 @@ var KeyPullCmd = &cobra.Command{
 	Example: docs.KeyPullExample,
 }
 
-func doKeyPullCmd(fingerprint string, url string) error {
+func doKeyPullCmd(ctx context.Context, fingerprint string, url string) error {
 	var count int
 
+	keyring := sypgp.NewHandle("")
+
 	// get matching keyring
-	el, err := sypgp.FetchPubkey(fingerprint, url, authToken, false)
+	el, err := sypgp.FetchPubkey(ctx, http.DefaultClient, fingerprint, url, authToken, false)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to pull key from server: %v", err)
 	}
 
-	elstore, err := sypgp.LoadPubKeyring()
+	elstore, err := keyring.LoadPubKeyring()
 	if err != nil {
 		return err
 	}
 
 	// store in local cache
-	fp, err := os.OpenFile(sypgp.PublicPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	fp, err := os.OpenFile(keyring.PublicPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
@@ -73,13 +72,13 @@ func doKeyPullCmd(fingerprint string, url string) error {
 		}
 		if storeKey {
 			if err = e.Serialize(fp); err != nil {
-				return err
+				return fmt.Errorf("unable to serialize key: %v", err)
 			}
 			count++
 		}
 	}
 
-	fmt.Printf("%v key(s) added to keyring of trust %s\n", count, sypgp.PublicPath())
+	fmt.Printf("%v key(s) added to keyring of trust %s\n", count, keyring.PublicPath())
 
 	return nil
 }

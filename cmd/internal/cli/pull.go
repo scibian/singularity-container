@@ -6,80 +6,149 @@
 package cli
 
 import (
-	"fmt"
-	"io"
+	"context"
 	"os"
-	"os/signal"
-	"syscall"
+	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
+	"github.com/sylabs/scs-library-client/client"
 	"github.com/sylabs/singularity/docs"
+	"github.com/sylabs/singularity/internal/app/singularity"
 	"github.com/sylabs/singularity/internal/pkg/client/cache"
 	ociclient "github.com/sylabs/singularity/internal/pkg/client/oci"
-	"github.com/sylabs/singularity/internal/pkg/libexec"
 	scs "github.com/sylabs/singularity/internal/pkg/remote"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
-	"github.com/sylabs/singularity/pkg/build/types"
-	client "github.com/sylabs/singularity/pkg/client/library"
-	"github.com/sylabs/singularity/pkg/signing"
-	"github.com/sylabs/singularity/pkg/sypgp"
+	net "github.com/sylabs/singularity/pkg/client/net"
+	"github.com/sylabs/singularity/pkg/cmdline"
 )
 
 const (
-	// LibraryProtocol holds the sylabs cloud library base URI
-	// for more info refer to https://cloud.sylabs.io/library
+	// LibraryProtocol holds the sylabs cloud library base URI,
+	// for more info refer to https://cloud.sylabs.io/library.
 	LibraryProtocol = "library"
-	// ShubProtocol holds singularity hub base URI
+	// ShubProtocol holds singularity hub base URI,
 	// for more info refer to https://singularity-hub.org/
 	ShubProtocol = "shub"
-	// HTTPProtocol holds the remote http base URI
+	// HTTPProtocol holds the remote http base URI.
 	HTTPProtocol = "http"
-	// HTTPSProtocol holds the remote https base URI
+	// HTTPSProtocol holds the remote https base URI.
 	HTTPSProtocol = "https"
+	// OrasProtocol holds the oras URI.
+	OrasProtocol = "oras"
 )
 
 var (
-	// PullLibraryURI holds the base URI to a Sylabs library API instance
-	PullLibraryURI string
-	// PullImageName holds the name to be given to the pulled image
-	PullImageName string
-	// KeyServerURL server URL
-	KeyServerURL = "https://keys.sylabs.io"
-	// unauthenticatedPull when true; wont ask to keep a unsigned container after pulling it
+	// pullLibraryURI holds the base URI to a Sylabs library API instance.
+	pullLibraryURI string
+	// pullImageName holds the name to be given to the pulled image.
+	pullImageName string
+	// keyServerURL server URL.
+	keyServerURL = "https://keys.sylabs.io"
+	// unauthenticatedPull when true; wont ask to keep a unsigned container after pulling it.
 	unauthenticatedPull bool
+	// pullDir is the path that the containers will be pulled to, if set.
+	pullDir string
+	// pullArch is the architecture for which containers will be pulled from the
+	// SCS library.
+	pullArch string
 )
 
+// --arch
+var pullArchFlag = cmdline.Flag{
+	ID:           "pullArchFlag",
+	Value:        &pullArch,
+	DefaultValue: runtime.GOARCH,
+	Name:         "arch",
+	Usage:        "architecture to pull from library",
+	EnvKeys:      []string{"PULL_ARCH"},
+}
+
+// --library
+var pullLibraryURIFlag = cmdline.Flag{
+	ID:           "pullLibraryURIFlag",
+	Value:        &pullLibraryURI,
+	DefaultValue: "https://library.sylabs.io",
+	Name:         "library",
+	Usage:        "download images from the provided library",
+	EnvKeys:      []string{"LIBRARY"},
+}
+
+// --name
+var pullNameFlag = cmdline.Flag{
+	ID:           "pullNameFlag",
+	Value:        &pullImageName,
+	DefaultValue: "",
+	Name:         "name",
+	Hidden:       true,
+	Usage:        "specify a custom image name",
+	EnvKeys:      []string{"PULL_NAME"},
+}
+
+// --dir
+var pullDirFlag = cmdline.Flag{
+	ID:           "pullDirFlag",
+	Value:        &pullDir,
+	DefaultValue: "",
+	Name:         "dir",
+	Usage:        "download images to the specific directory",
+	EnvKeys:      []string{"PULLDIR", "PULLFOLDER"},
+}
+
+// --disable-cache
+var pullDisableCacheFlag = cmdline.Flag{
+	ID:           "pullDisableCacheFlag",
+	Value:        &disableCache,
+	DefaultValue: false,
+	Name:         "disable-cache",
+	Usage:        "dont use cached images/blobs and dont create them",
+	EnvKeys:      []string{"DISABLE_CACHE"},
+}
+
+// -U|--allow-unsigned
+var pullAllowUnsignedFlag = cmdline.Flag{
+	ID:           "pullAllowUnauthenticatedFlag",
+	Value:        &unauthenticatedPull,
+	DefaultValue: false,
+	Name:         "allow-unsigned",
+	ShortHand:    "U",
+	Usage:        "do not require a signed container",
+	EnvKeys:      []string{"ALLOW_UNSIGNED"},
+	Deprecated:   `pull no longer exits with an error code in case of unsigned image. Now the flag only suppress warning message.`,
+}
+
+// --allow-unauthenticated
+var pullAllowUnauthenticatedFlag = cmdline.Flag{
+	ID:           "pullAllowUnauthenticatedFlag",
+	Value:        &unauthenticatedPull,
+	DefaultValue: false,
+	Name:         "allow-unauthenticated",
+	ShortHand:    "",
+	Usage:        "do not require a signed container",
+	EnvKeys:      []string{"ALLOW_UNAUTHENTICATED"},
+	Hidden:       true,
+}
+
 func init() {
-	PullCmd.Flags().SetInterspersed(false)
+	cmdManager.RegisterCmd(PullCmd)
 
-	PullCmd.Flags().StringVar(&PullLibraryURI, "library", "https://library.sylabs.io", "download images from the provided library")
-	PullCmd.Flags().SetAnnotation("library", "envkey", []string{"LIBRARY"})
+	cmdManager.RegisterFlagForCmd(&commonForceFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&pullLibraryURIFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&pullNameFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&commonNoHTTPSFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&commonTmpDirFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&pullDisableCacheFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&pullDirFlag, PullCmd)
 
-	PullCmd.Flags().BoolVarP(&force, "force", "F", false, "overwrite an image file if it exists")
-	PullCmd.Flags().SetAnnotation("force", "envkey", []string{"FORCE"})
+	cmdManager.RegisterFlagForCmd(&dockerUsernameFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&dockerPasswordFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&dockerLoginFlag, PullCmd)
 
-	PullCmd.Flags().BoolVarP(&unauthenticatedPull, "allow-unauthenticated", "U", false, "do not require a signed container")
-	PullCmd.Flags().SetAnnotation("allow-unauthenticated", "envkey", []string{"ALLOW_UNAUTHENTICATED"})
-
-	PullCmd.Flags().StringVar(&PullImageName, "name", "", "specify a custom image name")
-	PullCmd.Flags().Lookup("name").Hidden = true
-	PullCmd.Flags().SetAnnotation("name", "envkey", []string{"NAME"})
-
-	PullCmd.Flags().StringVar(&tmpDir, "tmpdir", "", "specify a temporary directory to use for build")
-	PullCmd.Flags().Lookup("tmpdir").Hidden = true
-	PullCmd.Flags().SetAnnotation("tmpdir", "envkey", []string{"TMPDIR"})
-
-	PullCmd.Flags().BoolVar(&noHTTPS, "nohttps", false, "do NOT use HTTPS with the docker:// transport (useful for local docker registries without a certificate)")
-	PullCmd.Flags().SetAnnotation("nohttps", "envkey", []string{"NOHTTPS"})
-
-	PullCmd.Flags().AddFlag(actionFlags.Lookup("docker-username"))
-	PullCmd.Flags().AddFlag(actionFlags.Lookup("docker-password"))
-	PullCmd.Flags().AddFlag(actionFlags.Lookup("docker-login"))
-
-	PullCmd.Flags().AddFlag(BuildCmd.Flags().Lookup("no-cleanup"))
-
-	SingularityCmd.AddCommand(PullCmd)
+	cmdManager.RegisterFlagForCmd(&buildNoCleanupFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&pullAllowUnsignedFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&pullAllowUnauthenticatedFlag, PullCmd)
+	cmdManager.RegisterFlagForCmd(&pullArchFlag, PullCmd)
 }
 
 // PullCmd singularity pull
@@ -95,153 +164,96 @@ var PullCmd = &cobra.Command{
 }
 
 func pullRun(cmd *cobra.Command, args []string) {
-	exitStat := 0
-	i := len(args) - 1 // uri is stored in args[len(args)-1]
-	transport, ref := uri.Split(args[i])
-	if ref == "" {
-		sylog.Fatalf("bad uri %s", args[i])
+	ctx := context.TODO()
+
+	imgCache := getCacheHandle(cache.Config{Disable: disableCache})
+	if imgCache == nil {
+		sylog.Fatalf("Failed to create an image cache handle")
 	}
 
-	var name string
-	if PullImageName == "" {
-		name = args[0]
+	pullFrom := args[len(args)-1]
+	transport, ref := uri.Split(pullFrom)
+	if ref == "" {
+		sylog.Fatalf("Bad URI %s", pullFrom)
+	}
+
+	pullTo := pullImageName
+	if pullTo == "" {
+		pullTo = args[0]
 		if len(args) == 1 {
 			if transport == "" {
-				name = uri.GetName("library://" + args[i])
+				pullTo = uri.GetName("library://" + pullFrom)
 			} else {
-				name = uri.GetName(args[i]) // TODO: If not library/shub & no name specified, simply put to cache
+				pullTo = uri.GetName(pullFrom) // TODO: If not library/shub & no name specified, simply put to cache
 			}
 		}
-	} else {
-		name = PullImageName
 	}
 
-	// monitor for OS signals and remove invalid file
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	go func(fileName string) {
-		<-c
-		sylog.Debugf("Removing incomplete file because of receiving Termination signal")
-		os.Remove(fileName)
-		os.Exit(1)
-	}(name)
+	if pullDir != "" {
+		pullTo = filepath.Join(pullDir, pullTo)
+	}
+
+	_, err := os.Stat(pullTo)
+	if !os.IsNotExist(err) {
+		// image already exists
+		if !forceOverwrite {
+			sylog.Fatalf("Image file already exists: %q - will not overwrite", pullTo)
+		}
+	}
 
 	switch transport {
 	case LibraryProtocol, "":
-		if !force {
-			if _, err := os.Stat(name); err == nil {
-				sylog.Fatalf("image file already exists - will not overwrite")
-			}
-		}
-
 		handlePullFlags(cmd)
 
-		libraryImage, err := client.GetImage(PullLibraryURI, authToken, args[i])
+		libraryConfig := &client.Config{
+			BaseURL:   pullLibraryURI,
+			AuthToken: authToken,
+		}
+		lib, err := singularity.NewLibrary(libraryConfig, imgCache, keyServerURL)
 		if err != nil {
-			sylog.Fatalf("While getting image info: %v", err)
+			sylog.Fatalf("Could not initialize library: %v", err)
 		}
 
-		var imageName string
-		if transport == "" {
-			imageName = uri.GetName("library://" + args[i])
-		} else {
-			imageName = uri.GetName(args[i])
+		err = lib.Pull(ctx, pullFrom, pullTo, pullArch)
+		if err != nil && err != singularity.ErrLibraryPullUnsigned {
+			sylog.Fatalf("While pulling library image: %v", err)
 		}
-		imagePath := cache.LibraryImage(libraryImage.Hash, imageName)
-		if exists, err := cache.LibraryImageExists(libraryImage.Hash, imageName); err != nil {
-			sylog.Fatalf("unable to check if %v exists: %v", imagePath, err)
-		} else if !exists {
-			sylog.Infof("Downloading library image")
-			if err = client.DownloadImage(imagePath, args[i], PullLibraryURI, true, authToken); err != nil {
-				sylog.Fatalf("unable to Download Image: %v", err)
-			}
-
-			if cacheFileHash, err := client.ImageHash(imagePath); err != nil {
-				sylog.Fatalf("Error getting ImageHash: %v", err)
-			} else if cacheFileHash != libraryImage.Hash {
-				sylog.Fatalf("Cached File Hash(%s) and Expected Hash(%s) does not match", cacheFileHash, libraryImage.Hash)
-			}
-		}
-
-		// Perms are 777 *prior* to umask
-		dstFile, err := os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0777)
-		if err != nil {
-			sylog.Fatalf("%v\n", err)
-		}
-		defer dstFile.Close()
-
-		srcFile, err := os.OpenFile(imagePath, os.O_RDONLY, 0444)
-		if err != nil {
-			sylog.Fatalf("%v\n", err)
-		}
-		defer srcFile.Close()
-
-		// Copy SIF from cache
-		_, err = io.Copy(dstFile, srcFile)
-		if err != nil {
-			sylog.Fatalf("%v\n", err)
-		}
-
-		// check if we pulled from the library, if so; is it signed?
-		if PullLibraryURI != "" && !unauthenticatedPull {
-			imageSigned, err := signing.IsSigned(name, KeyServerURL, 0, false, authToken, true)
-			if err != nil {
-				// err will be: "unable to verify container: %v", err
-				sylog.Warningf("%v", err)
-				// if theres a warning, exit 1
-				exitStat = 1
-			}
-			// if container is not signed, print a warning
-			if !imageSigned {
-				fmt.Fprintf(os.Stderr, "This image is not signed, and thus its contents cannot be verified.\n")
-				resp, err := sypgp.AskQuestion("Do you with to proceed? [N/y] ")
-				if err != nil {
-					sylog.Fatalf("unable to parse input: %v", err)
-				}
-				if resp == "" || resp != "y" && resp != "Y" {
-					fmt.Fprintf(os.Stderr, "Aborting.\n")
-					err := os.Remove(name)
-					if err != nil {
-						sylog.Fatalf("Unabel to delete the container: %v", err)
-					}
-					// exit status 10 after replying no
-					exitStat = 10
-				}
-			}
-		} else {
+		if err == singularity.ErrLibraryPullUnsigned {
 			sylog.Warningf("Skipping container verification")
 		}
-
 	case ShubProtocol:
-		libexec.PullShubImage(name, args[i], force, noHTTPS)
-	case HTTPProtocol, HTTPSProtocol:
-		libexec.PullNetImage(name, args[i], force)
-	case ociclient.IsSupported(transport):
-		if !force {
-			if _, err := os.Stat(name); err == nil {
-				sylog.Fatalf("image file already exists - will not overwrite")
-			}
+		err := singularity.PullShub(imgCache, pullTo, pullFrom, noHTTPS)
+		if err != nil {
+			sylog.Fatalf("While pulling shub image: %v\n", err)
+		}
+	case OrasProtocol:
+		ociAuth, err := makeDockerCredentials(cmd)
+		if err != nil {
+			sylog.Fatalf("Unable to make docker oci credentials: %s", err)
 		}
 
-		authConf, err := makeDockerCredentials(cmd)
+		err = singularity.OrasPull(ctx, imgCache, pullTo, ref, forceOverwrite, ociAuth)
+		if err != nil {
+			sylog.Fatalf("While pulling image from oci registry: %v", err)
+		}
+	case HTTPProtocol, HTTPSProtocol:
+		err := net.DownloadImage(pullTo, pullFrom)
+		if err != nil {
+			sylog.Fatalf("While pulling from image from http(s): %v\n", err)
+		}
+	case ociclient.IsSupported(transport):
+		ociAuth, err := makeDockerCredentials(cmd)
 		if err != nil {
 			sylog.Fatalf("While creating Docker credentials: %v", err)
 		}
 
-		libexec.PullOciImage(name, args[i], types.Options{
-			TmpDir:           tmpDir,
-			Force:            force,
-			NoHTTPS:          noHTTPS,
-			DockerAuthConfig: authConf,
-			NoCleanUp:        noCleanUp,
-		})
+		err = singularity.OciPull(ctx, imgCache, pullTo, pullFrom, tmpDir, ociAuth, noHTTPS, buildArgs.noCleanUp)
+		if err != nil {
+			sylog.Fatalf("While making image from oci registry: %v", err)
+		}
 	default:
 		sylog.Fatalf("Unsupported transport type: %s", transport)
 	}
-	// This will exit 1 if the pulled container is signed by
-	// a unknown signer, i.e, if you dont have the key in your
-	// local keyring. theres proboly a better way to do this...
-	os.Exit(exitStat)
 }
 
 func handlePullFlags(cmd *cobra.Command) {
@@ -249,26 +261,27 @@ func handlePullFlags(cmd *cobra.Command) {
 	// otherwise fall back on regular authtoken and URI behavior
 	endpoint, err := sylabsRemote(remoteConfig)
 	if err == scs.ErrNoDefault {
-		sylog.Warningf("No default remote in use, falling back to: %v", PullLibraryURI)
-		sylog.Debugf("using default key server url: %v", KeyServerURL)
+		sylog.Warningf("No default remote in use, falling back to: %v", pullLibraryURI)
+		sylog.Debugf("Using default key server url: %v", keyServerURL)
 		return
-	} else if err != nil {
+	}
+	if err != nil {
 		sylog.Fatalf("Unable to load remote configuration: %v", err)
 	}
 
 	authToken = endpoint.Token
 	if !cmd.Flags().Lookup("library").Changed {
-		uri, err := endpoint.GetServiceURI("library")
+		libraryURI, err := endpoint.GetServiceURI("library")
 		if err != nil {
 			sylog.Fatalf("Unable to get library service URI: %v", err)
 		}
-		PullLibraryURI = uri
+		pullLibraryURI = libraryURI
 	}
 
-	uri, err := endpoint.GetServiceURI("keystore")
+	keystoreURI, err := endpoint.GetServiceURI("keystore")
 	if err != nil {
-		sylog.Warningf("Unable to get library service URI: %v, defaulting to %s.", err, KeyServerURL)
+		sylog.Warningf("Unable to get library service URI: %v, defaulting to %s", err, keyServerURL)
 		return
 	}
-	KeyServerURL = uri
+	keyServerURL = keystoreURI
 }

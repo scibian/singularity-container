@@ -8,65 +8,49 @@ package cli
 import (
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
+	"github.com/sylabs/singularity/internal/app/singularity"
+	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/cmdline"
 )
 
 func init() {
-	options := []string{
-		"add-caps",
-		"allow-setuid",
-		"apply-cgroups",
-		"bind",
-		"boot",
-		"contain",
-		"containall",
-		"containlibs",
-		"cleanenv",
-		"docker-login",
-		"docker-username",
-		"docker-password",
-		"dns",
-		"drop-caps",
-		"fakeroot",
-		"home",
-		"hostname",
-		"keep-privs",
-		"net",
-		"network",
-		"network-args",
-		"no-home",
-		"no-nv",
-		"no-privs",
-		"nv",
-		"overlay",
-		"scratch",
-		"security",
-		"userns",
-		"uts",
-		"workdir",
-		"writable",
-		"writable-tmpfs",
-	}
-
-	for _, opt := range options {
-		InstanceStartCmd.Flags().AddFlag(actionFlags.Lookup(opt))
-	}
-
-	InstanceStartCmd.Flags().SetInterspersed(false)
+	cmdManager.RegisterFlagForCmd(&instanceStartPidFileFlag, instanceStartCmd)
 }
 
-// InstanceStartCmd singularity instance start
-var InstanceStartCmd = &cobra.Command{
+// --pid-file
+var instanceStartPidFile string
+var instanceStartPidFileFlag = cmdline.Flag{
+	ID:           "instanceStartPidFileFlag",
+	Value:        &instanceStartPidFile,
+	DefaultValue: "",
+	Name:         "pid-file",
+	Usage:        "write instance PID to the file with the given name",
+	EnvKeys:      []string{"PID_FILE"},
+}
+
+// singularity instance start
+var instanceStartCmd = &cobra.Command{
 	Args:                  cobra.MinimumNArgs(2),
 	PreRun:                actionPreRun,
 	DisableFlagsInUseLine: true,
 	Run: func(cmd *cobra.Command, args []string) {
+		image := args[0]
+		name := args[1]
+
 		a := append([]string{"/.singularity.d/actions/start"}, args[2:]...)
 		setVM(cmd)
 		if VM {
-			execVM(cmd, args[0], a)
+			execVM(cmd, image, a)
 			return
 		}
-		execStarter(cmd, args[0], a, args[1])
+		execStarter(cmd, image, a, name)
+
+		if instanceStartPidFile != "" {
+			err := singularity.WriteInstancePidFile(name, instanceStartPidFile)
+			if err != nil {
+				sylog.Warningf("Failed to write pid file: %v", err)
+			}
+		}
 	},
 
 	Use:     docs.InstanceStartUse,

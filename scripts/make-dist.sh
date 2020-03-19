@@ -1,5 +1,5 @@
 #!/bin/sh -
-# Copyright (c) Sylabs Inc. All rights reserved.
+# Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be found
 # in the LICENSE file.
 set -e
@@ -11,18 +11,40 @@ if [ ! -f $package_name.spec ]; then
     exit 1
 fi
 
-package_version_short="`sed -n 's/^Version: //p' $package_name.spec`"
-tree_version="$package_version_short-`sed -n 's/^Release: \([^%]*\).*/\1/p' $package_name.spec`"
+version=$1
 
-echo " DIST setup VERSION: $tree_version"
-echo $tree_version > VERSION
+if test -z "${version}" ; then
+    cat >&2 <-EOT
+	This program requires a version number as argument.
+	
+	        $0 {version}
+	EOT
+    exit 1
+fi
+
+echo " DIST setup VERSION: ${version}"
+echo "${version}" > VERSION
 rmfiles="VERSION"
-tarball="$package_name-$package_version_short.tar.gz"
+tarball="${package_name}-${version}.tar.gz"
 echo " DIST create tarball: $tarball"
 rm -f $tarball
 pathtop="$package_name"
 ln -sf .. builddir/$pathtop
 rmfiles="$rmfiles builddir/$pathtop"
 trap "rm -f $rmfiles" 0
-(echo VERSION; echo $package_name.spec; git ls-files) | \
-    sed "s,^,$pathtop/," | tar -C builddir -T - -czf $tarball
+
+# modules should have been vendored using the correct version of the Go
+# tool, so we expect to find a vendor directory. Bail out if there isn't
+# one.
+if test ! -d vendor ; then
+    echo 'E: vendor directory not found. Abort.'
+    exit 1
+fi
+
+# XXX(mem): In order to accept filenames with colons in it (because of a
+# version number like x.y.z:1.2.3), pass the --force-local flag to tar.
+# This is understood by GNU tar. If other tar programs (also called
+# "tar") don't, this will need to be fixed.
+(echo VERSION; echo $package_name.spec; echo vendor; git ls-files) | \
+    sed "s,^,$pathtop/," |
+    tar --force-local -C builddir -T - -czf "$tarball"

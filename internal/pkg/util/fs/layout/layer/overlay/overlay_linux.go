@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -47,6 +47,11 @@ func (o *Overlay) Add(session *layout.Session, system *mount.System) error {
 	o.lowerDirs = append(o.lowerDirs, path)
 
 	return system.RunBeforeTag(mount.LayerTag, o.createOverlay)
+}
+
+// Dir returns absolute overlay directory within session
+func (o *Overlay) Dir() string {
+	return lowerDir
 }
 
 func (o *Overlay) createOverlay(system *mount.System) error {
@@ -118,8 +123,16 @@ func (o *Overlay) createLayer(rootFsPath string, system *mount.System) error {
 			if strings.HasPrefix(point.Destination, sessionDir) {
 				continue
 			}
-			p := rootFsPath + point.Destination
-			if syscall.Stat(p, st) == nil {
+
+			// get rid of symlinks and resolve the path within the
+			// rootfs path to not have false positive while creating
+			// the layer with calls below
+			dest := fs.EvalRelative(point.Destination, rootFsPath)
+
+			// now we are (almost) sure that we will get path information
+			// for a path in the rootfs path and we would create the right
+			// destination in the layer
+			if syscall.Stat(filepath.Join(rootFsPath, dest), st) == nil {
 				continue
 			}
 			if point.Type == "" {
@@ -128,8 +141,6 @@ func (o *Overlay) createLayer(rootFsPath string, system *mount.System) error {
 					continue
 				}
 			}
-
-			dest := fs.EvalRelative(point.Destination, rootFsPath)
 
 			dest = filepath.Join(lowerDir, dest)
 			if _, err := o.session.GetPath(dest); err == nil {

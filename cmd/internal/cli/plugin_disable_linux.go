@@ -10,11 +10,11 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 )
 
-// PluginDisableCmd disables the named plugin
+// PluginDisableCmd disables the named plugin.
 //
 // singularity plugin disable <name>
 var PluginDisableCmd = &cobra.Command{
-	PreRun: func(cmd *cobra.Command, args []string) { EnsureRootPriv(cmd, pluginContext) },
+	PreRun: EnsureRootPriv,
 	Run: func(cmd *cobra.Command, args []string) {
 		err := singularity.DisablePlugin(args[0], buildcfg.LIBEXECDIR)
 		if err != nil {

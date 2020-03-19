@@ -1,8 +1,9 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
+// +build integration_test
 // +build seccomp
 
 package main
@@ -91,7 +92,7 @@ func testSecurityPriv(t *testing.T) {
 
 // testSecurityConfOwnership tests checks on config files ownerships
 func testSecurityConfOwnership(t *testing.T) {
-	configFile := buildcfg.SYSCONFDIR + "/singularity/singularity.conf"
+	configFile := buildcfg.SINGULARITY_CONF_FILE
 	// Change file ownership (do not try this at home)
 	err := os.Chown(configFile, 1001, 0)
 	if err != nil {
@@ -120,7 +121,12 @@ func TestSecurity(t *testing.T) {
 		force:   true,
 		sandbox: false,
 	}
-	if b, err := imageBuild(opts, imagePath, "../../examples/busybox/Singularity"); err != nil {
+
+	// Create a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+
+	if b, err := imageBuild(imgCache, opts, imagePath, "../../examples/busybox/Singularity"); err != nil {
 		t.Log(string(b))
 		t.Fatalf("unexpected failure: %v", err)
 	}

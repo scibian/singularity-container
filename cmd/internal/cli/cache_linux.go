@@ -13,15 +13,15 @@ import (
 )
 
 func init() {
-	SingularityCmd.AddCommand(CacheCmd)
-	CacheCmd.AddCommand(CacheCleanCmd)
-	CacheCmd.AddCommand(CacheListCmd)
+	cmdManager.RegisterCmd(CacheCmd)
+	cmdManager.RegisterSubCmd(CacheCmd, cacheCleanCmd)
+	cmdManager.RegisterSubCmd(CacheCmd, CacheListCmd)
 }
 
 // CacheCmd : aka, `singularity cache`
 var CacheCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return errors.New("Invalid command")
+		return errors.New("invalid command")
 	},
 	DisableFlagsInUseLine: true,
 

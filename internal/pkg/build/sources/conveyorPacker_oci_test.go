@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,16 +6,19 @@
 package sources_test
 
 import (
+	"context"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
-	"github.com/sylabs/singularity/internal/pkg/test"
+	"github.com/sylabs/singularity/internal/pkg/client/cache"
+	testCache "github.com/sylabs/singularity/internal/pkg/test/tool/cache"
 	"github.com/sylabs/singularity/pkg/build/types"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
 )
@@ -33,14 +36,29 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func setupCache(t *testing.T) (*cache.Handle, func()) {
+	dir := testCache.MakeDir(t, "")
+	h, err := cache.NewHandle(cache.Config{BaseDir: dir})
+	if err != nil {
+		testCache.DeleteDir(t, dir)
+		t.Fatalf("failed to create an image cache handle: %s", err)
+	}
+	return h, func() { testCache.DeleteDir(t, dir) }
+}
+
 // TestOCIConveyorDocker tests if we can pull an alpine image from dockerhub
 func TestOCIConveyorDocker(t *testing.T) {
-	test.DropPrivilege(t)
-	defer test.ResetPrivilege(t)
+	if testing.Short() {
+		t.SkipNow()
+	}
 
-	b, err := types.NewBundle("", "sbuild-oci")
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-oci"), os.TempDir())
 	if err != nil {
-		return
+		t.Fatalf("failed to create new bundle: %s", err)
 	}
 
 	b.Recipe, err = types.NewDefinitionFromURI(dockerURI)
@@ -48,9 +66,11 @@ func TestOCIConveyorDocker(t *testing.T) {
 		t.Fatalf("unable to parse URI %s: %v\n", dockerURI, err)
 	}
 
+	b.Opts.ImgCache = imgCache
+
 	cp := &sources.OCIConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
@@ -61,8 +81,9 @@ func TestOCIConveyorDocker(t *testing.T) {
 // TestOCIConveyorDockerArchive tests if we can use a docker save archive
 // as a source
 func TestOCIConveyorDockerArchive(t *testing.T) {
-	test.DropPrivilege(t)
-	defer test.ResetPrivilege(t)
+	if testing.Short() {
+		t.SkipNow()
+	}
 
 	archive, err := getTestTar(dockerArchiveURI)
 	if err != nil {
@@ -70,7 +91,7 @@ func TestOCIConveyorDockerArchive(t *testing.T) {
 	}
 	defer os.Remove(archive)
 
-	b, err := types.NewBundle("", "sbuild-oci")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-oci"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -81,9 +102,14 @@ func TestOCIConveyorDockerArchive(t *testing.T) {
 		t.Fatalf("unable to parse URI %s: %v\n", archiveURI, err)
 	}
 
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+	b.Opts.ImgCache = imgCache
+
 	cp := &sources.OCIConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
@@ -94,9 +120,6 @@ func TestOCIConveyorDockerArchive(t *testing.T) {
 // TestOCIConveyerDockerDaemon tests if we can use an oci laytout dir
 // as a source
 func TestOCIConveyorDockerDaemon(t *testing.T) {
-	test.DropPrivilege(t)
-	defer test.ResetPrivilege(t)
-
 	cmd := exec.Command("docker", "ps")
 	err := cmd.Run()
 	if err != nil {
@@ -111,7 +134,7 @@ func TestOCIConveyorDockerDaemon(t *testing.T) {
 		return
 	}
 
-	b, err := types.NewBundle("", "sbuild-oci")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-oci"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -122,9 +145,14 @@ func TestOCIConveyorDockerDaemon(t *testing.T) {
 		t.Fatalf("unable to parse URI %s: %v\n", daemonURI, err)
 	}
 
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+	b.Opts.ImgCache = imgCache
+
 	cp := &sources.OCIConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
@@ -135,16 +163,13 @@ func TestOCIConveyorDockerDaemon(t *testing.T) {
 // TestOCIConveyorOCIArchive tests if we can use an oci archive
 // as a source
 func TestOCIConveyorOCIArchive(t *testing.T) {
-	test.DropPrivilege(t)
-	defer test.ResetPrivilege(t)
-
 	archive, err := getTestTar(ociArchiveURI)
 	if err != nil {
 		t.Fatalf("Could not download oci archive test file: %v", err)
 	}
 	defer os.Remove(archive)
 
-	b, err := types.NewBundle("", "sbuild-oci")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-oci"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -155,9 +180,14 @@ func TestOCIConveyorOCIArchive(t *testing.T) {
 		t.Fatalf("unable to parse URI %s: %v\n", archiveURI, err)
 	}
 
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+	b.Opts.ImgCache = imgCache
+
 	cp := &sources.OCIConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
@@ -168,9 +198,6 @@ func TestOCIConveyorOCIArchive(t *testing.T) {
 // TestOCIConveyerOCILayout tests if we can use an oci layout dir
 // as a source
 func TestOCIConveyorOCILayout(t *testing.T) {
-	test.DropPrivilege(t)
-	defer test.ResetPrivilege(t)
-
 	archive, err := getTestTar(ociArchiveURI)
 	if err != nil {
 		t.Fatalf("Could not download oci archive test file: %v", err)
@@ -190,7 +217,7 @@ func TestOCIConveyorOCILayout(t *testing.T) {
 		t.Fatalf("Error extracting oci archive to layout: %v", err)
 	}
 
-	b, err := types.NewBundle("", "sbuild-oci")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-oci"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -201,9 +228,14 @@ func TestOCIConveyorOCILayout(t *testing.T) {
 		t.Fatalf("unable to parse URI %s: %v\n", layoutURI, err)
 	}
 
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+	b.Opts.ImgCache = imgCache
+
 	cp := &sources.OCIConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
@@ -213,10 +245,7 @@ func TestOCIConveyorOCILayout(t *testing.T) {
 
 // TestOCIPacker checks if we can create a Kitchen
 func TestOCIPacker(t *testing.T) {
-	test.DropPrivilege(t)
-	defer test.ResetPrivilege(t)
-
-	b, err := types.NewBundle("", "sbuild-oci")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-oci"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -228,14 +257,19 @@ func TestOCIPacker(t *testing.T) {
 
 	ocp := &sources.OCIConveyorPacker{}
 
-	err = ocp.Get(b)
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+	b.Opts.ImgCache = imgCache
+
+	err = ocp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer ocp.CleanUp()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", dockerURI, err)
 	}
 
-	_, err = ocp.Pack()
+	_, err = ocp.Pack(context.Background())
 
 	if err != nil {
 		t.Fatalf("failed to Pack from %s: %v\n", dockerURI, err)
