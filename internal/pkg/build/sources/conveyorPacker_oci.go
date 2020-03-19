@@ -28,10 +28,10 @@ import (
 	"github.com/containers/image/signature"
 	"github.com/containers/image/types"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
-	imagetools "github.com/opencontainers/image-tools/image"
 	ociclient "github.com/sylabs/singularity/internal/pkg/client/oci"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/shell"
+	buildTypes "github.com/sylabs/singularity/pkg/build/types"
 	sytypes "github.com/sylabs/singularity/pkg/build/types"
 )
 
@@ -46,7 +46,7 @@ type OCIConveyorPacker struct {
 }
 
 // Get downloads container information from the specified source
-func (cp *OCIConveyorPacker) Get(b *sytypes.Bundle) (err error) {
+func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err error) {
 
 	cp.b = b
 
@@ -58,7 +58,7 @@ func (cp *OCIConveyorPacker) Get(b *sytypes.Bundle) (err error) {
 
 	cp.sysCtx = &types.SystemContext{
 		OCIInsecureSkipTLSVerify:    cp.b.Opts.NoHTTPS,
-		DockerInsecureSkipTLSVerify: cp.b.Opts.NoHTTPS,
+		DockerInsecureSkipTLSVerify: types.NewOptionalBool(cp.b.Opts.NoHTTPS),
 		DockerAuthConfig:            cp.b.Opts.DockerAuthConfig,
 		OSChoice:                    "linux",
 	}
@@ -89,7 +89,7 @@ func (cp *OCIConveyorPacker) Get(b *sytypes.Bundle) (err error) {
 			cp.srcRef, err = ociarchive.ParseReference(ref)
 		} else {
 			// As non-root we need to do a dumb tar extraction first
-			tmpDir, err := ioutil.TempDir("", "temp-oci-")
+			tmpDir, err := ioutil.TempDir(cp.b.Opts.TmpDir, "temp-oci-")
 			if err != nil {
 				return fmt.Errorf("could not create temporary oci directory: %v", err)
 			}
@@ -113,29 +113,31 @@ func (cp *OCIConveyorPacker) Get(b *sytypes.Bundle) (err error) {
 		}
 
 	default:
-		return fmt.Errorf("OCI ConveyorPacker does not support %s", b.Recipe.Header["bootstrap"])
+		return fmt.Errorf("oci conveyorPacker does not support %s", b.Recipe.Header["bootstrap"])
 	}
 
 	if err != nil {
-		return fmt.Errorf("Invalid image source: %v", err)
+		return fmt.Errorf("invalid image source: %v", err)
 	}
 
-	// Grab the modified source ref from the cache
-	cp.srcRef, err = ociclient.ConvertReference(cp.srcRef, cp.sysCtx)
-	if err != nil {
-		return err
+	if !cp.b.Opts.NoCache {
+		// Grab the modified source ref from the cache
+		cp.srcRef, err = ociclient.ConvertReference(ctx, b.Opts.ImgCache, cp.srcRef, cp.sysCtx)
+		if err != nil {
+			return err
+		}
 	}
 
 	// To to do the RootFS extraction we also have to have a location that
 	// contains *only* this image
-	cp.tmpfsRef, err = oci.ParseReference(cp.b.Path + ":" + "tmp")
+	cp.tmpfsRef, err = oci.ParseReference(cp.b.TmpDir + ":" + "tmp")
 
-	err = cp.fetch()
+	err = cp.fetch(ctx)
 	if err != nil {
 		return err
 	}
 
-	cp.imgConfig, err = cp.getConfig()
+	cp.imgConfig, err = cp.getConfig(ctx)
 	if err != nil {
 		return err
 	}
@@ -143,57 +145,53 @@ func (cp *OCIConveyorPacker) Get(b *sytypes.Bundle) (err error) {
 	return nil
 }
 
-// Pack puts relevant objects in a Bundle!
-func (cp *OCIConveyorPacker) Pack() (*sytypes.Bundle, error) {
-	err := cp.unpackTmpfs()
+// Pack puts relevant objects in a Bundle.
+func (cp *OCIConveyorPacker) Pack(ctx context.Context) (*sytypes.Bundle, error) {
+	err := cp.unpackTmpfs(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("While unpacking tmpfs: %v", err)
+		return nil, fmt.Errorf("while unpacking tmpfs: %v", err)
 	}
 
 	err = cp.insertBaseEnv()
 	if err != nil {
-		return nil, fmt.Errorf("While inserting base environment: %v", err)
+		return nil, fmt.Errorf("while inserting base environment: %v", err)
 	}
 
 	err = cp.insertRunScript()
 	if err != nil {
-		return nil, fmt.Errorf("While inserting runscript: %v", err)
+		return nil, fmt.Errorf("while inserting runscript: %v", err)
 	}
 
 	err = cp.insertEnv()
 	if err != nil {
-		return nil, fmt.Errorf("While inserting docker specific environment: %v", err)
+		return nil, fmt.Errorf("while inserting docker specific environment: %v", err)
 	}
 
 	err = cp.insertOCIConfig()
 	if err != nil {
-		return nil, fmt.Errorf("While inserting oci config: %v", err)
+		return nil, fmt.Errorf("while inserting oci config: %v", err)
 	}
 
 	return cp.b, nil
 }
 
-func (cp *OCIConveyorPacker) fetch() (err error) {
+func (cp *OCIConveyorPacker) fetch(ctx context.Context) error {
 	// cp.srcRef contains the cache source reference
-	err = copy.Image(context.Background(), cp.policyCtx, cp.tmpfsRef, cp.srcRef, &copy.Options{
+	_, err := copy.Image(ctx, cp.policyCtx, cp.tmpfsRef, cp.srcRef, &copy.Options{
 		ReportWriter: ioutil.Discard,
 		SourceCtx:    cp.sysCtx,
 	})
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
-func (cp *OCIConveyorPacker) getConfig() (imgspecv1.ImageConfig, error) {
-	img, err := cp.srcRef.NewImage(context.Background(), cp.sysCtx)
+func (cp *OCIConveyorPacker) getConfig(ctx context.Context) (imgspecv1.ImageConfig, error) {
+	img, err := cp.srcRef.NewImage(ctx, cp.sysCtx)
 	if err != nil {
 		return imgspecv1.ImageConfig{}, err
 	}
 	defer img.Close()
 
-	imgSpec, err := img.OCIConfig(context.Background())
+	imgSpec, err := img.OCIConfig(ctx)
 	if err != nil {
 		return imgspecv1.ImageConfig{}, err
 	}
@@ -207,7 +205,7 @@ func (cp *OCIConveyorPacker) insertOCIConfig() error {
 		return err
 	}
 
-	cp.b.JSONObjects["oci-config"] = conf
+	cp.b.JSONObjects[buildTypes.OCIConfigJSON] = conf
 	return nil
 }
 
@@ -288,21 +286,19 @@ func (cp *OCIConveyorPacker) extractArchive(src string, dst string) error {
 	}
 }
 
-func (cp *OCIConveyorPacker) unpackTmpfs() (err error) {
-	refs := []string{"name=tmp"}
-	err = imagetools.UnpackLayout(cp.b.Path, cp.b.Rootfs(), "amd64", refs)
-	return err
+func (cp *OCIConveyorPacker) unpackTmpfs(ctx context.Context) error {
+	return unpackRootfs(ctx, cp.b, cp.tmpfsRef, cp.sysCtx)
 }
 
 func (cp *OCIConveyorPacker) insertBaseEnv() (err error) {
-	if err = makeBaseEnv(cp.b.Rootfs()); err != nil {
+	if err = makeBaseEnv(cp.b.RootfsPath); err != nil {
 		sylog.Errorf("%v", err)
 	}
 	return
 }
 
 func (cp *OCIConveyorPacker) insertRunScript() (err error) {
-	f, err := os.Create(cp.b.Rootfs() + "/.singularity.d/runscript")
+	f, err := os.Create(cp.b.RootfsPath + "/.singularity.d/runscript")
 	if err != nil {
 		return
 	}
@@ -382,7 +378,7 @@ exec "$@"
 
 	f.Sync()
 
-	err = os.Chmod(cp.b.Rootfs()+"/.singularity.d/runscript", 0755)
+	err = os.Chmod(cp.b.RootfsPath+"/.singularity.d/runscript", 0755)
 	if err != nil {
 		return
 	}
@@ -391,7 +387,7 @@ exec "$@"
 }
 
 func (cp *OCIConveyorPacker) insertEnv() (err error) {
-	f, err := os.Create(cp.b.Rootfs() + "/.singularity.d/env/10-docker2singularity.sh")
+	f, err := os.Create(cp.b.RootfsPath + "/.singularity.d/env/10-docker2singularity.sh")
 	if err != nil {
 		return
 	}
@@ -423,7 +419,7 @@ func (cp *OCIConveyorPacker) insertEnv() (err error) {
 
 	f.Sync()
 
-	err = os.Chmod(cp.b.Rootfs()+"/.singularity.d/env/10-docker2singularity.sh", 0755)
+	err = os.Chmod(cp.b.RootfsPath+"/.singularity.d/env/10-docker2singularity.sh", 0755)
 	if err != nil {
 		return
 	}
@@ -433,5 +429,5 @@ func (cp *OCIConveyorPacker) insertEnv() (err error) {
 
 // CleanUp removes any tmpfs owned by the conveyorPacker on the filesystem
 func (cp *OCIConveyorPacker) CleanUp() {
-	os.RemoveAll(cp.b.Path)
+	cp.b.Remove()
 }

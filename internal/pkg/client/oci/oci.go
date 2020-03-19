@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -18,6 +18,7 @@ import (
 	"github.com/containers/image/signature"
 	"github.com/containers/image/transports"
 	"github.com/containers/image/types"
+	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/internal/pkg/client/cache"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 )
@@ -29,16 +30,20 @@ type ImageReference struct {
 }
 
 // ConvertReference converts a source reference into a cache.ImageReference to cache its blobs
-func ConvertReference(src types.ImageReference, sys *types.SystemContext) (types.ImageReference, error) {
+func ConvertReference(ctx context.Context, imgCache *cache.Handle, src types.ImageReference, sys *types.SystemContext) (types.ImageReference, error) {
+	if imgCache == nil {
+		return nil, fmt.Errorf("undefined image cache")
+	}
+
 	// Our cache dir is an OCI directory. We are using this as a 'blob pool'
 	// storing all incoming containers under unique tags, which are a hash of
 	// their source URI.
-	cacheTag, err := calculateRefHash(src, sys)
+	cacheTag, err := calculateRefHash(ctx, src, sys)
 	if err != nil {
 		return nil, err
 	}
 
-	c, err := layout.ParseReference(cache.OciBlob() + ":" + cacheTag)
+	c, err := layout.ParseReference(imgCache.OciBlob + ":" + cacheTag)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +68,7 @@ func (t *ImageReference) newImageSource(ctx context.Context, sys *types.SystemCo
 	}
 
 	// First we are fetching into the cache
-	err = copy.Image(context.Background(), policyCtx, t.ImageReference, t.source, &copy.Options{
+	_, err = copy.Image(ctx, policyCtx, t.ImageReference, t.source, &copy.Options{
 		ReportWriter: w,
 		SourceCtx:    sys,
 	})
@@ -75,13 +80,13 @@ func (t *ImageReference) newImageSource(ctx context.Context, sys *types.SystemCo
 
 // ParseImageName parses a uri (e.g. docker://ubuntu) into it's transport:reference
 // combination and then returns the proper reference
-func ParseImageName(uri string, sys *types.SystemContext) (types.ImageReference, error) {
+func ParseImageName(ctx context.Context, imgCache *cache.Handle, uri string, sys *types.SystemContext) (types.ImageReference, error) {
 	ref, err := parseURI(uri)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to parse image name %v: %v", uri, err)
+		return nil, fmt.Errorf("unable to parse image name %v: %v", uri, err)
 	}
 
-	return ConvertReference(ref, sys)
+	return ConvertReference(ctx, imgCache, ref, sys)
 }
 
 func parseURI(uri string) (types.ImageReference, error) {
@@ -100,43 +105,32 @@ func parseURI(uri string) (types.ImageReference, error) {
 	return transport.ParseReference(split[1])
 }
 
-// TempImageExists returns whether or not the uri exists splatted out in the cache.OciTemp() directory
-func TempImageExists(uri string) (bool, string, error) {
-	sum, err := ImageSHA(uri, nil)
-	if err != nil {
-		return false, "", err
-	}
-
-	split := strings.Split(uri, ":")
-	if len(split) < 2 {
-		return false, "", fmt.Errorf("poorly formatted URI %v", uri)
-	}
-
-	exists, err := cache.OciTempExists(sum, split[1])
-	return exists, cache.OciTempImage(sum, split[1]), err
-}
-
 // ImageSHA calculates the SHA of a uri's manifest
-func ImageSHA(uri string, sys *types.SystemContext) (string, error) {
+func ImageSHA(ctx context.Context, uri string, sys *types.SystemContext) (string, error) {
 	ref, err := parseURI(uri)
 	if err != nil {
-		return "", fmt.Errorf("Unable to parse image name %v: %v", uri, err)
+		return "", fmt.Errorf("unable to parse image name %v: %v", uri, err)
 	}
 
-	return calculateRefHash(ref, sys)
+	return calculateRefHash(ctx, ref, sys)
 }
 
-func calculateRefHash(ref types.ImageReference, sys *types.SystemContext) (string, error) {
-	source, err := ref.NewImageSource(context.TODO(), sys)
+func calculateRefHash(ctx context.Context, ref types.ImageReference, sys *types.SystemContext) (hash string, err error) {
+	source, err := ref.NewImageSource(ctx, sys)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := source.Close(); closeErr != nil {
+			err = errors.Wrapf(err, " (src: %v)", closeErr)
+		}
+	}()
+
+	man, _, err := source.GetManifest(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 
-	man, _, err := source.GetManifest(context.TODO(), nil)
-	if err != nil {
-		return "", err
-	}
-
-	hash := fmt.Sprintf("%x", sha256.Sum256(man))
+	hash = fmt.Sprintf("%x", sha256.Sum256(man))
 	return hash, nil
 }

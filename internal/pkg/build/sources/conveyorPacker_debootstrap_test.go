@@ -6,7 +6,10 @@
 package sources_test
 
 import (
+	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
@@ -26,7 +29,7 @@ func TestDebootstrapConveyor(t *testing.T) {
 
 	test.EnsurePrivilege(t)
 
-	b, err := types.NewBundle("", "sbuild-debootstrap")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-debootstrap"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -40,7 +43,7 @@ func TestDebootstrapConveyor(t *testing.T) {
 
 	cp := sources.DebootstrapConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
@@ -49,6 +52,9 @@ func TestDebootstrapConveyor(t *testing.T) {
 }
 
 func TestDebootstrapPacker(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
 
 	if _, err := exec.LookPath("debootstrap"); err != nil {
 		t.Skip("skipping test, debootstrap not installed")
@@ -56,7 +62,7 @@ func TestDebootstrapPacker(t *testing.T) {
 
 	test.EnsurePrivilege(t)
 
-	b, err := types.NewBundle("", "sbuild-debootstrap")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-debootstrap"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -70,14 +76,14 @@ func TestDebootstrapPacker(t *testing.T) {
 
 	cp := sources.DebootstrapConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("Debootstrap Get failed: %v", err)
 	}
 
-	_, err = cp.Pack()
+	_, err = cp.Pack(context.Background())
 	if err != nil {
 		t.Fatalf("Debootstrap Pack failed: %v", err)
 	}

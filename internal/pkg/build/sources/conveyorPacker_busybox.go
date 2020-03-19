@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,6 +6,7 @@
 package sources
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -29,62 +30,62 @@ type BusyBoxConveyorPacker struct {
 }
 
 // Get just stores the source
-func (c *BusyBoxConveyor) Get(b *types.Bundle) (err error) {
+func (c *BusyBoxConveyor) Get(ctx context.Context, b *types.Bundle) (err error) {
 	c.b = b
 
 	// get mirrorURL, OSVerison, and Includes components to definition
 	mirrorurl, ok := b.Recipe.Header["mirrorurl"]
 	if !ok {
-		return fmt.Errorf("Invalid busybox header, no MirrurURL specified")
+		return fmt.Errorf("invalid busybox header, no mirrur url specified")
 	}
 
 	err = c.insertBaseEnv()
 	if err != nil {
-		return fmt.Errorf("While inserting base environment: %v", err)
+		return fmt.Errorf("while inserting base environment: %v", err)
 	}
 
 	err = c.insertBaseFiles()
 	if err != nil {
-		return fmt.Errorf("While inserting files: %v", err)
+		return fmt.Errorf("while inserting files: %v", err)
 	}
 
 	busyBoxPath, err := c.insertBusyBox(mirrorurl)
 	if err != nil {
-		return fmt.Errorf("While inserting busybox: %v", err)
+		return fmt.Errorf("while inserting busybox: %v", err)
 	}
 
-	cmd := exec.Command(busyBoxPath, `--install`, filepath.Join(c.b.Rootfs(), "/bin"))
+	cmd := exec.Command(busyBoxPath, `--install`, filepath.Join(c.b.RootfsPath, "/bin"))
 
 	sylog.Debugf("\n\tBusyBox Path: %s\n\tMirrorURL: %s\n", busyBoxPath, mirrorurl)
 
 	err = cmd.Run()
 	if err != nil {
-		return fmt.Errorf("While performing busybox install: %v", err)
+		return fmt.Errorf("while performing busybox install: %v", err)
 	}
 
 	return nil
 }
 
 // Pack puts relevant objects in a Bundle!
-func (cp *BusyBoxConveyorPacker) Pack() (b *types.Bundle, err error) {
+func (cp *BusyBoxConveyorPacker) Pack(context.Context) (b *types.Bundle, err error) {
 	err = cp.insertRunScript()
 	if err != nil {
-		return nil, fmt.Errorf("While inserting base environment: %v", err)
+		return nil, fmt.Errorf("while inserting base environment: %v", err)
 	}
 
 	return cp.b, nil
 }
 
 func (c *BusyBoxConveyor) insertBaseFiles() error {
-	if err := ioutil.WriteFile(filepath.Join(c.b.Rootfs(), "/etc/passwd"), []byte("root:!:0:0:root:/root:/bin/sh"), 0664); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(c.b.RootfsPath, "/etc/passwd"), []byte("root:!:0:0:root:/root:/bin/sh"), 0664); err != nil {
 		return err
 	}
 
-	if err := ioutil.WriteFile(filepath.Join(c.b.Rootfs(), "/etc/group"), []byte(" root:x:0:"), 0664); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(c.b.RootfsPath, "/etc/group"), []byte(" root:x:0:"), 0664); err != nil {
 		return err
 	}
 
-	if err := ioutil.WriteFile(filepath.Join(c.b.Rootfs(), "/etc/hosts"), []byte("127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4"), 0664); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(c.b.RootfsPath, "/etc/hosts"), []byte("127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4"), 0664); err != nil {
 		return err
 	}
 
@@ -92,15 +93,15 @@ func (c *BusyBoxConveyor) insertBaseFiles() error {
 }
 
 func (c *BusyBoxConveyor) insertBusyBox(mirrorurl string) (busyBoxPath string, err error) {
-	os.Mkdir(filepath.Join(c.b.Rootfs(), "/bin"), 0755)
+	os.Mkdir(filepath.Join(c.b.RootfsPath, "/bin"), 0755)
 
 	resp, err := http.Get(mirrorurl)
 	if err != nil {
-		return "", fmt.Errorf("While performing http request: %v", err)
+		return "", fmt.Errorf("while performing http request: %v", err)
 	}
 	defer resp.Body.Close()
 
-	f, err := os.Create(filepath.Join(c.b.Rootfs(), "/bin/busybox"))
+	f, err := os.Create(filepath.Join(c.b.RootfsPath, "/bin/busybox"))
 	if err != nil {
 		return
 	}
@@ -113,7 +114,7 @@ func (c *BusyBoxConveyor) insertBusyBox(mirrorurl string) (busyBoxPath string, e
 
 	//Simple check to make sure file received is the correct size
 	if bytesWritten != resp.ContentLength {
-		return "", fmt.Errorf("File received is not the right size. Supposed to be: %v  Actually: %v", resp.ContentLength, bytesWritten)
+		return "", fmt.Errorf("file received is not the right size. supposed to be: %v actually: %v", resp.ContentLength, bytesWritten)
 	}
 
 	err = os.Chmod(f.Name(), 0755)
@@ -121,18 +122,18 @@ func (c *BusyBoxConveyor) insertBusyBox(mirrorurl string) (busyBoxPath string, e
 		return
 	}
 
-	return filepath.Join(c.b.Rootfs(), "/bin/busybox"), nil
+	return filepath.Join(c.b.RootfsPath, "/bin/busybox"), nil
 }
 
 func (c *BusyBoxConveyor) insertBaseEnv() (err error) {
-	if err = makeBaseEnv(c.b.Rootfs()); err != nil {
+	if err = makeBaseEnv(c.b.RootfsPath); err != nil {
 		return
 	}
 	return nil
 }
 
 func (cp *BusyBoxConveyorPacker) insertRunScript() error {
-	if err := ioutil.WriteFile(filepath.Join(cp.b.Rootfs(), "/.singularity.d/runscript"), []byte("#!/bin/sh\n"), 0755); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(cp.b.RootfsPath, "/.singularity.d/runscript"), []byte("#!/bin/sh\n"), 0755); err != nil {
 		return err
 	}
 
@@ -141,5 +142,5 @@ func (cp *BusyBoxConveyorPacker) insertRunScript() error {
 
 // CleanUp removes any tmpfs owned by the conveyorPacker on the filesystem
 func (c *BusyBoxConveyor) CleanUp() {
-	os.RemoveAll(c.b.Path)
+	c.b.Remove()
 }

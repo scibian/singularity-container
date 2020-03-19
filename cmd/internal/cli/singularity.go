@@ -6,36 +6,39 @@
 package cli
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/user"
 	"path"
-	"strings"
+	"path/filepath"
 	"text/template"
 
+	ocitypes "github.com/containers/image/types"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/plugin"
 	scs "github.com/sylabs/singularity/internal/pkg/remote"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/auth"
+	"github.com/sylabs/singularity/internal/pkg/util/fs"
+	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/syfs"
 )
 
-// Global variables for singularity CLI
-var (
-	debug   bool
-	nocolor bool
-	silent  bool
-	verbose bool
-	quiet   bool
-)
+var cmdManager = cmdline.NewCommandManager(singularityCmd)
+
+// CurrentUser holds the current user account information
+var CurrentUser = getCurrentUser()
+
+var defaultTokenFile = getDefaultTokenFile()
 
 var (
 	// TokenFile holds the path to the sylabs auth token file
-	defaultTokenFile, tokenFile string
+	tokenFile string
 	// authToken holds the sylabs auth token
 	authToken, authWarning string
 	// default remote configuration for comparison
@@ -44,58 +47,218 @@ var (
 		Token:  "",
 		System: true,
 	}
+
+	dockerAuthConfig ocitypes.DockerAuthConfig
+	dockerLogin      bool
+
+	encryptionPEMPath   string
+	promptForPassphrase bool
+	forceOverwrite      bool
+	noHTTPS             bool
+	tmpDir              string
 )
 
 const (
 	envPrefix = "SINGULARITY_"
 )
 
+// singularity command flags
+var (
+	debug   bool
+	nocolor bool
+	silent  bool
+	verbose bool
+	quiet   bool
+)
+
+// -d|--debug
+var singDebugFlag = cmdline.Flag{
+	ID:           "singDebugFlag",
+	Value:        &debug,
+	DefaultValue: false,
+	Name:         "debug",
+	ShortHand:    "d",
+	Usage:        "print debugging information (highest verbosity)",
+}
+
+// --nocolor
+var singNoColorFlag = cmdline.Flag{
+	ID:           "singNoColorFlag",
+	Value:        &nocolor,
+	DefaultValue: false,
+	Name:         "nocolor",
+	Usage:        "print without color output (default False)",
+}
+
+// -s|--silent
+var singSilentFlag = cmdline.Flag{
+	ID:           "singSilentFlag",
+	Value:        &silent,
+	DefaultValue: false,
+	Name:         "silent",
+	ShortHand:    "s",
+	Usage:        "only print errors",
+}
+
+// -q|--quiet
+var singQuietFlag = cmdline.Flag{
+	ID:           "singQuietFlag",
+	Value:        &quiet,
+	DefaultValue: false,
+	Name:         "quiet",
+	ShortHand:    "q",
+	Usage:        "suppress normal output",
+}
+
+// -v|--verbose
+var singVerboseFlag = cmdline.Flag{
+	ID:           "singVerboseFlag",
+	Value:        &verbose,
+	DefaultValue: false,
+	Name:         "verbose",
+	ShortHand:    "v",
+	Usage:        "print additional information",
+}
+
+var singTokenFileFlag = cmdline.Flag{
+	ID:           "singTokenFileFlag",
+	Value:        &tokenFile,
+	DefaultValue: defaultTokenFile,
+	Name:         "tokenfile",
+	ShortHand:    "t",
+	Usage:        "path to the file holding your sylabs authentication token",
+	Deprecated:   "Use 'singularity remote' to manage remote endpoints and tokens.",
+}
+
+// --docker-username
+var dockerUsernameFlag = cmdline.Flag{
+	ID:           "dockerUsernameFlag",
+	Value:        &dockerAuthConfig.Username,
+	DefaultValue: "",
+	Name:         "docker-username",
+	Usage:        "specify a username for docker authentication",
+	Hidden:       true,
+	EnvKeys:      []string{"DOCKER_USERNAME"},
+}
+
+// --docker-password
+var dockerPasswordFlag = cmdline.Flag{
+	ID:           "dockerPasswordFlag",
+	Value:        &dockerAuthConfig.Password,
+	DefaultValue: "",
+	Name:         "docker-password",
+	Usage:        "specify a password for docker authentication",
+	Hidden:       true,
+	EnvKeys:      []string{"DOCKER_PASSWORD"},
+}
+
+// --docker-login
+var dockerLoginFlag = cmdline.Flag{
+	ID:           "dockerLoginFlag",
+	Value:        &dockerLogin,
+	DefaultValue: false,
+	Name:         "docker-login",
+	Usage:        "login to a Docker Repository interactively",
+	EnvKeys:      []string{"DOCKER_LOGIN"},
+}
+
+// --passphrase
+var commonPromptForPassphraseFlag = cmdline.Flag{
+	ID:           "commonPromptForPassphraseFlag",
+	Value:        &promptForPassphrase,
+	DefaultValue: false,
+	Name:         "passphrase",
+	Usage:        "prompt for an encryption passphrase",
+}
+
+// --pem-path
+var commonPEMFlag = cmdline.Flag{
+	ID:           "actionEncryptionPEMPath",
+	Value:        &encryptionPEMPath,
+	DefaultValue: "",
+	Name:         "pem-path",
+	Usage:        "enter an path to a PEM formated RSA key for an encrypted container",
+}
+
+// -F|--force
+var commonForceFlag = cmdline.Flag{
+	ID:           "commonForceFlag",
+	Value:        &forceOverwrite,
+	DefaultValue: false,
+	Name:         "force",
+	ShortHand:    "F",
+	Usage:        "overwrite an image file if it exists",
+	EnvKeys:      []string{"FORCE"},
+}
+
+// --nohttps
+var commonNoHTTPSFlag = cmdline.Flag{
+	ID:           "commonNoHTTPSFlag",
+	Value:        &noHTTPS,
+	DefaultValue: false,
+	Name:         "nohttps",
+	Usage:        "do NOT use HTTPS with the docker:// transport (useful for local docker registries without a certificate)",
+	EnvKeys:      []string{"NOHTTPS"},
+}
+
+// --tmpdir
+var commonTmpDirFlag = cmdline.Flag{
+	ID:           "commonTmpDirFlag",
+	Value:        &tmpDir,
+	DefaultValue: os.TempDir(),
+	Hidden:       true,
+	Name:         "tmpdir",
+	Usage:        "specify a temporary directory to use for build",
+	EnvKeys:      []string{"TMPDIR"},
+}
+
+func getCurrentUser() *user.User {
+	usr, err := user.Current()
+	if err != nil {
+		sylog.Fatalf("Couldn't determine user account information: %v", err)
+	}
+	return usr
+}
+
+func getDefaultTokenFile() string {
+	return path.Join(syfs.ConfigDir(), "sylabs-token")
+}
+
 // initializePlugins should be called in any init() function which needs to interact with the plugin
 // systems internal API. This will guarantee that any internal API calls happen AFTER all plugins
 // have been properly loaded and initialized
 func initializePlugins() {
 	if err := plugin.InitializeAll(buildcfg.LIBEXECDIR); err != nil {
-		sylog.Fatalf("Unable to initialize plugins: %s\n", err)
+		sylog.Errorf("Unable to initialize plugins: %s", err)
 	}
 }
 
 func init() {
-	SingularityCmd.Flags().SetInterspersed(false)
-	SingularityCmd.PersistentFlags().SetInterspersed(false)
+	singularityCmd.Flags().SetInterspersed(false)
+	singularityCmd.PersistentFlags().SetInterspersed(false)
 
 	templateFuncs := template.FuncMap{
 		"TraverseParentsUses": TraverseParentsUses,
 	}
 	cobra.AddTemplateFuncs(templateFuncs)
 
-	SingularityCmd.SetHelpTemplate(docs.HelpTemplate)
-	SingularityCmd.SetUsageTemplate(docs.UseTemplate)
+	singularityCmd.SetHelpTemplate(docs.HelpTemplate)
+	singularityCmd.SetUsageTemplate(docs.UseTemplate)
 
 	vt := fmt.Sprintf("%s version {{printf \"%%s\" .Version}}\n", buildcfg.PACKAGE_NAME)
-	SingularityCmd.SetVersionTemplate(vt)
+	singularityCmd.SetVersionTemplate(vt)
 
-	usr, err := user.Current()
-	if err != nil {
-		sylog.Fatalf("Couldn't determine user home directory: %v", err)
-	}
-	defaultTokenFile = path.Join(usr.HomeDir, ".singularity", "sylabs-token")
+	cmdManager.RegisterFlagForCmd(&singDebugFlag, singularityCmd)
+	cmdManager.RegisterFlagForCmd(&singNoColorFlag, singularityCmd)
+	cmdManager.RegisterFlagForCmd(&singSilentFlag, singularityCmd)
+	cmdManager.RegisterFlagForCmd(&singQuietFlag, singularityCmd)
+	cmdManager.RegisterFlagForCmd(&singVerboseFlag, singularityCmd)
+	cmdManager.RegisterFlagForCmd(&singTokenFileFlag, singularityCmd)
 
-	SingularityCmd.Flags().BoolVarP(&debug, "debug", "d", false, "print debugging information (highest verbosity)")
-	SingularityCmd.Flags().BoolVar(&nocolor, "nocolor", false, "print without color output (default False)")
-	SingularityCmd.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
-	SingularityCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress normal output")
-	SingularityCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print additional information")
-	SingularityCmd.Flags().StringVarP(&tokenFile, "tokenfile", "t", defaultTokenFile, "path to the file holding your sylabs authentication token")
-	SingularityCmd.Flags().MarkDeprecated("tokenfile", "Use 'singularity remote' to manage remote endpoints and tokens.")
-
-	VersionCmd.Flags().SetInterspersed(false)
-	SingularityCmd.AddCommand(VersionCmd)
-
-	initializePlugins()
-	plugin.AddCommands(SingularityCmd)
+	cmdManager.RegisterCmd(VersionCmd)
 }
 
-func setSylogMessageLevel(cmd *cobra.Command, args []string) {
+func setSylogMessageLevel() {
 	var level int
 
 	if debug {
@@ -113,19 +276,56 @@ func setSylogMessageLevel(cmd *cobra.Command, args []string) {
 	sylog.SetLevel(level)
 }
 
-func setSylogColor(cmd *cobra.Command, args []string) {
+func setSylogColor() {
 	if nocolor {
 		sylog.DisableColor()
 	}
 }
 
-// SingularityCmd is the base command when called without any subcommands
-var SingularityCmd = &cobra.Command{
+// handleRemoteConf will make sure your 'remote.yaml' config file
+// is the correct permission.
+func handleRemoteConf(remoteConfFile string) {
+	// Only check the permission if it exists.
+	if fs.IsFile(remoteConfFile) {
+		sylog.Debugf("Ensuring file permission of 0600 on %s", remoteConfFile)
+		if err := fs.EnsureFileWithPermission(remoteConfFile, 0600); err != nil {
+			sylog.Fatalf("Unable to correct the permission on %s: %s", remoteConfFile, err)
+		}
+	}
+}
+
+// handleConfDir tries to create the user's configuration directory and handles
+// messages and/or errors.
+func handleConfDir(confDir string) {
+	if err := fs.Mkdir(confDir, 0700); err != nil {
+		if os.IsExist(err) {
+			sylog.Debugf("%s already exists. Not creating.", confDir)
+			fi, err := os.Stat(confDir)
+			if err != nil {
+				sylog.Fatalf("Failed to retrieve information for %s: %s", confDir, err)
+			}
+			if fi.Mode().Perm() != 0700 {
+				sylog.Debugf("Enforce permission 0700 on %s", confDir)
+				// enforce permission on user configuration directory
+				if err := os.Chmod(confDir, 0700); err != nil {
+					// best effort as chmod could fail for various reasons (eg: readonly FS)
+					sylog.Warningf("Couldn't enforce permission 0700 on %s: %s", confDir, err)
+				}
+			}
+		} else {
+			sylog.Debugf("Could not create %s: %s", confDir, err)
+		}
+	} else {
+		sylog.Debugf("Created %s", confDir)
+	}
+}
+
+// singularityCmd is the base command when called without any subcommands
+var singularityCmd = &cobra.Command{
 	TraverseChildren:      true,
 	DisableFlagsInUseLine: true,
-	PersistentPreRun:      persistentPreRun,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return errors.New("Invalid command")
+		return cmdline.CommandError("invalid command")
 	},
 
 	Use:           docs.SingularityUse,
@@ -137,24 +337,65 @@ var SingularityCmd = &cobra.Command{
 	SilenceUsage:  true,
 }
 
+func persistentPreRunE(cmd *cobra.Command, _ []string) error {
+	setSylogMessageLevel()
+	setSylogColor()
+	sylog.Debugf("Singularity version: %s", buildcfg.PACKAGE_VERSION)
+
+	// Handle the config dir (~/.singularity),
+	// then check the remove conf file permission.
+	handleConfDir(syfs.ConfigDir())
+	handleRemoteConf(syfs.RemoteConf())
+	return cmdManager.UpdateCmdFlagFromEnv(cmd, envPrefix)
+}
+
+// RootCmd returns the root singularity cobra command.
+func RootCmd() *cobra.Command {
+	return singularityCmd
+}
+
 // ExecuteSingularity adds all child commands to the root command and sets
 // flags appropriately. This is called by main.main(). It only needs to happen
 // once to the root command (singularity).
 func ExecuteSingularity() {
-	if cmd, err := SingularityCmd.ExecuteC(); err != nil {
-		if str := err.Error(); strings.Contains(str, "unknown flag: ") {
-			flag := strings.TrimPrefix(str, "unknown flag: ")
-			SingularityCmd.Printf("Invalid flag %q for command %q.\n\nOptions:\n\n%s\n",
-				flag,
-				cmd.Name(),
-				cmd.Flags().FlagUsagesWrapped(getColumns()))
-		} else {
-			SingularityCmd.Println(cmd.UsageString())
+	// set persistent pre run function here to avoid initialization loop error
+	singularityCmd.PersistentPreRunE = persistentPreRunE
+
+	for _, e := range cmdManager.GetError() {
+		sylog.Errorf("%s", e)
+	}
+	// any error reported by command manager is considered as fatal
+	cliErrors := len(cmdManager.GetError())
+	if cliErrors > 0 {
+		sylog.Fatalf("CLI command manager reported %d error(s)", cliErrors)
+	}
+
+	for _, m := range plugin.CLIMutators() {
+		m.Mutate(cmdManager)
+	}
+
+	if cmd, err := singularityCmd.ExecuteC(); err != nil {
+		name := cmd.Name()
+		switch err.(type) {
+		case cmdline.FlagError:
+			usage := cmd.Flags().FlagUsagesWrapped(getColumns())
+			singularityCmd.Printf("Error for command %q: %s\n\n", name, err)
+			singularityCmd.Printf("Options for %s command:\n\n%s\n", name, usage)
+		case cmdline.CommandError:
+			singularityCmd.Println(cmd.UsageString())
+		default:
+			singularityCmd.Printf("Error for command %q: %s\n\n", name, err)
+			singularityCmd.Println(cmd.UsageString())
 		}
-		SingularityCmd.Printf("Run '%s --help' for more detailed usage information.\n",
+		singularityCmd.Printf("Run '%s --help' for more detailed usage information.\n",
 			cmd.CommandPath())
 		os.Exit(1)
 	}
+}
+
+// GenBashCompletionFile
+func GenBashCompletion(w io.Writer) error {
+	return singularityCmd.GenBashCompletion(w)
 }
 
 // TraverseParentsUses walks the parent commands and outputs a properly formatted use string
@@ -175,34 +416,6 @@ var VersionCmd = &cobra.Command{
 
 	Use:   "version",
 	Short: "Show the version for Singularity",
-}
-
-func updateFlagsFromEnv(cmd *cobra.Command) {
-	cmd.Flags().VisitAll(handleEnv)
-}
-
-func handleEnv(flag *pflag.Flag) {
-	envKeys, ok := flag.Annotations["envkey"]
-	if !ok {
-		return
-	}
-
-	for _, key := range envKeys {
-		val, set := os.LookupEnv(envPrefix + key)
-		if !set {
-			continue
-		}
-
-		updateFn := flagEnvFuncs[flag.Name]
-		updateFn(flag, val)
-	}
-
-}
-
-func persistentPreRun(cmd *cobra.Command, args []string) {
-	setSylogMessageLevel(cmd, args)
-	setSylogColor(cmd, args)
-	updateFlagsFromEnv(cmd)
 }
 
 // sylabsToken process the authentication Token
@@ -321,141 +534,33 @@ func sylabsRemote(filepath string) (*scs.EndPoint, error) {
 	return endpoint, nil
 }
 
-// envAppend combines command line and environment var into a single argument
-func envAppend(flag *pflag.Flag, envvar string) {
-	if err := flag.Value.Set(envvar); err != nil {
-		sylog.Warningf("Unable to set %s to environment variable value %s", flag.Name, envvar)
-	} else {
-		flag.Changed = true
-		sylog.Debugf("Update flag Value to: %s", flag.Value)
-	}
-}
+func singularityExec(image string, args []string) (string, error) {
+	// Record from stdout and store as a string to return as the contents of the file.
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
-// envBool sets a bool flag if the CLI option is unset and env var is set
-func envBool(flag *pflag.Flag, envvar string) {
-	if flag.Changed || envvar == "" {
-		return
+	abspath, err := filepath.Abs(image)
+	if err != nil {
+		return "", fmt.Errorf("while determining absolute path for %s: %v", image, err)
 	}
 
-	if err := flag.Value.Set(envvar); err != nil {
-		sylog.Debugf("Unable to set flag %s to value %s: %s", flag.Name, envvar, err)
-		if err := flag.Value.Set("true"); err != nil {
-			sylog.Warningf("Unable to set flag %s to value %s: %s", flag.Name, envvar, err)
-			return
-		}
+	// re-use singularity exec to grab image file content,
+	// we reduce binds to the bare minimum with options below
+	cmdArgs := []string{"exec", "--contain", "--no-home", "--no-nv", "--no-rocm", abspath}
+	cmdArgs = append(cmdArgs, args...)
+
+	singularityCmd := filepath.Join(buildcfg.BINDIR, "singularity")
+
+	cmd := exec.Command(singularityCmd, cmdArgs...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	// move to the root to not bind the current working directory
+	// while inspecting the image
+	cmd.Dir = "/"
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("unable to process command: %s: error output:\n%s", err, stderr.String())
 	}
 
-	flag.Changed = true
-	sylog.Debugf("Set %s Value to: %s", flag.Name, flag.Value)
-}
-
-// envStringNSlice writes to a string or slice flag if CLI option/argument
-// string is unset and env var is set
-func envStringNSlice(flag *pflag.Flag, envvar string) {
-	if flag.Changed {
-		return
-	}
-
-	if err := flag.Value.Set(envvar); err != nil {
-		sylog.Warningf("Unable to set flag %s to value %s: %s", flag.Name, envvar, err)
-		return
-	}
-
-	flag.Changed = true
-	sylog.Debugf("Set %s Value to: %s", flag.Name, flag.Value)
-}
-
-type envHandle func(*pflag.Flag, string)
-
-// map of functions to use to bind flags to environment variables
-var flagEnvFuncs = map[string]envHandle{
-	// action flags
-	"bind":          envAppend,
-	"home":          envStringNSlice,
-	"overlay":       envStringNSlice,
-	"scratch":       envStringNSlice,
-	"workdir":       envStringNSlice,
-	"shell":         envStringNSlice,
-	"pwd":           envStringNSlice,
-	"hostname":      envStringNSlice,
-	"network":       envStringNSlice,
-	"network-args":  envStringNSlice,
-	"dns":           envStringNSlice,
-	"containlibs":   envStringNSlice,
-	"security":      envStringNSlice,
-	"apply-cgroups": envStringNSlice,
-	"app":           envStringNSlice,
-
-	"boot":           envBool,
-	"fakeroot":       envBool,
-	"cleanenv":       envBool,
-	"contain":        envBool,
-	"containall":     envBool,
-	"nv":             envBool,
-	"no-nv":          envBool,
-	"vm":             envBool,
-	"writable":       envBool,
-	"writable-tmpfs": envBool,
-	"no-home":        envBool,
-	"no-init":        envBool,
-
-	"pid":    envBool,
-	"ipc":    envBool,
-	"net":    envBool,
-	"uts":    envBool,
-	"userns": envBool,
-
-	"keep-privs":   envBool,
-	"no-privs":     envBool,
-	"add-caps":     envStringNSlice,
-	"drop-caps":    envStringNSlice,
-	"allow-setuid": envBool,
-
-	// build flags
-	"sandbox": envBool,
-	"section": envStringNSlice,
-	"json":    envBool,
-	"name":    envStringNSlice,
-	// "writable": envBool, // set above for now
-	"force":           envBool,
-	"update":          envBool,
-	"notest":          envBool,
-	"remote":          envBool,
-	"detached":        envBool,
-	"builder":         envStringNSlice,
-	"library":         envStringNSlice,
-	"nohttps":         envBool,
-	"no-cleanup":      envBool,
-	"tmpdir":          envStringNSlice,
-	"docker-username": envStringNSlice,
-	"docker-password": envStringNSlice,
-	"docker-login":    envBool,
-
-	// push/pull flags
-	"allow-unauthenticated": envBool,
-	"allow-unsigned":        envBool,
-
-	// capability flags (and others)
-	"user":  envStringNSlice,
-	"group": envStringNSlice,
-	"desc":  envBool,
-	"all":   envBool,
-
-	// instance flags
-	"signal": envStringNSlice,
-
-	// keys flags
-	"secret": envBool,
-	"url":    envStringNSlice,
-
-	// verify flag
-	"local": envBool,
-
-	// inspect flags
-	"labels":      envBool,
-	"deffile":     envBool,
-	"runscript":   envBool,
-	"test":        envBool,
-	"environment": envBool,
-	"helpfile":    envBool,
+	return stdout.String(), nil
 }

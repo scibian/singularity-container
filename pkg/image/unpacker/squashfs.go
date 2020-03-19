@@ -11,9 +11,10 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
-// Squashfs represents a squashfs unpacker
+// Squashfs represents a squashfs unpacker.
 type Squashfs struct {
 	UnsquashfsPath string
 }
@@ -40,9 +41,13 @@ func (s *Squashfs) extract(files []string, reader io.Reader, dest string) error 
 	filename := "/proc/self/fd/0"
 
 	if _, ok := reader.(*os.File); !ok {
+		// use the destination parent directory to store the
+		// temporary archive
+		tmpdir := filepath.Dir(dest)
+
 		// unsquashfs doesn't support to send file content over
 		// a stdin pipe since it use lseek for every read it does
-		tmp, err := ioutil.TempFile("", "archive-")
+		tmp, err := ioutil.TempFile(tmpdir, "archive-")
 		if err != nil {
 			return fmt.Errorf("failed to create staging file: %s", err)
 		}
@@ -64,20 +69,20 @@ func (s *Squashfs) extract(files []string, reader io.Reader, dest string) error 
 	if stdin {
 		cmd.Stdin = reader
 	}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("extract command failed: %s", err)
+	if o, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extract command failed: %s: %s", string(o), err)
 	}
 	return nil
 }
 
 // ExtractAll extracts a squashfs filesystem read from reader to a
-// destination directory
+// destination directory.
 func (s *Squashfs) ExtractAll(reader io.Reader, dest string) error {
-	return s.extract([]string{}, reader, dest)
+	return s.extract(nil, reader, dest)
 }
 
 // ExtractFiles extracts provided files from a squashfs filesystem
-// read from reader to a destination directory
+// read from reader to a destination directory.
 func (s *Squashfs) ExtractFiles(files []string, reader io.Reader, dest string) error {
 	if len(files) == 0 {
 		return fmt.Errorf("no files to extract")

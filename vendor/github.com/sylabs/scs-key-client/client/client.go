@@ -6,10 +6,24 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+)
+
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+	schemeHKP   = "hkp"
+	schemeHKPS  = "hkps"
+)
+
+var (
+	// ErrTLSRequired is returned when an auth token is supplied with a non-TLS BaseURL.
+	ErrTLSRequired = errors.New("TLS required when auth token provided")
 )
 
 // Config contains the client configuration.
@@ -47,6 +61,32 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+// normalizeURL normalizes the scheme of the supplied URL. If an unsupported scheme is provided, an
+// error is returned.
+func normalizeURL(u *url.URL) (*url.URL, error) {
+	switch u.Scheme {
+	case schemeHTTP, schemeHTTPS:
+		return u, nil
+	case schemeHKP:
+		// The HKP scheme is HTTP and implies port 11371.
+		newURL := *u
+		newURL.Scheme = schemeHTTP
+		if u.Port() == "" {
+			newURL.Host = net.JoinHostPort(u.Hostname(), "11371")
+		}
+		return &newURL, nil
+	case schemeHKPS:
+		// The HKPS scheme is HTTPS and implies port 443.
+		newURL := *u
+		newURL.Scheme = schemeHTTPS
+		return &newURL, nil
+	default:
+		return nil, fmt.Errorf("unsupported protocol scheme %q", u.Scheme)
+	}
+}
+
+const defaultBaseURL = "https://keys.sylabs.io"
+
 // NewClient sets up a new Key Service client with the specified base URL and auth token.
 func NewClient(cfg *Config) (c *Client, err error) {
 	if cfg == nil {
@@ -54,13 +94,22 @@ func NewClient(cfg *Config) (c *Client, err error) {
 	}
 
 	// Determine base URL
-	bu := "https://keys.sylabs.io"
+	bu := defaultBaseURL
 	if cfg.BaseURL != "" {
 		bu = cfg.BaseURL
 	}
 	baseURL, err := url.Parse(bu)
 	if err != nil {
 		return nil, err
+	}
+	baseURL, err = normalizeURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// If auth token is used, verify TLS.
+	if cfg.AuthToken != "" && baseURL.Scheme != schemeHTTPS && baseURL.Hostname() != "localhost" {
+		return nil, ErrTLSRequired
 	}
 
 	c = &Client{
@@ -85,6 +134,15 @@ func (c *Client) newRequest(method, path, rawQuery string, body io.Reader) (r *h
 		Path:     path,
 		RawQuery: rawQuery,
 	})
+	u, err = normalizeURL(u)
+	if err != nil {
+		return nil, err
+	}
+
+	// If auth token is used, verify TLS.
+	if c.AuthToken != "" && u.Scheme != schemeHTTPS && u.Hostname() != "localhost" {
+		return nil, ErrTLSRequired
+	}
 
 	r, err = http.NewRequest(method, u.String(), body)
 	if err != nil {

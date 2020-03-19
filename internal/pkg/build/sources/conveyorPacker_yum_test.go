@@ -6,8 +6,10 @@
 package sources
 
 import (
+	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/sylabs/singularity/internal/pkg/test"
@@ -37,7 +39,7 @@ func TestYumConveyor(t *testing.T) {
 	defer defFile.Close()
 
 	// create bundle to build into
-	b, err := types.NewBundle("", "sbuild-yum")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-yum"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -49,15 +51,19 @@ func TestYumConveyor(t *testing.T) {
 
 	yc := &YumConveyor{}
 
-	err = yc.Get(b)
+	err = yc.Get(context.Background(), b)
 	// clean up bundle since assembler isnt called
-	defer os.RemoveAll(yc.b.Path)
+	defer yc.b.Remove()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", yumDef, err)
 	}
 }
 
 func TestYumPacker(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	_, dnfErr := exec.LookPath("dnf")
 	_, yumErr := exec.LookPath("yum")
 	if dnfErr != nil && yumErr != nil {
@@ -73,7 +79,7 @@ func TestYumPacker(t *testing.T) {
 	defer defFile.Close()
 
 	// create bundle to build into
-	b, err := types.NewBundle("", "sbuild-yum")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-yum"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -85,14 +91,14 @@ func TestYumPacker(t *testing.T) {
 
 	ycp := &YumConveyorPacker{}
 
-	err = ycp.Get(b)
+	err = ycp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
-	defer os.RemoveAll(ycp.b.Path)
+	defer ycp.b.Remove()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", yumDef, err)
 	}
 
-	_, err = ycp.Pack()
+	_, err = ycp.Pack(context.Background())
 	if err != nil {
 		t.Fatalf("failed to Pack from %s: %v\n", yumDef, err)
 	}

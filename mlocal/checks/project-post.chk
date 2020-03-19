@@ -14,6 +14,7 @@ config_add_def PACKAGE_BUGREPORT \"support@sylabs.io\"
 config_add_def PACKAGE_URL \"\"
 
 config_add_def BUILDDIR \"$builddir\"
+config_add_def SOURCEDIR \"$sourcedir\"
 config_add_def PREFIX \"$prefix\"
 config_add_def EXECPREFIX \"$exec_prefix\"
 config_add_def BINDIR \"$bindir\"
@@ -37,9 +38,12 @@ config_add_def LIBDIR \"$libdir\"
 config_add_def LOCALEDIR \"$localedir\"
 config_add_def MANDIR \"$mandir\"
 config_add_def SINGULARITY_CONFDIR SYSCONFDIR \"/singularity\"
+config_add_def SINGULARITY_CONF_FILE SINGULARITY_CONFDIR \"/singularity.conf\"
 config_add_def CAPABILITY_FILE SINGULARITY_CONFDIR \"/capability.json\"
 config_add_def ECL_FILE SINGULARITY_CONFDIR \"/ecl.toml\"
+config_add_def NVIDIALIBS_FILE SINGULARITY_CONFDIR \"/nvliblist.conf\"
 config_add_def SESSIONDIR LOCALSTATEDIR \"/singularity/mnt/session\"
+config_add_def SINGULARITY_SUID_INSTALL $with_suid
 
 build_runtime=0
 if [ "$host" = "unix" ]; then
@@ -340,14 +344,36 @@ fi
 # libseccomp dev
 ########################
 printf " checking: libseccomp+headers... "
+seccomp_iflags=`pkg-config --cflags-only-I libseccomp 2>/dev/null || true`
 if ! printf "#include <seccomp.h>\nint main() { seccomp_syscall_resolve_name(\"read\"); }" | \
-   $tgtcc $user_cflags $ldflags -x c -o /dev/null - -lseccomp >/dev/null 2>&1; then
+   $tgtcc $user_cflags $ldflags $seccomp_iflags -x c -o /dev/null - -lseccomp >/dev/null 2>&1; then
     tgtstatic=0
     echo "no"
 else
     echo "yes"
     appsec=1
 fi
+
+########################
+# cryptsetup dev
+########################
+if test "${host}" = "unix" ; then
+   printf " checking: cryptsetup... "
+   TMP_PATH=${sbindir}:${bindir}:/usr/local/sbin:/sbin:/usr/sbin:${PATH}
+   cryptsetup_path=`PATH=${TMP_PATH} command -v cryptsetup || true`
+   if test -z "${cryptsetup_path}" ; then
+      echo "no"
+      echo
+      echo "unable to find the cryptsetup program, is the package cryptsetup-bin installed?"
+      echo
+   else
+      echo "yes"
+   fi
+fi
+
+# Add this even if it's not available, that way we can test for an empty
+# CRYPTSETUP_PATH at runtime.
+config_add_def CRYPTSETUP_PATH \"${cryptsetup_path}\"
 
 config_add_footer
 

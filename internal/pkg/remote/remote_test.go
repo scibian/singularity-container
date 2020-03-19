@@ -13,9 +13,18 @@ import (
 	"testing"
 
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
+	yaml "gopkg.in/yaml.v2"
 )
 
-//NOTE: VerifyToken() cannot be tested unless we have a dummy token for the token service to authenticate
+//NOTE: VerifyToken() cannot be fully tested unless we have a dummy token for the token service to authenticate, so we basically only test a few error cases.
+func TestVerifyToken(t *testing.T) {
+	ep := new(EndPoint)
+
+	err := ep.VerifyToken()
+	if err == nil {
+		t.Fatal("VerifyToken() succeeded with an empty endpoint")
+	}
+}
 
 func TestMain(m *testing.M) {
 	useragent.InitValue("singularity", "3.0.0-alpha.1-303-gaed8d30-dirty")
@@ -26,6 +35,10 @@ func TestMain(m *testing.M) {
 type writeReadTest struct {
 	name string
 	c    Config
+}
+
+type aDummyData struct {
+	NoneSenseRemote string
 }
 
 func TestWriteToReadFrom(t *testing.T) {
@@ -55,6 +68,16 @@ func TestWriteToReadFrom(t *testing.T) {
 		},
 	}
 
+	testsFail := []struct {
+		name string
+		data aDummyData
+	}{
+		{
+			name: "invalid data",
+			data: aDummyData{NoneSenseRemote: "toto"},
+		},
+	}
+
 	for _, test := range testsPass {
 		t.Run(test.name, func(t *testing.T) {
 			var r bytes.Buffer
@@ -72,6 +95,27 @@ func TestWriteToReadFrom(t *testing.T) {
 		})
 	}
 
+	for _, test := range testsFail {
+		t.Run(test.name, func(t *testing.T) {
+			var r bytes.Buffer
+
+			yaml, err := yaml.Marshal(test.data)
+			if err != nil {
+				t.Fatalf("cannot mashal YAML: %s\n", err)
+			}
+
+			_, err = r.Write(yaml)
+			if err != nil {
+				t.Fatalf("failed to write YAML data")
+			}
+
+			_, err = ReadFrom(&r)
+			if err == nil {
+				t.Fatal("reading an invalid YAML file succeeded")
+			}
+		})
+	}
+
 	t.Run("empty config no data", func(t *testing.T) {
 		var r bytes.Buffer
 
@@ -82,7 +126,6 @@ func TestWriteToReadFrom(t *testing.T) {
 		}
 
 	})
-
 }
 
 type syncTest struct {

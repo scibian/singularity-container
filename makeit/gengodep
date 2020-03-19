@@ -1,11 +1,42 @@
 #!/bin/sh
 
-srcdir=$1
+if [ "$1" != "-v2" ] ; then
+	cat 1>&2 <<-EOT
+
+========================================================================
+A non-backwards compatible change has been added to the build system and
+it's necessary to start fresh.
+
+Please remove the build directory ("builddir" by default) and run
+mconfig again.
+========================================================================
+
+	EOT
+	exit 1
+fi
+
 shift
 
-go list \
+go=$1
+srcdir=$2
+gotags=$3
+
+shift 3
+
+# this is needed so that the value we are getting from the makefile does
+# get propagated down to go list.
+export GOPROXY
+
+if test -e "${srcdir}/vendor/modules.txt" ; then
+	mod_mode=vendor
+else
+	mod_mode=readonly
+fi
+
+"${go}" list -mod=${mod_mode} \
 	-deps \
-	-f '{{ with $d := . }}{{ range $d.GoFiles }}{{ $d.Dir }}/{{ . }} {{ end }}{{ end }}' \
+	-f '{{ with $d := . }}{{ range $d.GoFiles }}{{ $d.Dir }}/{{ . }} {{ end }}{{ range $d.CgoFiles }}{{ $d.Dir }}/{{ . }} {{ end }}{{ end }}' \
+	-tags "${gotags}" \
 	"$@" |
 tr ' ' '\n' |
 sort -u |

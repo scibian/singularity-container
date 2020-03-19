@@ -14,43 +14,46 @@ package main
 import "C"
 
 import (
-	"os"
 	"runtime"
 	"unsafe"
 
 	"github.com/sylabs/singularity/internal/app/starter"
-	"github.com/sylabs/singularity/internal/pkg/runtime/engines"
-	starterConfig "github.com/sylabs/singularity/internal/pkg/runtime/engines/config/starter"
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine"
+	starterConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/config/starter"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 	_ "github.com/sylabs/singularity/internal/pkg/util/goversion"
 	"github.com/sylabs/singularity/internal/pkg/util/mainthread"
+
+	// register engines
+	_ "github.com/sylabs/singularity/cmd/starter/engines"
 )
 
-func getEngine(jsonConfig []byte) *engines.Engine {
-	engine, err := engines.NewEngine(jsonConfig)
+func getEngine(jsonConfig []byte) *engine.Engine {
+	e, err := engine.Get(jsonConfig)
 	if err != nil {
-		sylog.Fatalf("failed to initialize runtime: %s\n", err)
+		sylog.Fatalf("Failed to initialize runtime engine: %s\n", err)
 	}
-	return engine
+	return e
 }
 
 func startup() {
-	loglevel := os.Getenv("SINGULARITY_MESSAGELEVEL")
-	os.Clearenv()
-	if loglevel != "" {
-		if os.Setenv("SINGULARITY_MESSAGELEVEL", loglevel) != nil {
-			sylog.Warningf("can't restore SINGULARITY_MESSAGELEVEL environment variable")
-		}
-	}
-
-	cconf := unsafe.Pointer(C.config)
-	sconfig := starterConfig.NewConfig(starterConfig.CConfig(cconf))
+	// global variable defined in cmd/starter/c/starter.c,
+	// C.sconfig points to a shared memory area
+	csconf := unsafe.Pointer(C.sconfig)
+	// initialize starter configuration
+	sconfig := starterConfig.NewConfig(starterConfig.SConfig(csconf))
+	// get JSON configuration originally passed from CLI
 	jsonConfig := sconfig.GetJSONConfig()
 
-	switch C.execute {
+	// get engine operations previously registered
+	// by the above import
+	e := getEngine(jsonConfig)
+	sylog.Debugf("%s runtime engine selected", e.EngineName)
+
+	switch C.goexecute {
 	case C.STAGE1:
 		sylog.Verbosef("Execute stage 1\n")
-		starter.Stage(int(C.STAGE1), int(C.master_socket[1]), sconfig, getEngine(jsonConfig))
+		starter.StageOne(sconfig, e)
 	case C.STAGE2:
 		sylog.Verbosef("Execute stage 2\n")
 		if err := sconfig.Release(); err != nil {
@@ -58,19 +61,18 @@ func startup() {
 		}
 
 		mainthread.Execute(func() {
-			starter.Stage(int(C.STAGE2), int(C.master_socket[1]), sconfig, getEngine(jsonConfig))
+			starter.StageTwo(int(C.master_socket[1]), e)
 		})
 	case C.MASTER:
 		sylog.Verbosef("Execute master process\n")
 
-		isInstance := sconfig.GetInstance()
 		pid := sconfig.GetContainerPid()
 
 		if err := sconfig.Release(); err != nil {
 			sylog.Fatalf("%s", err)
 		}
 
-		starter.Master(int(C.rpc_socket[0]), int(C.master_socket[0]), isInstance, pid, getEngine(jsonConfig))
+		starter.Master(int(C.rpc_socket[0]), int(C.master_socket[0]), pid, e)
 	case C.RPC_SERVER:
 		sylog.Verbosef("Serve RPC requests\n")
 
@@ -78,8 +80,7 @@ func startup() {
 			sylog.Fatalf("%s", err)
 		}
 
-		name := engines.GetName(jsonConfig)
-		starter.RPCServer(int(C.rpc_socket[1]), name)
+		starter.RPCServer(int(C.rpc_socket[1]), e)
 	}
 	sylog.Fatalf("You should not be there\n")
 }
@@ -91,10 +92,13 @@ func init() {
 	runtime.GOMAXPROCS(1)
 }
 
+// main function is executed after starter.c init function.
+// Depending on the value of goexecute from starter.c Go will act differently,
+// e.g. it may launch container process or spawn a container monitor. Thus
+// Go runtime appears to be in a different environment based on the current
+// execution stage.
 func main() {
-	// initialize runtime engines
-	engines.Init()
-
+	// spawn a goroutine to use mainthread later
 	go startup()
 
 	// run functions requiring execution in main thread

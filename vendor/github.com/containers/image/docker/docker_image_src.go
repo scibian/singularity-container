@@ -13,9 +13,10 @@ import (
 
 	"github.com/containers/image/docker/reference"
 	"github.com/containers/image/manifest"
+	"github.com/containers/image/pkg/sysregistriesv2"
 	"github.com/containers/image/types"
 	"github.com/docker/distribution/registry/client"
-	"github.com/opencontainers/go-digest"
+	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -30,15 +31,65 @@ type dockerImageSource struct {
 
 // newImageSource creates a new ImageSource for the specified image reference.
 // The caller must call .Close() on the returned ImageSource.
-func newImageSource(sys *types.SystemContext, ref dockerReference) (*dockerImageSource, error) {
-	c, err := newDockerClientFromRef(sys, ref, false, "pull")
+func newImageSource(ctx context.Context, sys *types.SystemContext, ref dockerReference) (*dockerImageSource, error) {
+	registry, err := sysregistriesv2.FindRegistry(sys, ref.ref.Name())
+	if err != nil {
+		return nil, errors.Wrapf(err, "error loading registries configuration")
+	}
+	if registry == nil {
+		// No configuration was found for the provided reference, so use the
+		// equivalent of a default configuration.
+		registry = &sysregistriesv2.Registry{
+			Endpoint: sysregistriesv2.Endpoint{
+				Location: ref.ref.String(),
+			},
+			Prefix: ref.ref.String(),
+		}
+	}
+
+	primaryDomain := reference.Domain(ref.ref)
+	// Check all endpoints for the manifest availability. If we find one that does
+	// contain the image, it will be used for all future pull actions.  Always try the
+	// non-mirror original location last; this both transparently handles the case
+	// of no mirrors configured, and ensures we return the error encountered when
+	// acessing the upstream location if all endpoints fail.
+	manifestLoadErr := errors.New("Internal error: newImageSource returned without trying any endpoint")
+	pullSources, err := registry.PullSourcesFromReference(ref.ref)
 	if err != nil {
 		return nil, err
 	}
-	return &dockerImageSource{
-		ref: ref,
-		c:   c,
-	}, nil
+	for _, pullSource := range pullSources {
+		logrus.Debugf("Trying to pull %q", pullSource.Reference)
+		dockerRef, err := newReference(pullSource.Reference)
+		if err != nil {
+			return nil, err
+		}
+
+		endpointSys := sys
+		// sys.DockerAuthConfig does not explicitly specify a registry; we must not blindly send the credentials intended for the primary endpoint to mirrors.
+		if endpointSys != nil && endpointSys.DockerAuthConfig != nil && reference.Domain(dockerRef.ref) != primaryDomain {
+			copy := *endpointSys
+			copy.DockerAuthConfig = nil
+			endpointSys = &copy
+		}
+
+		client, err := newDockerClientFromRef(endpointSys, dockerRef, false, "pull")
+		if err != nil {
+			return nil, err
+		}
+		client.tlsClientConfig.InsecureSkipVerify = pullSource.Endpoint.Insecure
+
+		testImageSource := &dockerImageSource{
+			ref: dockerRef,
+			c:   client,
+		}
+
+		manifestLoadErr = testImageSource.ensureManifestIsLoaded(ctx)
+		if manifestLoadErr == nil {
+			return testImageSource, nil
+		}
+	}
+	return nil, manifestLoadErr
 }
 
 // Reference returns the reference used to set up this source, _as specified by the user_
@@ -87,9 +138,10 @@ func (s *dockerImageSource) GetManifest(ctx context.Context, instanceDigest *dig
 
 func (s *dockerImageSource) fetchManifest(ctx context.Context, tagOrDigest string) ([]byte, string, error) {
 	path := fmt.Sprintf(manifestPath, reference.Path(s.ref.ref), tagOrDigest)
-	headers := make(map[string][]string)
-	headers["Accept"] = manifest.DefaultRequestedManifestMIMETypes
-	res, err := s.c.makeRequest(ctx, "GET", path, headers, nil)
+	headers := map[string][]string{
+		"Accept": manifest.DefaultRequestedManifestMIMETypes,
+	}
+	res, err := s.c.makeRequest(ctx, "GET", path, headers, nil, v2Auth, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -137,20 +189,20 @@ func (s *dockerImageSource) getExternalBlob(ctx context.Context, urls []string) 
 		err  error
 	)
 	for _, url := range urls {
-		resp, err = s.c.makeRequestToResolvedURL(ctx, "GET", url, nil, nil, -1, false)
+		resp, err = s.c.makeRequestToResolvedURL(ctx, "GET", url, nil, nil, -1, noAuth, nil)
 		if err == nil {
 			if resp.StatusCode != http.StatusOK {
-				err = errors.Errorf("error fetching external blob from %q: %d", url, resp.StatusCode)
+				err = errors.Errorf("error fetching external blob from %q: %d (%s)", url, resp.StatusCode, http.StatusText(resp.StatusCode))
 				logrus.Debug(err)
 				continue
 			}
 			break
 		}
 	}
-	if resp.Body != nil && err == nil {
-		return resp.Body, getBlobSize(resp), nil
+	if err != nil {
+		return nil, 0, err
 	}
-	return nil, 0, err
+	return resp.Body, getBlobSize(resp), nil
 }
 
 func getBlobSize(resp *http.Response) int64 {
@@ -161,22 +213,30 @@ func getBlobSize(resp *http.Response) int64 {
 	return size
 }
 
+// HasThreadSafeGetBlob indicates whether GetBlob can be executed concurrently.
+func (s *dockerImageSource) HasThreadSafeGetBlob() bool {
+	return true
+}
+
 // GetBlob returns a stream for the specified blob, and the blob’s size (or -1 if unknown).
-func (s *dockerImageSource) GetBlob(ctx context.Context, info types.BlobInfo) (io.ReadCloser, int64, error) {
+// The Digest field in BlobInfo is guaranteed to be provided, Size may be -1 and MediaType may be optionally provided.
+// May update BlobInfoCache, preferably after it knows for certain that a blob truly exists at a specific location.
+func (s *dockerImageSource) GetBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache) (io.ReadCloser, int64, error) {
 	if len(info.URLs) != 0 {
 		return s.getExternalBlob(ctx, info.URLs)
 	}
 
 	path := fmt.Sprintf(blobsPath, reference.Path(s.ref.ref), info.Digest.String())
 	logrus.Debugf("Downloading %s", path)
-	res, err := s.c.makeRequest(ctx, "GET", path, nil, nil)
+	res, err := s.c.makeRequest(ctx, "GET", path, nil, nil, v2Auth, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	if res.StatusCode != http.StatusOK {
 		// print url also
-		return nil, 0, errors.Errorf("Invalid status code returned when fetching blob %d", res.StatusCode)
+		return nil, 0, errors.Errorf("Invalid status code returned when fetching blob %d (%s)", res.StatusCode, http.StatusText(res.StatusCode))
 	}
+	cache.RecordKnownLocation(s.ref.Transport(), bicTransportScope(s.ref), info.Digest, newBICLocationReference(s.ref))
 	return res.Body, getBlobSize(res), nil
 }
 
@@ -274,7 +334,7 @@ func (s *dockerImageSource) getOneSignature(ctx context.Context, url *url.URL) (
 		if res.StatusCode == http.StatusNotFound {
 			return nil, true, nil
 		} else if res.StatusCode != http.StatusOK {
-			return nil, false, errors.Errorf("Error reading signature from %s: status %d", url.String(), res.StatusCode)
+			return nil, false, errors.Errorf("Error reading signature from %s: status %d (%s)", url.String(), res.StatusCode, http.StatusText(res.StatusCode))
 		}
 		sig, err := ioutil.ReadAll(res.Body)
 		if err != nil {
@@ -310,22 +370,27 @@ func (s *dockerImageSource) getSignaturesFromAPIExtension(ctx context.Context, i
 
 // deleteImage deletes the named image from the registry, if supported.
 func deleteImage(ctx context.Context, sys *types.SystemContext, ref dockerReference) error {
-	c, err := newDockerClientFromRef(sys, ref, true, "push")
+	// docker/distribution does not document what action should be used for deleting images.
+	//
+	// Current docker/distribution requires "pull" for reading the manifest and "delete" for deleting it.
+	// quay.io requires "push" (an explicit "pull" is unnecessary), does not grant any token (fails parsing the request) if "delete" is included.
+	// OpenShift ignores the action string (both the password and the token is an OpenShift API token identifying a user).
+	//
+	// We have to hard-code a single string, luckily both docker/distribution and quay.io support "*" to mean "everything".
+	c, err := newDockerClientFromRef(sys, ref, true, "*")
 	if err != nil {
 		return err
 	}
 
-	// When retrieving the digest from a registry >= 2.3 use the following header:
-	//   "Accept": "application/vnd.docker.distribution.manifest.v2+json"
-	headers := make(map[string][]string)
-	headers["Accept"] = []string{manifest.DockerV2Schema2MediaType}
-
+	headers := map[string][]string{
+		"Accept": manifest.DefaultRequestedManifestMIMETypes,
+	}
 	refTail, err := ref.tagOrDigest()
 	if err != nil {
 		return err
 	}
 	getPath := fmt.Sprintf(manifestPath, reference.Path(ref.ref), refTail)
-	get, err := c.makeRequest(ctx, "GET", getPath, headers, nil)
+	get, err := c.makeRequest(ctx, "GET", getPath, headers, nil, v2Auth, nil)
 	if err != nil {
 		return err
 	}
@@ -347,7 +412,7 @@ func deleteImage(ctx context.Context, sys *types.SystemContext, ref dockerRefere
 
 	// When retrieving the digest from a registry >= 2.3 use the following header:
 	//   "Accept": "application/vnd.docker.distribution.manifest.v2+json"
-	delete, err := c.makeRequest(ctx, "DELETE", deletePath, headers, nil)
+	delete, err := c.makeRequest(ctx, "DELETE", deletePath, headers, nil, v2Auth, nil)
 	if err != nil {
 		return err
 	}

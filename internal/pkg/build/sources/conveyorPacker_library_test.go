@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,6 +6,9 @@
 package sources_test
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
@@ -26,7 +29,7 @@ func TestLibraryConveyor(t *testing.T) {
 
 	test.EnsurePrivilege(t)
 
-	b, err := types.NewBundle("", "sbuild-library")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-library"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -40,7 +43,12 @@ func TestLibraryConveyor(t *testing.T) {
 
 	cp := &sources.LibraryConveyorPacker{}
 
-	err = cp.Get(b)
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+	b.Opts.ImgCache = imgCache
+
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
@@ -52,7 +60,7 @@ func TestLibraryConveyor(t *testing.T) {
 func TestLibraryPacker(t *testing.T) {
 	test.EnsurePrivilege(t)
 
-	b, err := types.NewBundle("", "sbuild-library")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-library"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -66,14 +74,19 @@ func TestLibraryPacker(t *testing.T) {
 
 	cp := &sources.LibraryConveyorPacker{}
 
-	err = cp.Get(b)
+	// set a clean image cache
+	imgCache, cleanup := setupCache(t)
+	defer cleanup()
+	b.Opts.ImgCache = imgCache
+
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", libraryURI, err)
 	}
 
-	_, err = cp.Pack()
+	_, err = cp.Pack(context.Background())
 	if err != nil {
 		t.Fatalf("failed to Pack from %s: %v\n", libraryURI, err)
 	}

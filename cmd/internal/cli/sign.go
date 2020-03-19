@@ -7,46 +7,100 @@ package cli
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/cmdline"
 	"github.com/sylabs/singularity/pkg/signing"
 )
 
 var (
 	privKey int // -k encryption key (index from 'keys list') specification
+	signAll bool
 )
 
+// -u|--url
+var signServerURIFlag = cmdline.Flag{
+	ID:           "signServerURIFlag",
+	Value:        &keyServerURI,
+	DefaultValue: defaultKeyServer,
+	Name:         "url",
+	ShortHand:    "u",
+	Usage:        "key server URL",
+	EnvKeys:      []string{"URL"},
+}
+
+// -g|--groupid
+var signSifGroupIDFlag = cmdline.Flag{
+	ID:           "signSifGroupIDFlag",
+	Value:        &sifGroupID,
+	DefaultValue: uint32(0),
+	Name:         "groupid",
+	ShortHand:    "g",
+	Usage:        "group ID to be signed",
+}
+
+// -i| --sif-id
+var signSifDescSifIDFlag = cmdline.Flag{
+	ID:           "signSifDescSifIDFlag",
+	Value:        &sifDescID,
+	DefaultValue: uint32(0),
+	Name:         "sif-id",
+	ShortHand:    "i",
+	Usage:        "descriptor ID to be signed (default system-partition)",
+}
+
+// --id (deprecated)
+var signSifDescIDFlag = cmdline.Flag{
+	ID:           "signSifDescIDFlag",
+	Value:        &sifDescID,
+	DefaultValue: uint32(0),
+	Name:         "id",
+	Usage:        "descriptor ID to be signed",
+	Deprecated:   "use '--sif-id'",
+}
+
+// -k|--keyidx
+var signKeyIdxFlag = cmdline.Flag{
+	ID:           "signKeyIdxFlag",
+	Value:        &privKey,
+	DefaultValue: -1,
+	Name:         "keyidx",
+	ShortHand:    "k",
+	Usage:        "private key to use (index from 'keys list')",
+}
+
+// -a|--all
+var signAllFlag = cmdline.Flag{
+	ID:           "signAllFlag",
+	Value:        &signAll,
+	DefaultValue: false,
+	Name:         "all",
+	ShortHand:    "a",
+	Usage:        "sign all non-signature partitions in a SIF",
+}
+
 func init() {
-	SignCmd.Flags().SetInterspersed(false)
+	cmdManager.RegisterCmd(SignCmd)
 
-	SignCmd.Flags().StringVarP(&keyServerURI, "url", "u", defaultKeyServer, "key server URL")
-	SignCmd.Flags().SetAnnotation("url", "envkey", []string{"URL"})
-	SignCmd.Flags().Uint32VarP(&sifGroupID, "groupid", "g", 0, "group ID to be signed")
-	SignCmd.Flags().Uint32VarP(&sifDescID, "id", "i", 0, "descriptor ID to be signed")
-	SignCmd.Flags().IntVarP(&privKey, "keyidx", "k", -1, "private key to use (index from 'keys list')")
-
-	SingularityCmd.AddCommand(SignCmd)
+	cmdManager.RegisterFlagForCmd(&signServerURIFlag, SignCmd)
+	cmdManager.RegisterFlagForCmd(&signSifGroupIDFlag, SignCmd)
+	cmdManager.RegisterFlagForCmd(&signSifDescSifIDFlag, SignCmd)
+	cmdManager.RegisterFlagForCmd(&signSifDescIDFlag, SignCmd)
+	cmdManager.RegisterFlagForCmd(&signKeyIdxFlag, SignCmd)
+	cmdManager.RegisterFlagForCmd(&signAllFlag, SignCmd)
 }
 
 // SignCmd singularity sign
 var SignCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
 	Args:                  cobra.ExactArgs(1),
-	PreRun:                sylabsToken,
 
 	Run: func(cmd *cobra.Command, args []string) {
-		handleKeyFlags(cmd)
-
 		// args[0] contains image path
 		fmt.Printf("Signing image: %s\n", args[0])
-		if err := doSignCmd(args[0], keyServerURI); err != nil {
-			sylog.Errorf("signing container failed: %s", err)
-			os.Exit(2)
-		}
-		fmt.Printf("Signature created and applied to %v\n", args[0])
+		doSignCmd(cmd, args[0])
 	},
 
 	Use:     docs.SignUse,
@@ -55,9 +109,22 @@ var SignCmd = &cobra.Command{
 	Example: docs.SignExample,
 }
 
-func doSignCmd(cpath, url string) error {
+func doSignCmd(cmd *cobra.Command, cpath string) {
+	// Group id should start at 1.
+	if cmd.Flag(verifySifGroupIDFlag.Name).Changed && sifGroupID == 0 {
+		sylog.Fatalf("invalid group id")
+	}
+
+	// Descriptor id should start at 1.
+	if cmd.Flag(verifySifDescSifIDFlag.Name).Changed && sifDescID == 0 {
+		sylog.Fatalf("invalid descriptor id")
+	}
+	if cmd.Flag(verifySifDescIDFlag.Name).Changed && sifDescID == 0 {
+		sylog.Fatalf("invalid descriptor id")
+	}
+
 	if sifGroupID != 0 && sifDescID != 0 {
-		return fmt.Errorf("only one of -i or -g may be set")
+		sylog.Fatalf("only one of -i or -g may be set")
 	}
 
 	var isGroup bool
@@ -69,5 +136,12 @@ func doSignCmd(cpath, url string) error {
 		id = sifDescID
 	}
 
-	return signing.Sign(cpath, url, id, isGroup, privKey, authToken)
+	if (id != 0 || isGroup) && signAll {
+		sylog.Fatalf("'--all' not compatible with '--sif-id' or '--groupid'")
+	}
+
+	if err := signing.Sign(cpath, id, isGroup, signAll, privKey); err != nil {
+		sylog.Fatalf("Failed to sign container: %s", err)
+	}
+	fmt.Printf("Signature created and applied to %s\n", cpath)
 }

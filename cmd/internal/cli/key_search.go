@@ -6,6 +6,8 @@
 package cli
 
 import (
+	"context"
+	"net/http"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -14,22 +16,17 @@ import (
 	"github.com/sylabs/singularity/pkg/sypgp"
 )
 
-func init() {
-	KeySearchCmd.Flags().SetInterspersed(false)
-
-	KeySearchCmd.Flags().StringVarP(&keyServerURI, "url", "u", defaultKeyServer, "specify the key server URL")
-	KeySearchCmd.Flags().SetAnnotation("url", "envkey", []string{"URL"})
-}
-
-// KeySearchCmd is `singularity key search' and look for public keys from a key server
+// KeySearchCmd is 'singularity key search' and look for public keys from a key server
 var KeySearchCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
 	PreRun:                sylabsToken,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.TODO()
+
 		handleKeyFlags(cmd)
 
-		if err := doKeySearchCmd(args[0], keyServerURI); err != nil {
+		if err := doKeySearchCmd(ctx, args[0], keyServerURI); err != nil {
 			sylog.Errorf("search failed: %s", err)
 			os.Exit(2)
 		}
@@ -41,7 +38,7 @@ var KeySearchCmd = &cobra.Command{
 	Example: docs.KeySearchExample,
 }
 
-func doKeySearchCmd(search string, url string) error {
+func doKeySearchCmd(ctx context.Context, search string, url string) error {
 	// get keyring with matching search string
-	return sypgp.SearchPubkey(search, url, authToken)
+	return sypgp.SearchPubkey(ctx, http.DefaultClient, search, url, authToken, keySearchLongList)
 }

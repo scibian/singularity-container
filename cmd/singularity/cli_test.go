@@ -1,7 +1,9 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
+
+// +build integration_test
 
 package main
 
@@ -29,7 +31,13 @@ func TestSelfTest(t *testing.T) {
 	test.DropPrivilege(t)
 	defer test.ResetPrivilege(t)
 
+	// We always prefer to run tests with a clean temporary image cache rather
+	// than using the cache of the user running the test.
+	// In order to unit test using the singularity cli that is thread-safe,
+	// we prepare a temporary cache that the process running the command will
+	// use.
 	cmd := exec.Command(cmdPath, "selftest")
+	setupCmdCache(t, cmd, "image-cache")
 	if b, err := cmd.CombinedOutput(); err == nil {
 		t.Log(string(b))
 		t.Fatal("unexpected success running selftest")
@@ -46,7 +54,7 @@ func run(m *testing.M) int {
 	cmdPath = path
 
 	// Ensure config is installed
-	if fi, err := os.Stat(buildcfg.SYSCONFDIR + "/singularity/singularity.conf"); err != nil {
+	if fi, err := os.Stat(buildcfg.SINGULARITY_CONF_FILE); err != nil {
 		log.Fatalf("singularity config is not installed on this system: %v", err)
 	} else if !fi.Mode().IsRegular() {
 		log.Fatalf("singularity config is not a regular file")

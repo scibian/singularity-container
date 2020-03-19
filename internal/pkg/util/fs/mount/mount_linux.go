@@ -6,6 +6,7 @@
 package mount
 
 import (
+	"encoding/base64"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,9 @@ const (
 	PreLayerTag = "prelayer"
 	// LayerTag defines tag for overlay/underlay final mount point
 	LayerTag = "layer"
+	// SharedTag defines tag for shared mount point between master
+	// and container processes
+	SharedTag = "shared"
 	// DevTag defines tag for dev related mount point
 	DevTag = "dev"
 	// HostfsTag defines tag for host filesystem mount point
@@ -122,23 +126,25 @@ var authorizedTags = map[AuthorizedTag]struct {
 	RootfsTag:    {false, 1},
 	PreLayerTag:  {true, 2},
 	LayerTag:     {false, 3},
-	DevTag:       {true, 4},
-	HostfsTag:    {true, 5},
-	BindsTag:     {true, 6},
-	KernelTag:    {true, 7},
-	HomeTag:      {false, 8},
-	TmpTag:       {true, 9},
-	ScratchTag:   {true, 10},
-	CwdTag:       {false, 11},
-	FilesTag:     {true, 12},
-	UserbindsTag: {true, 13},
-	OtherTag:     {true, 14},
-	FinalTag:     {true, 15},
+	SharedTag:    {true, 4},
+	DevTag:       {true, 5},
+	HostfsTag:    {true, 6},
+	BindsTag:     {true, 7},
+	KernelTag:    {true, 8},
+	HomeTag:      {false, 9},
+	TmpTag:       {true, 10},
+	ScratchTag:   {true, 11},
+	CwdTag:       {false, 12},
+	FilesTag:     {true, 13},
+	UserbindsTag: {true, 14},
+	OtherTag:     {true, 15},
+	FinalTag:     {true, 16},
 }
 
 var authorizedImage = map[string]fsContext{
-	"ext3":     {true},
-	"squashfs": {true},
+	"encryptfs": {true},
+	"ext3":      {true},
+	"squashfs":  {true},
 }
 
 var authorizedFS = map[string]fsContext{
@@ -150,9 +156,10 @@ var authorizedFS = map[string]fsContext{
 	"proc":    {false},
 	"mqueue":  {false},
 	"cgroup":  {false},
+	"fuse":    {false},
 }
 
-var internalOptions = []string{"loop", "offset", "sizelimit"}
+var internalOptions = []string{"loop", "offset", "sizelimit", "key"}
 
 // Point describes a mount point
 type Point struct {
@@ -298,6 +305,17 @@ func GetSizeLimit(options []string) (uint64, error) {
 		}
 	}
 	return 0, fmt.Errorf("sizelimit option not found")
+}
+
+// GetKey returns key value for image options
+func GetKey(options []string) ([]byte, error) {
+	for _, opt := range options {
+		if strings.HasPrefix(opt, "key=") {
+			keyB64 := strings.TrimPrefix(opt, "key=")
+			return base64.StdEncoding.DecodeString(keyB64)
+		}
+	}
+	return nil, fmt.Errorf("key option not found")
 }
 
 // HasRemountFlag checks if remount flag is set or not.
@@ -490,6 +508,7 @@ func (p *Points) Import(points map[AuthorizedTag][]Point) error {
 			var err error
 			var offset uint64
 			var sizelimit uint64
+			var key []byte
 
 			flags, options := ConvertOptions(point.Options)
 			// check if this is a mount point to remount
@@ -519,10 +538,17 @@ func (p *Points) Import(points map[AuthorizedTag][]Point) error {
 				if strings.HasPrefix(option, "sizelimit=") {
 					fmt.Sscanf(option, "sizelimit=%d", &sizelimit)
 				}
+				if strings.HasPrefix(option, "key=") {
+					keyB64 := strings.TrimPrefix(option, "key=")
+					key, err = base64.StdEncoding.DecodeString(keyB64)
+					if err != nil {
+						return err
+					}
+				}
 			}
 
 			// check if this is an image mount point
-			if err = p.AddImage(tag, point.Source, point.Destination, point.Type, flags, offset, sizelimit); err == nil {
+			if err = p.AddImage(tag, point.Source, point.Destination, point.Type, flags, offset, sizelimit, key); err == nil {
 				continue
 			}
 
@@ -566,7 +592,7 @@ func (p *Points) ImportFromSpec(mounts []specs.Mount) error {
 }
 
 // AddImage adds an image mount point
-func (p *Points) AddImage(tag AuthorizedTag, source string, dest string, fstype string, flags uintptr, offset uint64, sizelimit uint64) error {
+func (p *Points) AddImage(tag AuthorizedTag, source string, dest string, fstype string, flags uintptr, offset uint64, sizelimit uint64, key []byte) error {
 	options := ""
 	if source == "" {
 		return fmt.Errorf("an image mount point must contain a source")
@@ -575,7 +601,7 @@ func (p *Points) AddImage(tag AuthorizedTag, source string, dest string, fstype 
 		return fmt.Errorf("source must be an absolute path")
 	}
 	if flags&(syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_REC) != 0 {
-		return fmt.Errorf("MS_BIND, MS_REC or MS_REMOUNT are not valid flags for image mount points")
+		return fmt.Errorf("ms_bind, ms_rec or ms_remount are not valid flags for image mount points")
 	}
 	if _, ok := authorizedImage[fstype]; !ok {
 		return fmt.Errorf("mount %s image is not authorized", fstype)
@@ -583,7 +609,11 @@ func (p *Points) AddImage(tag AuthorizedTag, source string, dest string, fstype 
 	if sizelimit == 0 {
 		return fmt.Errorf("invalid image size, zero length")
 	}
-	options = fmt.Sprintf("loop,offset=%d,sizelimit=%d,errors=remount-ro", offset, sizelimit)
+	keyB64 := base64.StdEncoding.EncodeToString(key)
+	options = fmt.Sprintf("loop,offset=%d,sizelimit=%d,key=%s", offset, sizelimit, keyB64)
+	if fstype == "ext3" {
+		options += ",errors=remount-ro"
+	}
 	return p.add(tag, source, dest, fstype, flags, options)
 }
 
@@ -635,7 +665,7 @@ func (p *Points) GetAllBinds() []Point {
 // AddOverlay adds an overlay mount point
 func (p *Points) AddOverlay(tag AuthorizedTag, dest string, flags uintptr, lowerdir string, upperdir string, workdir string) error {
 	if flags&(syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_REC) != 0 {
-		return fmt.Errorf("MS_BIND, MS_REC or MS_REMOUNT are not valid flags for overlay mount points")
+		return fmt.Errorf("ms_bind, ms_rec or ms_remount are not valid flags for overlay mount points")
 	}
 	if lowerdir == "" {
 		return fmt.Errorf("overlay mount point %s should have at least lowerdir option", dest)
@@ -683,7 +713,7 @@ func (p *Points) AddFS(tag AuthorizedTag, dest string, fstype string, flags uint
 // AddFSWithSource adds a filesystem mount point
 func (p *Points) AddFSWithSource(tag AuthorizedTag, source string, dest string, fstype string, flags uintptr, options string) error {
 	if flags&(syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_REC) != 0 {
-		return fmt.Errorf("MS_BIND, MS_REC or MS_REMOUNT are not valid flags for FS mount points")
+		return fmt.Errorf("ms_bind, ms_rec or ms_remount are not valid flags for fs mount points")
 	}
 	if _, ok := authorizedFS[fstype]; !ok {
 		return fmt.Errorf("mount %s file system is not authorized", fstype)

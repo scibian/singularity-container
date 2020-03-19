@@ -6,6 +6,7 @@
 package image
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,9 @@ import (
 	"syscall"
 
 	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
+	"github.com/sylabs/singularity/pkg/util/fs/lock"
 )
 
 const (
@@ -25,6 +28,8 @@ const (
 	SANDBOX
 	// SIF constant for sif format
 	SIF
+	// ENCRYPTSQUASHFS constant for encrypted squashfs format
+	ENCRYPTSQUASHFS
 )
 
 const (
@@ -34,12 +39,28 @@ const (
 	bufferSize   = 2048
 )
 
+// debugError represents an error considered for debugging
+// purpose rather than real error, this helps to distinguish
+// those errors between real image format error during
+// initializer loop.
+type debugError string
+
+func (e debugError) Error() string { return string(e) }
+
+func debugErrorf(format string, a ...interface{}) error {
+	e := fmt.Sprintf(format, a...)
+	return debugError(e)
+}
+
+// ErrUnknownFormat represents an unknown image format error.
+var ErrUnknownFormat = errors.New("image format not recognized")
+
 var registeredFormats = []struct {
 	name   string
 	format format
 }{
-	{"sif", &sifFormat{}},
 	{"sandbox", &sandboxFormat{}},
+	{"sif", &sifFormat{}},
 	{"squashfs", &squashfsFormat{}},
 	{"ext3", &ext3Format{}},
 }
@@ -92,49 +113,47 @@ func (i *Image) AuthorizedPath(paths []string) (bool, error) {
 	return authorized, nil
 }
 
-// AuthorizedOwner checks if image is owned by user supplied in users list
+// AuthorizedOwner checks whether the image is owned by any user from the supplied users list.
 func (i *Image) AuthorizedOwner(owners []string) (bool, error) {
-	authorized := false
 	fileinfo, err := i.File.Stat()
 	if err != nil {
-		return authorized, fmt.Errorf("failed to get stat for %s", i.Path)
+		return false, fmt.Errorf("failed to get stat for %s", i.Path)
 	}
+
 	uid := fileinfo.Sys().(*syscall.Stat_t).Uid
 	for _, owner := range owners {
 		pw, err := user.GetPwNam(owner)
 		if err != nil {
-			return authorized, fmt.Errorf("failed to retrieve user information for %s: %s", owner, err)
+			return false, fmt.Errorf("failed to retrieve user information for %s: %s", owner, err)
 		}
 		if pw.UID == uid {
-			authorized = true
-			break
+			return true, nil
 		}
 	}
-	return authorized, nil
+	return false, nil
 }
 
-// AuthorizedGroup checks if image is owned by group supplied in groups list
+// AuthorizedGroup checks whether the image is owned by any group from the supplied groups list.
 func (i *Image) AuthorizedGroup(groups []string) (bool, error) {
-	authorized := false
 	fileinfo, err := i.File.Stat()
 	if err != nil {
-		return authorized, fmt.Errorf("failed to get stat for %s", i.Path)
+		return false, fmt.Errorf("failed to get stat for %s", i.Path)
 	}
+
 	gid := fileinfo.Sys().(*syscall.Stat_t).Gid
 	for _, group := range groups {
 		gr, err := user.GetGrNam(group)
 		if err != nil {
-			return authorized, fmt.Errorf("failed to retrieve group information for %s: %s", group, err)
+			return false, fmt.Errorf("failed to retrieve group information for %s: %s", group, err)
 		}
 		if gr.GID == gid {
-			authorized = true
-			break
+			return true, nil
 		}
 	}
-	return authorized, nil
+	return false, nil
 }
 
-// HasRootFs returns if image contains a root filesystem partition
+// HasRootFs returns true if image contains a root filesystem partition.
 func (i *Image) HasRootFs() bool {
 	for _, p := range i.Partitions {
 		if p.Name == RootFs {
@@ -144,7 +163,47 @@ func (i *Image) HasRootFs() bool {
 	return false
 }
 
-// ResolvePath returns a resolved absolute path
+// LockSection puts a file byte-range lock on a section to prevent
+// from concurrent writes depending if the image is writable or
+// not. If the image is writable, calling this function will place
+// a write lock for the corresponding section preventing further use
+// if the section is used for writing or reading only, if the image is
+// not writable this function place a read lock to prevent section
+// from being written while the section is used in read-only mode.
+func (i *Image) LockSection(section Section) error {
+	fd := int(i.Fd)
+	start := int64(section.Offset)
+	size := int64(section.Size)
+
+	br := lock.NewByteRange(fd, start, size)
+
+	var err error
+
+	if i.Writable {
+		err = br.Lock()
+	} else {
+		err = br.RLock()
+	}
+
+	if err == lock.ErrByteRangeAcquired {
+		if i.Writable {
+			return fmt.Errorf("can't open %s for writing, currently in use by another process", i.Path)
+		}
+		return fmt.Errorf("can't open %s for reading, currently in use for writing by another process", i.Path)
+	} else if err == lock.ErrLockNotSupported {
+		// ENOLCK means that the underlying filesystem doesn't support
+		// lock, so we simply ignore the error in order to allow ext3
+		// images located on the underlying filesystem to run correctly
+		// and advertise user in log
+		sylog.Verbosef("Could not set lock on %s section %q, underlying filesystem seems to not support lock", i.Path, section.Name)
+		sylog.Verbosef("Data corruptions may occur if %s is open for writing by multiple processes", i.Path)
+		return nil
+	}
+
+	return err
+}
+
+// ResolvePath returns a resolved absolute path.
 func ResolvePath(path string) (string, error) {
 	abspath, err := filepath.Abs(path)
 	if err != nil {
@@ -152,14 +211,14 @@ func ResolvePath(path string) (string, error) {
 	}
 	resolvedPath, err := filepath.EvalSymlinks(abspath)
 	if err != nil {
-		return "", fmt.Errorf("failed to retrieved path for %s: %s", path, err)
+		return "", fmt.Errorf("failed to retrieve path for %s: %s", path, err)
 	}
 	return resolvedPath, nil
 }
 
-// Init initializes an image object based on given path
+// Init initializes an image object based on given path.
 func Init(path string, writable bool) (*Image, error) {
-	sylog.Debugf("Entering image format intializer")
+	sylog.Debugf("Image format detection")
 
 	resolvedPath, err := ResolvePath(path)
 	if err != nil {
@@ -172,14 +231,14 @@ func Init(path string, writable bool) (*Image, error) {
 	}
 
 	for _, rf := range registeredFormats {
-		sylog.Debugf("Check for image format %s", rf.name)
+		sylog.Debugf("Check for %s image format", rf.name)
 
 		img.Writable = writable
 
 		mode := rf.format.openMode(writable)
 
 		if mode&os.O_RDWR != 0 {
-			if err := syscall.Access(resolvedPath, 2); err != nil {
+			if !fs.IsWritable(resolvedPath) {
 				sylog.Debugf("Opening %s in read-only mode: no write permissions", path)
 				mode = os.O_RDONLY
 				img.Writable = false
@@ -192,16 +251,22 @@ func Init(path string, writable bool) (*Image, error) {
 		}
 		fileinfo, err := img.File.Stat()
 		if err != nil {
-			img.File.Close()
+			_ = img.File.Close()
 			return nil, err
 		}
 
 		err = rf.format.initializer(img, fileinfo)
-		if err != nil {
-			sylog.Debugf("%s format initializer returns: %s", rf.name, err)
-			img.File.Close()
+		if _, ok := err.(debugError); ok {
+			sylog.Debugf("%s format initializer returned: %v", rf.name, err)
+			_ = img.File.Close()
 			continue
+		} else if err != nil {
+			_ = img.File.Close()
+			return nil, err
 		}
+
+		sylog.Debugf("%s image format detected", rf.name)
+
 		if _, _, err := syscall.Syscall(syscall.SYS_FCNTL, img.File.Fd(), syscall.F_SETFD, syscall.O_CLOEXEC); err != 0 {
 			sylog.Warningf("failed to set O_CLOEXEC flags on image")
 		}
@@ -211,5 +276,5 @@ func Init(path string, writable bool) (*Image, error) {
 
 		return img, nil
 	}
-	return nil, fmt.Errorf("image format not recognized")
+	return nil, ErrUnknownFormat
 }
