@@ -1,3 +1,11 @@
+singularity-container (3.5.3-0sci9u1) scibian9; urgency=medium
+
+  * New upstream version 3.5.3
+  * Update add-gpgkeyring_option.patch for 3.5.3
+  * Import Debian packaging from 3.5.2+ds1-1 version
+
+ -- Pierre Trespeuch <pierre-externe.trespeuch@edf.fr>  Thu, 19 Mar 2020 14:37:21 +0100
+
 singularity-container (3.2.1-0sci9u4) scibian9; urgency=medium
 
   * Rebuild scibian9 version to include golang security patches update
