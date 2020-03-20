@@ -1,0 +1,36 @@
+Remove trimpath go compile option
+
+This cannot be use with golang 1.11 as it was introduced by golang 1.13.
+Index: singularity-container/internal/app/singularity/plugin_compile_linux.go
+===================================================================
+--- singularity-container.orig/internal/app/singularity/plugin_compile_linux.go
++++ singularity-container/internal/app/singularity/plugin_compile_linux.go
+@@ -128,7 +128,6 @@ func buildPlugin(sourceDir string, bTool
+ 		"build",
+ 		"-o", out,
+ 		modFlag,
+-		"-trimpath",
+ 		"-buildmode=plugin",
+ 		"-tags", bTool.buildTags,
+ 		sourceDir,
+@@ -172,7 +171,6 @@ func generateManifest(sourceDir string,
+ 
+ 	args := []string{
+ 		"run",
+-		"-trimpath",
+ 		modFlag,
+ 		"-tags", bTool.buildTags,
+ 		"cmd/plugin/plugin.go",
+Index: singularity-container/mlocal/frags/go_common_opts.mk
+===================================================================
+--- singularity-container.orig/mlocal/frags/go_common_opts.mk
++++ singularity-container/mlocal/frags/go_common_opts.mk
+@@ -7,7 +7,7 @@ GO_BUILDMODE := -buildmode=default
+ GO_GCFLAGS :=
+ GO_ASMFLAGS :=
+ GO_MODFLAGS := $(if $(wildcard $(SOURCEDIR)/vendor/modules.txt),-mod=vendor,-mod=readonly)
+-GOFLAGS := $(GO_MODFLAGS) -trimpath
++GOFLAGS := $(GO_MODFLAGS)
+ GOPROXY := https://proxy.golang.org
+ 
+ export GOFLAGS GO111MODULE GOPROXY
