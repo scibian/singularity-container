@@ -6,7 +6,9 @@
 package sources_test
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
@@ -32,7 +34,7 @@ func TestScratchConveyor(t *testing.T) {
 	}
 	defer defFile.Close()
 
-	b, err := types.NewBundle("", "sbuild-scratch")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-scratch"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -44,7 +46,7 @@ func TestScratchConveyor(t *testing.T) {
 
 	c := &sources.ScratchConveyor{}
 
-	err = c.Get(b)
+	err = c.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer c.CleanUp()
 	if err != nil {
@@ -62,7 +64,7 @@ func TestScratchPacker(t *testing.T) {
 	}
 	defer defFile.Close()
 
-	b, err := types.NewBundle("", "sbuild-scratch")
+	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-scratch"), os.TempDir())
 	if err != nil {
 		return
 	}
@@ -74,14 +76,14 @@ func TestScratchPacker(t *testing.T) {
 
 	cp := &sources.ScratchConveyorPacker{}
 
-	err = cp.Get(b)
+	err = cp.Get(context.Background(), b)
 	// clean up tmpfs since assembler isnt called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", scratchDef, err)
 	}
 
-	_, err = cp.Pack()
+	_, err = cp.Pack(context.Background())
 	if err != nil {
 		t.Fatalf("failed to Pack from %s: %v\n", scratchDef, err)
 	}

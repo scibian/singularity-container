@@ -6,11 +6,15 @@
 package cli
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
+	"github.com/sylabs/scs-library-client/client"
 	"github.com/sylabs/singularity/docs"
+	"github.com/sylabs/singularity/internal/pkg/library"
 	scs "github.com/sylabs/singularity/internal/pkg/remote"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
-	client "github.com/sylabs/singularity/pkg/client/library"
+	"github.com/sylabs/singularity/pkg/cmdline"
 )
 
 var (
@@ -18,13 +22,20 @@ var (
 	SearchLibraryURI string
 )
 
+// --library
+var searchLibraryFlag = cmdline.Flag{
+	ID:           "searchLibraryFlag",
+	Value:        &SearchLibraryURI,
+	DefaultValue: "https://library.sylabs.io",
+	Name:         "library",
+	Usage:        "URI for library to search",
+	EnvKeys:      []string{"LIBRARY"},
+}
+
 func init() {
-	SearchCmd.Flags().SetInterspersed(false)
+	cmdManager.RegisterCmd(SearchCmd)
 
-	SearchCmd.Flags().StringVar(&SearchLibraryURI, "library", "https://library.sylabs.io", "URI for library to search")
-	SearchCmd.Flags().SetAnnotation("library", "envkey", []string{"LIBRARY"})
-
-	SingularityCmd.AddCommand(SearchCmd)
+	cmdManager.RegisterFlagForCmd(&searchLibraryFlag, SearchCmd)
 }
 
 // SearchCmd singularity search
@@ -33,9 +44,19 @@ var SearchCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	PreRun:                sylabsToken,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.TODO()
+
 		handleSearchFlags(cmd)
 
-		if err := client.SearchLibrary(args[0], SearchLibraryURI, authToken); err != nil {
+		libraryClient, err := client.NewClient(&client.Config{
+			BaseURL:   SearchLibraryURI,
+			AuthToken: authToken,
+		})
+		if err != nil {
+			sylog.Fatalf("Error initializing library client: %v", err)
+		}
+
+		if err := library.SearchLibrary(ctx, libraryClient, args[0]); err != nil {
 			sylog.Fatalf("Couldn't search library: %v", err)
 		}
 

@@ -19,6 +19,9 @@ hstar=
 hstld=
 hstranlib=
 hstobjcopy=
+hstgo=
+hstgo_version="1.13"
+hstgo_opts="go"
 
 tgtcc=
 tgtcc_opts=$hstcc_opts
@@ -45,7 +48,12 @@ cflags="$CFLAGS -D_FORTIFY_SOURCE=2 -Wformat -Wformat-security -fstack-protector
 ldflags=$LDFLAGS
 
 package_name=singularity
-package_version=`(git describe --match 'v[0-9]*' --dirty --always 2>/dev/null || cat VERSION 2>/dev/null || echo "") | sed -e "s/^v//;s/-/_/g;s/_/-/;s/_/./g"`
+package_version=`scripts/get-version`
+
+if test -z "${package_version}" ; then
+	echo "Failed to get package version. Abort."
+	exit 1
+fi
 
 with_network=1
 with_suid=1
@@ -378,8 +386,16 @@ while [ $# -ne 0 ]; do
   *) break;;
  esac
 done
-short_version="`echo "$package_version"|sed 's/-.*//'`"
-#
+
+# use a colon to provide additional version information such as a
+# release number.
+short_version="`echo "$package_version"|sed 's/:.*//'`"
+release_info="`echo "$package_version"|sed 's/^[^:]*://'`"
+if [ "${short_version}" = "${release_info}" ]; then
+	# $package_version has no colon
+	release_info=1
+fi
+
 # non-option param
 if [ $# != 0 ]; then
 	usage_args
@@ -640,6 +656,8 @@ ARCH := $tgt_arch
 
 CFLAGS := $cflags
 
+GO := $hstgo
+
 CGO_CFLAGS := -include $builddir/config.h $CGO_CFLAGS
 CGO_LDFLAGS := $CGO_LDFLAGS
 CGO_CPPFLAGS := $CGO_CPPFLAGS
@@ -808,6 +826,9 @@ if [ "$with_network" = 1 ]; then
 	cat $makeit_fragsdir/build_network.mk >> $makeit_makefile
 fi
 
+drawline $makeit_fragsdir/build_scripts.mk
+cat $makeit_fragsdir/build_scripts.mk >> $makeit_makefile
+
 drawline $makeit_fragsdir/Makefile.stub
 # here, `depends' need to happen after all other rules; at the very end
 final_all=`cat $makeit_interdir/all.mk | awk 'BEGIN { FS="all: " } { print $2 }'`
@@ -824,13 +845,19 @@ if [ "$host" = "unix" ]; then
 	RPMSPEC=singularity.spec
 	echo "=> generating $RPMSPEC ..."
 	rm -f $sourcedir/$RPMSPEC
-	release="`echo "$package_version"|sed 's/[^-]*-//'`"
-	if [ "$short_version" = "$release" ]; then
-	    # $package_version has no dash
-	    release=1
-	fi
-	sed "s/@PACKAGE_VERSION@/$short_version/;s/@PACKAGE_RELEASE@/$release/" $sourcedir/dist/rpm/$RPMSPEC.in >$sourcedir/$RPMSPEC
+
+	# Transform version numbers so that rpm accepts them:
+	#
+	# 3.4.2-rc.1            ->  3.4.2~rc.1
+	# 3.4.2                 ->  3.4.2
+	# 3.4.2+522-gee98ef356  ->  3.4.2+522.gee98ef356
+	package_rpm_version="$(echo "${short_version}" | sed -e 's,\(^[^+]\+\)-,\1~,; s,-,.,g')"
+
+	sed "s/@PACKAGE_VERSION@/${package_version}/;s/@PACKAGE_RPM_VERSION@/${package_rpm_version}/;s/@PACKAGE_RELEASE@/${release_info}/" \
+		$sourcedir/dist/rpm/$RPMSPEC.in >$sourcedir/$RPMSPEC
 fi
+
+
 
 
 
@@ -841,6 +868,9 @@ echo "=> project $package_name setup with :"
 echo "    - host arch: $hst_arch"
 echo "    - host wordsize: ${hst_word}-bit"
 echo "    - host C compiler: $hstcc"
+if test "${lang_go}" -eq 1 ; then
+	echo "    - host Go compiler: $hstgo"
+fi
 echo "    - host system: $host"
 echo "      ---"
 echo "    - target arch: $tgt_arch"
@@ -864,6 +894,10 @@ if [ "$verbose" = 1 ]; then
 	echo "    - verbose: yes"
 else
 	echo "    - verbose: no"
+fi
+if test "${host}" = "unix" ; then
+	echo "      ---"
+	echo "    - cryptsetup: ${cryptsetup_path}"
 fi
 echo "      ---"
 echo "    - version: $package_version"

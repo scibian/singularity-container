@@ -11,24 +11,32 @@ import (
 	"github.com/sylabs/singularity/internal/app/singularity"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/cmdline"
 )
 
-var (
-	pluginName string
-)
+// -n|--name
+var pluginName string
+var pluginInstallNameFlag = cmdline.Flag{
+	ID:           "pluginInstallNameFlag",
+	Value:        &pluginName,
+	DefaultValue: "",
+	Name:         "name",
+	ShortHand:    "n",
+	Usage:        "name to install the plugin as, defaults to the value in the manifest",
+}
 
 func init() {
-	PluginInstallCmd.Flags().StringVarP(&pluginName, "name", "n", "", "Name to install the plugin as, defaults to the value in the manifest")
+	cmdManager.RegisterFlagForCmd(&pluginInstallNameFlag, PluginInstallCmd)
 }
 
 // PluginInstallCmd takes a compiled plugin.sif file and installs it
-// in the appropriate location
+// in the appropriate location.
 //
 // singularity plugin install <path> [-n name]
 var PluginInstallCmd = &cobra.Command{
-	PreRun: func(cmd *cobra.Command, args []string) { EnsureRootPriv(cmd, pluginContext) },
+	PreRun: EnsureRootPriv,
 	Run: func(cmd *cobra.Command, args []string) {
-		err := singularity.InstallPlugin(args[0], buildcfg.LIBEXECDIR)
+		err := singularity.InstallPlugin(args[0], pluginName, buildcfg.LIBEXECDIR)
 		if err != nil {
 			sylog.Fatalf("Failed to install plugin %q: %s.", args[0], err)
 		}

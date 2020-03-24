@@ -20,9 +20,14 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 )
 
-const manifestgenDir = "cmd/plugin_manifestgen"
+type buildToolchain struct {
+	goPath    string
+	workPath  string
+	buildTags string
+	envs      []string
+}
 
-// getSingularitySrcDir returns the source directory for singularity
+// getSingularitySrcDir returns the source directory for singularity.
 func getSingularitySrcDir() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -33,10 +38,10 @@ func getSingularitySrcDir() (string, error) {
 
 	switch _, err = os.Stat(canary); {
 	case os.IsNotExist(err):
-		return "", fmt.Errorf("cannot find \"%s\"", canary)
+		return "", fmt.Errorf("cannot find %q", canary)
 
 	case err != nil:
-		return "", fmt.Errorf("unexpected error while looking for \"%s\": %s", canary, err)
+		return "", fmt.Errorf("unexpected error while looking for %q: %s", canary, err)
 
 	default:
 		return dir, nil
@@ -59,17 +64,35 @@ func pluginManifestPath(sourceDir string) string {
 // plugin's source code directory; and destSif, the path to the intended final
 // location of the plugin SIF file.
 func CompilePlugin(sourceDir, destSif, buildTags string) error {
-	// build plugin object using go buiild
-	_, err := buildPlugin(sourceDir, buildTags)
+	workpath, err := getSingularitySrcDir()
 	if err != nil {
-		return fmt.Errorf("while building plugin .so: %s", err)
+		return errors.New("singularity source directory not found")
+	}
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		return errors.New("go compiler not found")
 	}
 
+	bTool := buildToolchain{
+		buildTags: buildTags,
+		workPath:  workpath,
+		goPath:    goPath,
+		envs:      append(os.Environ(), "GO111MODULE=on"),
+	}
+
+	// build plugin object using go build
+	soPath, err := buildPlugin(sourceDir, bTool)
+	if err != nil {
+		return fmt.Errorf("while building plugin .so: %v", err)
+	}
+	defer os.Remove(soPath)
+
 	// generate plugin manifest from .so
-	_, err = generateManifest(sourceDir, buildTags)
+	mPath, err := generateManifest(sourceDir, bTool)
 	if err != nil {
 		return fmt.Errorf("while generating plugin manifest: %s", err)
 	}
+	defer os.Remove(mPath)
 
 	// convert the built plugin object into a sif
 	if err := makeSIF(sourceDir, destSif); err != nil {
@@ -79,90 +102,94 @@ func CompilePlugin(sourceDir, destSif, buildTags string) error {
 	return nil
 }
 
-// buildPlugin takes sourceDir which is the string path the host which contains the source code of
-// the plugin. buildPlugin returns the path to the built file, along with an error
+// buildPlugin takes sourceDir which is the string path the host which
+// contains the source code of the plugin. buildPlugin returns the path
+// to the built file, along with an error.
 //
-// This function essentially runs the `go build -buildmode=plugin [...]` command
-func buildPlugin(sourceDir, buildTags string) (string, error) {
-	workpath, err := getSingularitySrcDir()
-	if err != nil {
-		return "", errors.New("singularity source directory not found")
+// This function essentially runs the `go build -buildmode=plugin [...]`
+// command.
+func buildPlugin(sourceDir string, bTool buildToolchain) (string, error) {
+	modFlag := "-mod=readonly"
+
+	hasVendor := func() bool {
+		vendorDir := filepath.Join(bTool.workPath, "vendor")
+		_, err := os.Stat(vendorDir)
+		return !os.IsNotExist(err)
+	}()
+
+	if hasVendor {
+		modFlag = "-mod=vendor"
 	}
 
 	// assuming that sourceDir is within trimpath for now
 	out := pluginObjPath(sourceDir)
 
-	goTool, err := exec.LookPath("go")
-	if err != nil {
-		return "", errors.New("go compiler not found")
-	}
-
 	args := []string{
 		"build",
 		"-o", out,
+		modFlag,
+		"-trimpath",
 		"-buildmode=plugin",
-		"-mod=vendor",
-		"-tags", buildTags,
-		fmt.Sprintf("-gcflags=all=-trimpath=%s", workpath),
-		fmt.Sprintf("-asmflags=all=-trimpath=%s", workpath),
+		"-tags", bTool.buildTags,
 		sourceDir,
 	}
 
-	sylog.Debugf("Runnig: %s %s", goTool, strings.Join(args, " "))
+	sylog.Debugf("Running: %s %s", bTool.goPath, strings.Join(args, " "))
 
-	buildcmd := exec.Command(goTool, args...)
+	buildcmd := exec.Command(bTool.goPath, args...)
 
-	buildcmd.Dir = workpath
+	buildcmd.Dir = bTool.workPath
 	buildcmd.Stderr = os.Stderr
 	buildcmd.Stdout = os.Stdout
 	buildcmd.Stdin = os.Stdin
-	buildcmd.Env = append(os.Environ(), "GO111MODULE=on")
+	buildcmd.Env = bTool.envs
 
 	return out, buildcmd.Run()
 }
 
-// generateManifest takes the path to the plugin source, sourceDir, and generates
-// its corresponding manifest file.
-func generateManifest(sourceDir, buildTags string) (string, error) {
-	workpath, err := getSingularitySrcDir()
-	if err != nil {
-		return "", errors.New("singularity source directory not found")
+// generateManifest takes the path to the plugin source, extracts
+// plugin's manifest and stores it's json representation in a separate
+// file. Extraction and store are happens in a separate process to avoid
+// double loading plugin, in case when we are compiling already
+// installed plugin.
+//
+// This function essentially runs the `go run cmd/plugin/plugin.go [...]` command.
+func generateManifest(sourceDir string, bTool buildToolchain) (string, error) {
+	modFlag := "-mod=readonly"
+
+	hasVendor := func() bool {
+		vendorDir := filepath.Join(bTool.workPath, "vendor")
+		_, err := os.Stat(vendorDir)
+		return !os.IsNotExist(err)
+	}()
+
+	if hasVendor {
+		modFlag = "-mod=vendor"
 	}
 
 	in := pluginObjPath(sourceDir)
 	out := pluginManifestPath(sourceDir)
 
-	goTool, err := exec.LookPath("go")
-	if err != nil {
-		return "", errors.New("go compiler not found")
-	}
-
-	mangenpath := filepath.Join(workpath, manifestgenDir)
-
 	args := []string{
 		"run",
-		"-mod=vendor",
-		"-tags", buildTags,
-		fmt.Sprintf("-gcflags=all=-trimpath=%s", workpath),
-		fmt.Sprintf("-asmflags=all=-trimpath=%s", workpath),
-		mangenpath,
+		"-trimpath",
+		modFlag,
+		"-tags", bTool.buildTags,
+		"cmd/plugin/plugin.go",
 		in,
 		out,
 	}
 
-	gencmd := exec.Command(goTool, args...)
+	runCmd := exec.Command(bTool.goPath, args...)
+	runCmd.Dir = bTool.workPath
+	runCmd.Env = bTool.envs
+	runCmd.Stderr = os.Stderr
 
-	gencmd.Dir = workpath
-	gencmd.Stderr = os.Stderr
-	gencmd.Stdout = os.Stdout
-	gencmd.Stdin = os.Stdin
-	gencmd.Env = append(os.Environ(), "GO111MODULE=on")
-
-	return out, gencmd.Run()
+	return out, runCmd.Run()
 }
 
 // makeSIF takes in two arguments: sourceDir, the path to the plugin source directory;
-// and sifPath, the path to the final .sif file which is ready to be used
+// and sifPath, the path to the final .sif file which is ready to be used.
 func makeSIF(sourceDir, sifPath string) error {
 	plCreateInfo := sif.CreateInfo{
 		Pathname:   sifPath,

@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,6 +8,7 @@ package instance
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/sylabs/singularity/internal/pkg/util/user"
+	"github.com/sylabs/singularity/pkg/syfs"
 )
 
 const (
@@ -27,9 +29,11 @@ const (
 )
 
 const (
-	instancePath    = ".singularity/instances"
+	// ProgPrefix is the prefix used by a singularity instance process
+	ProgPrefix      = "Singularity instance"
+	instancePath    = "instances"
 	authorizedChars = `^[a-zA-Z0-9._-]+$`
-	prognameFormat  = "Singularity instance: %s [%s]"
+	prognameFormat  = "%s: %s [%s]"
 )
 
 // File represents an instance file storing instance information
@@ -42,6 +46,7 @@ type File struct {
 	Image  string `json:"image"`
 	Config []byte `json:"config"`
 	UserNs bool   `json:"userns"`
+	IP     string `json:"ip"`
 }
 
 // ProcName returns processus name based on instance name
@@ -53,7 +58,7 @@ func ProcName(name string, username string) (string, error) {
 	if username == "" {
 		return "", fmt.Errorf("while getting instance processus name: empty username")
 	}
-	return fmt.Sprintf(prognameFormat, username, name), nil
+	return fmt.Sprintf(prognameFormat, ProgPrefix, username, name), nil
 }
 
 // ExtractName extracts instance name from an instance:// URI
@@ -72,27 +77,28 @@ func CheckName(name string) error {
 
 // getPath returns the path where searching for instance files
 func getPath(username string, subDir string) (string, error) {
-	path := ""
-	var pw *user.User
-	var err error
-
-	if username == "" {
-		if pw, err = user.GetPwUID(uint32(os.Getuid())); err != nil {
-			return path, err
-		}
-	} else {
-		if pw, err = user.GetPwNam(username); err != nil {
-			return path, err
-		}
-	}
-
 	hostname, err := os.Hostname()
 	if err != nil {
-		return path, err
+		return "", err
 	}
 
-	path = filepath.Join(pw.Dir, instancePath, subDir, hostname, pw.Name)
-	return path, nil
+	var u *user.User
+	if username == "" {
+		u, err = user.CurrentOriginal()
+	} else {
+		u, err = user.GetPwNam(username)
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	configDir, err := syfs.ConfigDirForUsername(u.Name)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(configDir, instancePath, subDir, hostname, u.Name), nil
 }
 
 // GetDir returns directory where instances file will be stored
@@ -169,6 +175,11 @@ func List(username string, name string, subDir string) ([]*File, error) {
 		}
 		r.Close()
 		f.Path = file
+		// delete ghost singularity instance files
+		if subDir == SingSubDir && f.isExited() {
+			f.Delete()
+			continue
+		}
 		list = append(list, f)
 	}
 
@@ -177,7 +188,42 @@ func List(username string, name string, subDir string) ([]*File, error) {
 
 // Delete deletes instance file
 func (i *File) Delete() error {
-	return os.RemoveAll(filepath.Dir(i.Path))
+	dir := filepath.Dir(i.Path)
+	if dir == "." {
+		dir = ""
+	}
+	return os.RemoveAll(dir)
+}
+
+// isExited returns if the instance process is exited or not.
+func (i *File) isExited() bool {
+	if i.PPid <= 0 {
+		return true
+	}
+
+	// if instance is not running anymore, automatically
+	// delete instance files after checking that instance
+	// parent process
+	err := syscall.Kill(i.PPid, 0)
+	if err == syscall.ESRCH {
+		return true
+	} else if err == nil {
+		// process is alive and is owned by you otherwise
+		// we would have obtained permission denied error,
+		// now check if it's an instance parent process
+		cmdline := fmt.Sprintf("/proc/%d/cmdline", i.PPid)
+		d, err := ioutil.ReadFile(cmdline)
+		if err != nil {
+			// this is racy and not accurate but as the process
+			// may have exited during above read, check again
+			// for process presence
+			return syscall.Kill(i.PPid, 0) == syscall.ESRCH
+		}
+		// not an instance master process
+		return !strings.HasPrefix(string(d), ProgPrefix)
+	}
+
+	return false
 }
 
 // Update stores instance information in associated instance file
@@ -192,7 +238,7 @@ func (i *File) Update() error {
 	oldumask := syscall.Umask(0)
 	defer syscall.Umask(oldumask)
 
-	if err := os.MkdirAll(path, 0755); err != nil {
+	if err := os.MkdirAll(path, 0700); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(i.Path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, 0644)
@@ -221,10 +267,10 @@ func SetLogFile(name string, uid int, subDir string) (*os.File, *os.File, error)
 	oldumask := syscall.Umask(0)
 	defer syscall.Umask(oldumask)
 
-	if err := os.MkdirAll(filepath.Dir(stderrPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(stderrPath), 0700); err != nil {
 		return nil, nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(stdoutPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(stdoutPath), 0700); err != nil {
 		return nil, nil, err
 	}
 

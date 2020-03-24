@@ -6,17 +6,16 @@
 package image
 
 import (
-	"fmt"
 	"os"
 )
 
 type sandboxFormat struct{}
 
-func (f *sandboxFormat) initializer(img *Image, fileinfo os.FileInfo) error {
-	if fileinfo.IsDir() {
+func (f *sandboxFormat) initializer(img *Image, fi os.FileInfo) error {
+	if fi.IsDir() {
 		img.Type = SANDBOX
 	} else {
-		return fmt.Errorf("not a directory image")
+		return debugError("not a directory image")
 	}
 	img.Partitions = []Section{
 		{

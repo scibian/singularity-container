@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -49,6 +49,12 @@ type Manager struct {
 	rootPath string
 	entries  map[string]interface{}
 	dirs     []*dir
+
+	// each entries can contain multiple directories, the first
+	// directory of each entry is always substituted to the bound
+	// directory, the others if any are the directories to create
+	// for nested binds support
+	ovDirs map[string][]string
 }
 
 func (m *Manager) checkPath(path string, checkExist bool) (string, error) {
@@ -86,6 +92,12 @@ func (m *Manager) createParentDir(path string) {
 				d := &dir{mode: m.DirMode, uid: uid, gid: gid}
 				m.entries[p] = d
 				m.dirs = append(m.dirs, d)
+				// check if the parent directory is part of the overrided
+				// directories to force the creation of the destination
+				// directory in the right parent directory (nested binds)
+				if ovDirs, ok := m.ovDirs[filepath.Dir(p)]; ok {
+					m.overrideDir(p, filepath.Join(ovDirs[0], filepath.Base(p)))
+				}
 			}
 		}
 	}
@@ -101,6 +113,9 @@ func (m *Manager) SetRootPath(path string) error {
 		m.entries = make(map[string]interface{})
 	} else {
 		return fmt.Errorf("root path is already set")
+	}
+	if m.ovDirs == nil {
+		m.ovDirs = make(map[string][]string)
 	}
 	if m.dirs == nil {
 		m.dirs = make([]*dir, 0)
@@ -150,6 +165,26 @@ func (m *Manager) AddSymlink(path string, target string) error {
 	m.createParentDir(filepath.Dir(p))
 	m.entries[p] = &symlink{uid: os.Getuid(), gid: os.Getgid(), target: target}
 	return nil
+}
+
+// overrideDir will substitute another directory to the one associated
+// to directory located by path. When called multiple times subsequent
+// path are used to store directories to be created for nested binds.
+func (m *Manager) overrideDir(path string, realpath string) {
+	for _, ovDir := range m.ovDirs[path] {
+		if ovDir == realpath {
+			return
+		}
+	}
+	m.ovDirs[path] = append(m.ovDirs[path], realpath)
+}
+
+// GetOverridePath returns the real path for the session path
+func (m *Manager) GetOverridePath(path string) (string, error) {
+	if p, ok := m.ovDirs[path]; ok {
+		return p[0], nil
+	}
+	return "", fmt.Errorf("no override directory %s", path)
 }
 
 // GetPath returns the full path of layout path
@@ -225,16 +260,36 @@ func (m *Manager) sync() error {
 		for p, e := range m.entries {
 			if e == d {
 				path = m.rootPath + p
+				for _, ovDir := range m.ovDirs[p] {
+					if _, err := os.Stat(ovDir); err != nil {
+						if err := os.Mkdir(ovDir, m.DirMode); err != nil {
+							return fmt.Errorf("failed to create %s directory: %s", ovDir, err)
+						}
+					}
+				}
 				break
 			}
 		}
+		if path == "" {
+			continue
+		}
 		if d.mode != m.DirMode {
 			if err := os.Mkdir(path, d.mode); err != nil {
-				return fmt.Errorf("failed to create %s directory: %s", path, err)
+				if !os.IsExist(err) {
+					return fmt.Errorf("failed to create %s directory: %s", path, err)
+				}
+				// skip owner change, not created by us
+				d.created = true
+				continue
 			}
 		} else {
 			if err := os.Mkdir(path, m.DirMode); err != nil {
-				return fmt.Errorf("failed to create %s directory: %s", path, err)
+				if !os.IsExist(err) {
+					return fmt.Errorf("failed to create %s directory: %s", path, err)
+				}
+				// skip owner change, not created by us
+				d.created = true
+				continue
 			}
 		}
 		if d.uid != uid || d.gid != gid {
@@ -247,14 +302,22 @@ func (m *Manager) sync() error {
 
 	for p, e := range m.entries {
 		path := m.rootPath + p
+		if ovDir, err := m.GetOverridePath(filepath.Dir(p)); err == nil {
+			path = filepath.Join(ovDir, filepath.Base(p))
+		}
 		switch entry := e.(type) {
 		case *file:
 			if entry.created {
 				continue
 			}
-			f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, entry.mode)
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, entry.mode)
 			if err != nil {
-				return fmt.Errorf("failed to create file %s: %s", path, err)
+				if !os.IsExist(err) {
+					return fmt.Errorf("failed to create file %s: %s", path, err)
+				}
+				// skip content write or owner change, not created by us
+				entry.created = true
+				continue
 			}
 			l := len(entry.content)
 			if l > 0 {
@@ -276,7 +339,19 @@ func (m *Manager) sync() error {
 				continue
 			}
 			if err := os.Symlink(entry.target, path); err != nil {
-				return fmt.Errorf("failed to create symlink %s: %s", path, err)
+				if !os.IsExist(err) {
+					return fmt.Errorf("failed to create symlink %s: %s", path, err)
+				}
+				// check that current symlink point to the right target if it's a symlink
+				// otherwise we consider the entry as already created no matter if it's a
+				// file, a directory or something else
+				target, err := os.Readlink(path)
+				if err == nil && target != entry.target {
+					return fmt.Errorf("symlink %s point to %s instead of %s", path, target, entry.target)
+				}
+				// skip symlink owner change, not created by us
+				entry.created = true
+				continue
 			}
 			if entry.uid != uid || entry.gid != gid {
 				if err := os.Lchown(path, entry.uid, entry.gid); err != nil {

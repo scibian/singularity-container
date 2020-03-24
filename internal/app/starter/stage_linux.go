@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,46 +9,58 @@ import (
 	"net"
 	"os"
 
-	"github.com/sylabs/singularity/internal/pkg/runtime/engines"
-	sarterConfig "github.com/sylabs/singularity/internal/pkg/runtime/engines/config/starter"
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine"
+	starterConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/config/starter"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 )
 
-// Stage performs container startup.
-func Stage(stage, masterSocket int, sconfig *sarterConfig.Config, engine *engines.Engine) {
-	var conn net.Conn
-	var err error
+// StageOne validates and prepares container configuration which is
+// used during container creation. Updated (possibly) engine configuration
+// is wrote back into a shared sconfig so that new values will appear
+// in next stages of engine execution and in master process.
+//
+// Any privileges gained from SUID flow or capabilities in
+// extended attributes are already dropped by this moment.
+func StageOne(sconfig *starterConfig.Config, e *engine.Engine) {
+	sylog.Debugf("Entering stage 1\n")
 
-	if masterSocket != -1 {
-		comm := os.NewFile(uintptr(masterSocket), "master-socket")
-		conn, err = net.FileConn(comm)
-		if err != nil {
-			sylog.Fatalf("failed to copy master unix socket descriptor: %s", err)
-			return
-		}
-		comm.Close()
-	} else {
-		conn = nil
+	if err := e.PrepareConfig(sconfig); err != nil {
+		sylog.Fatalf("%s\n", err)
 	}
 
-	if stage == 1 {
-		sylog.Debugf("Entering stage 1\n")
-		if err := engine.PrepareConfig(sconfig); err != nil {
-			sylog.Fatalf("%s\n", err)
+	if err := sconfig.Write(e.Common); err != nil {
+		sylog.Fatalf("%s", err)
+	}
+
+	os.Exit(0)
+}
+
+// StageTwo performs container execution.
+func StageTwo(masterSocket int, e *engine.Engine) {
+	sylog.Debugf("Entering stage 2\n")
+
+	// master socket allows communications between
+	// stage 2 and master process, typically used for
+	// synchronization or for sending state
+	comm := os.NewFile(uintptr(masterSocket), "master-socket")
+	conn, err := net.FileConn(comm)
+	comm.Close()
+	if err != nil {
+		sylog.Fatalf("failed to copy master unix socket descriptor: %s", err)
+		return
+	}
+
+	// call engine operation StartProcess, at this stage
+	// we are in a container context, chroot was done.
+	// The privileges are those applied by the container
+	// configuration, in the case of Singularity engine
+	// and if run as a user, there is no privileges set
+	if err := e.StartProcess(conn); err != nil {
+		// write data to just tell master to not execute PostStartProcess
+		// in case of failure
+		if _, err := conn.Write([]byte("f")); err != nil {
+			sylog.Errorf("fail to send data to master: %s", err)
 		}
-		if err := sconfig.Write(engine.Common); err != nil {
-			sylog.Fatalf("%s", err)
-		}
-		os.Exit(0)
-	} else {
-		sylog.Debugf("Entering stage 2\n")
-		if err := engine.StartProcess(conn); err != nil {
-			// write data to just tell master to not execute PostStartProcess
-			// in case of failure
-			if _, err := conn.Write([]byte("f")); err != nil {
-				sylog.Errorf("fail to send data to master: %s", err)
-			}
-			sylog.Fatalf("%s\n", err)
-		}
+		sylog.Fatalf("%s\n", err)
 	}
 }

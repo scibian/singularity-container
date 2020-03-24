@@ -19,6 +19,8 @@ const (
 	HTTP = "http"
 	// HTTPS is the keyword for https ref
 	HTTPS = "https"
+	// Oras is the keyword for an oras ref
+	Oras = "oras"
 )
 
 // validURIs contains a list of known uris
@@ -32,6 +34,7 @@ var validURIs = map[string]bool{
 	"oci-archive":    true,
 	"http":           true,
 	"https":          true,
+	"oras":           true,
 }
 
 // IsValid returns whether or not the given source is valid
@@ -40,14 +43,14 @@ func IsValid(source string) (valid bool, err error) {
 	u := strings.SplitN(source, ":", 2)
 
 	if len(u) != 2 {
-		return false, fmt.Errorf("Invalid URI %s", source)
+		return false, fmt.Errorf("invalid uri %s", source)
 	}
 
 	if _, ok := validURIs[u[0]]; ok {
 		return true, nil
 	}
 
-	return false, fmt.Errorf("Invalid URI %s", source)
+	return false, fmt.Errorf("invalid uri %s", source)
 }
 
 // GetName turns a transport:ref URI into a name containing the top-level identifier

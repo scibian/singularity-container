@@ -1,5 +1,5 @@
 run:
-  deadline: 3m
+  timeout: 3m
 
 linters:
   disable-all: true
@@ -14,16 +14,16 @@ linters:
     - ineffassign
     - maligned
     - misspell
+    - nakedret
     # we would like to add these
     # - dupl
-    # - nakedret
     # - staticcheck
 
 linters-settings:
   gofmt:
     simplify: true
   govet:
-    # we would like to enalbe this eventually
+    # we would like to enable this eventually
     check-shadowing: false
   maligned:
     suggest-new: true
@@ -34,3 +34,11 @@ issues:
   max-per-linter: 0
   max-same-issues: 0
 
+  exclude-rules:
+    - path: internal/pkg/util/fs/overlay/
+      linters:
+        - misspell
+
+    - path: internal/pkg/util/user/cgo_lookup_unix.go
+      linters:
+        - deadcode

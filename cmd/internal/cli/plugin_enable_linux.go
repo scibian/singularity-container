@@ -10,11 +10,11 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/sylog"
 )
 
-// PluginEnableCmd enables the named plugin
+// PluginEnableCmd enables the named plugin.
 //
 // singularity plugin enable <name>
 var PluginEnableCmd = &cobra.Command{
-	PreRun: func(cmd *cobra.Command, args []string) { EnsureRootPriv(cmd, pluginContext) },
+	PreRun: EnsureRootPriv,
 	Run: func(cmd *cobra.Command, args []string) {
 		err := singularity.EnablePlugin(args[0], buildcfg.LIBEXECDIR)
 		if err != nil {

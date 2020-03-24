@@ -2,14 +2,14 @@
 
 # singularity build config
 singularity_build_config := $(SOURCEDIR)/internal/pkg/buildcfg/config.go
-$(singularity_build_config): $(BUILDDIR)/config.h
+$(singularity_build_config): $(BUILDDIR)/config.h $(SOURCEDIR)/scripts/go-generate
 	$(V)rm -f $(singularity_build_config)
-	$(V)export BUILDDIR=$(BUILDDIR_ABSPATH) GO_BUILD_TAGS="$(GO_TAGS)" && cd $(SOURCEDIR)/internal/pkg/buildcfg && $(GO) generate
+	$(V) cd $(SOURCEDIR)/internal/pkg/buildcfg && $(SOURCEDIR)/scripts/go-generate
 
 CLEANFILES += $(singularity_build_config)
 
 # singularity
-singularity_SOURCE := $(shell $(SOURCEDIR)/makeit/gengodep "$(SOURCEDIR)" "$(SOURCEDIR)/cmd/singularity")
+singularity_SOURCE := $(shell $(SOURCEDIR)/makeit/gengodep -v2 "$(GO)" "$(SOURCEDIR)" "$(GO_TAGS)" "$(SOURCEDIR)/cmd/singularity")
 
 singularity := $(BUILDDIR)/singularity
 $(singularity): $(singularity_build_config) $(singularity_SOURCE)
@@ -20,7 +20,7 @@ $(singularity): $(singularity_build_config) $(singularity_SOURCE)
 singularity_INSTALL := $(DESTDIR)$(BINDIR)/singularity
 $(singularity_INSTALL): $(singularity)
 	@echo " INSTALL" $@
-	$(V)install -d $(@D)
+	$(V)umask 0022 && mkdir -p $(@D)
 	$(V)install -m 0755 $(singularity) $(singularity_INSTALL) # set cp to install
 
 CLEANFILES += $(singularity)
@@ -40,7 +40,7 @@ $(bash_completion): $(singularity_build_config)
 bash_completion_INSTALL := $(DESTDIR)$(SYSCONFDIR)/bash_completion.d/singularity
 $(bash_completion_INSTALL): $(bash_completion)
 	@echo " INSTALL" $@
-	$(V)install -d $(@D)
+	$(V)umask 0022 && mkdir -p $(@D)
 	$(V)install -m 0644 $< $@
 
 CLEANFILES += $(bash_completion)
@@ -54,15 +54,27 @@ config_INSTALL := $(DESTDIR)$(SYSCONFDIR)/singularity/singularity.conf
 # override this to empty to avoid merging old configuration settings
 old_config := $(config_INSTALL)
 
-$(config): $(singularity_build_config) $(SOURCEDIR)/etc/conf/gen.go $(SOURCEDIR)/pkg/runtime/engines/singularity/config/data/singularity.conf $(SOURCEDIR)/pkg/runtime/engines/singularity/config/config.go
+$(config): $(singularity_build_config) $(SOURCEDIR)/etc/conf/gen.go $(SOURCEDIR)/pkg/runtime/engine/singularity/config/config.go
 	@echo " GEN $@`if [ -n "$(old_config)" ]; then echo " from $(old_config)"; fi`"
 	$(V)$(GO) run $(GO_MODFLAGS) $(GO_GCFLAGS) $(GO_ASMFLAGS) $(SOURCEDIR)/etc/conf/gen.go \
-		$(SOURCEDIR)/pkg/runtime/engines/singularity/config/data/singularity.conf $(old_config) $(config)
+		$(old_config) $(config)
 
 $(config_INSTALL): $(config)
 	@echo " INSTALL" $@
-	$(V)install -d $(@D)
+	$(V)umask 0022 && mkdir -p $(@D)
 	$(V)install -m 0644 $< $@
 
 INSTALLFILES += $(config_INSTALL)
 ALL += $(config)
+
+# remote config file
+remote_config := $(SOURCEDIR)/etc/remote.yaml
+
+remote_config_INSTALL := $(DESTDIR)$(SYSCONFDIR)/singularity/remote.yaml
+$(remote_config_INSTALL): $(remote_config)
+	@echo " INSTALL" $@
+	$(V)umask 0022 && mkdir -p $(@D)
+	$(V)install -m 0644 $< $@
+
+INSTALLFILES += $(remote_config_INSTALL)
+

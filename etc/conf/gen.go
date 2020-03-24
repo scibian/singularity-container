@@ -10,39 +10,33 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sylabs/singularity/internal/pkg/runtime/engines/config"
-	singularityConfig "github.com/sylabs/singularity/pkg/runtime/engines/singularity/config"
+	"github.com/sylabs/singularity/pkg/runtime/engine/config"
 )
 
 func main() {
-	Args := os.Args
-
-	if len(Args) < 3 || len(Args) > 4 {
-		fmt.Println("Usage: go run ... <template> [infile] <outfile>")
+	switch len(os.Args) {
+	case 3:
+		inPath := filepath.Clean(os.Args[1])
+		outPath := filepath.Clean(os.Args[2])
+		genConf("", inPath, outPath)
+	case 2:
+		outPath := filepath.Clean(os.Args[1])
+		genConf("", "", outPath)
+	default:
+		fmt.Println("Usage: go run ... [infile] <outfile>")
 		os.Exit(1)
 	}
-
-	tmplPath := filepath.Clean(Args[1])
-	outPath := filepath.Clean(Args[2])
-
-	inPath := ""
-	if len(Args) == 4 {
-		inPath = filepath.Clean(Args[2])
-		outPath = filepath.Clean(Args[3])
-	}
-
-	genConf(tmplPath, inPath, outPath)
 }
 
 // genConf produces a singularity.conf file at out. It retains set configurations from in (leave blank for default)
 func genConf(tmpl, in, out string) {
 	inFile := in
 	// Parse current singularity.conf file into c
-	c := &singularityConfig.FileConfig{}
 	if _, err := os.Stat(in); os.IsNotExist(err) {
 		inFile = ""
 	}
-	if err := config.Parser(inFile, c); err != nil {
+	c, err := config.ParseFile(inFile)
+	if err != nil {
 		fmt.Printf("Unable to parse singularity.conf file: %s\n", err)
 		os.Exit(1)
 	}

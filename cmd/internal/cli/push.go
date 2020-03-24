@@ -6,15 +6,18 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
+	"github.com/sylabs/singularity/internal/app/singularity"
+	"github.com/sylabs/singularity/internal/pkg/oras"
 	scs "github.com/sylabs/singularity/internal/pkg/remote"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
-	client "github.com/sylabs/singularity/pkg/client/library"
-	"github.com/sylabs/singularity/pkg/signing"
+	"github.com/sylabs/singularity/internal/pkg/util/uri"
+	"github.com/sylabs/singularity/pkg/cmdline"
 )
 
 var (
@@ -25,16 +28,35 @@ var (
 	unauthenticatedPush bool
 )
 
+// --library
+var pushLibraryURIFlag = cmdline.Flag{
+	ID:           "pushLibraryURIFlag",
+	Value:        &PushLibraryURI,
+	DefaultValue: "https://library.sylabs.io",
+	Name:         "library",
+	Usage:        "the library to push to",
+	EnvKeys:      []string{"LIBRARY"},
+}
+
+// -U|--allow-unsigned
+var pushAllowUnsignedFlag = cmdline.Flag{
+	ID:           "pushAllowUnsignedFlag",
+	Value:        &unauthenticatedPush,
+	DefaultValue: false,
+	Name:         "allow-unsigned",
+	ShortHand:    "U",
+	Usage:        "do not require a signed container",
+	EnvKeys:      []string{"ALLOW_UNSIGNED"},
+}
+
 func init() {
-	PushCmd.Flags().SetInterspersed(false)
+	cmdManager.RegisterCmd(PushCmd)
 
-	PushCmd.Flags().StringVar(&PushLibraryURI, "library", "https://library.sylabs.io", "the library to push to")
-	PushCmd.Flags().SetAnnotation("library", "envkey", []string{"LIBRARY"})
+	cmdManager.RegisterFlagForCmd(&pushLibraryURIFlag, PushCmd)
+	cmdManager.RegisterFlagForCmd(&pushAllowUnsignedFlag, PushCmd)
 
-	PushCmd.Flags().BoolVarP(&unauthenticatedPush, "allow-unsigned", "U", false, "do not require a signed container")
-	PushCmd.Flags().SetAnnotation("allow-unsigned", "envkey", []string{"ALLOW_UNSIGNED"})
-
-	SingularityCmd.AddCommand(PushCmd)
+	cmdManager.RegisterFlagForCmd(&dockerUsernameFlag, PushCmd)
+	cmdManager.RegisterFlagForCmd(&dockerPasswordFlag, PushCmd)
 }
 
 // PushCmd singularity push
@@ -43,37 +65,40 @@ var PushCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(2),
 	PreRun:                sylabsToken,
 	Run: func(cmd *cobra.Command, args []string) {
-		handlePushFlags(cmd)
+		ctx := context.TODO()
 
-		// Push to library requires a valid authToken
-		if authToken != "" {
-			if _, err := os.Stat(args[0]); os.IsNotExist(err) {
-				sylog.Fatalf("Unable to open: %v: %v", args[0], err)
-			}
-			if !unauthenticatedPush {
-				// check if the container is signed
-				imageSigned, err := signing.IsSigned(args[0], KeyServerURL, 0, false, authToken, true)
-				if err != nil {
-					// err will be: "unable to verify container: %v", err
-					sylog.Warningf("%v", err)
-				}
-				// if its not signed, print a warning
-				if !imageSigned {
-					sylog.Infof("TIP: Learn how to sign your own containers here : https://www.sylabs.io/docs/")
-					fmt.Fprintf(os.Stderr, "\nUnable to verify Your container! You REALLY should sign your container before pushing!\n")
-					fmt.Fprintf(os.Stderr, "Stoping upload.\n")
-					os.Exit(3)
-				}
-			} else {
-				sylog.Warningf("Skipping container verifying")
-			}
+		file, dest := args[0], args[1]
 
-			err := client.UploadImage(args[0], args[1], PushLibraryURI, authToken, "No Description")
+		transport, ref := uri.Split(dest)
+		if transport == "" {
+			sylog.Fatalf("bad uri %s", dest)
+		}
+
+		switch transport {
+		case LibraryProtocol, "": // Handle pushing to a library
+			handlePushFlags(cmd)
+
+			err := singularity.LibraryPush(ctx, file, dest, authToken, PushLibraryURI, keyServerURL, remoteWarning, unauthenticatedPush)
+			if err == singularity.ErrLibraryUnsigned {
+				fmt.Printf("TIP: You can push unsigned images with 'singularity push -U %s'.\n", file)
+				fmt.Printf("TIP: Learn how to sign your own containers by using 'singularity help sign'\n\n")
+				sylog.Fatalf("Unable to upload container: unable to verify signature")
+				os.Exit(3)
+			} else if err != nil {
+				sylog.Fatalf("Unable to push image to library: %v", err)
+			}
+		case OrasProtocol:
+			ociAuth, err := makeDockerCredentials(cmd)
 			if err != nil {
-				sylog.Fatalf("%v\n", err)
+				sylog.Fatalf("Unable to make docker oci credentials: %s", err)
 			}
-		} else {
-			sylog.Fatalf("Couldn't push image to library: %v", remoteWarning)
+
+			if err := oras.UploadImage(file, ref, ociAuth); err != nil {
+				sylog.Fatalf("Unable to push image to oci registry: %v", err)
+			}
+			sylog.Infof("Upload complete")
+		default:
+			sylog.Fatalf("Unsupported transport type: %s", transport)
 		}
 	},
 
@@ -89,7 +114,7 @@ func handlePushFlags(cmd *cobra.Command) {
 	endpoint, err := sylabsRemote(remoteConfig)
 	if err == scs.ErrNoDefault {
 		sylog.Warningf("No default remote in use, falling back to: %v", PushLibraryURI)
-		sylog.Debugf("using default key server url: %v", KeyServerURL)
+		sylog.Debugf("using default key server url: %v", keyServerURL)
 		return
 	} else if err != nil {
 		sylog.Fatalf("Unable to load remote configuration: %v", err)
@@ -106,8 +131,8 @@ func handlePushFlags(cmd *cobra.Command) {
 
 	uri, err := endpoint.GetServiceURI("keystore")
 	if err != nil {
-		sylog.Warningf("Unable to get library service URI: %v, defaulting to %s.", err, KeyServerURL)
+		sylog.Warningf("Unable to get library service URI: %v, defaulting to %s.", err, keyServerURL)
 		return
 	}
-	KeyServerURL = uri
+	keyServerURL = uri
 }

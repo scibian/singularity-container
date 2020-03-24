@@ -6,30 +6,34 @@
 package build
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/sylabs/singularity/pkg/util/fs/proc"
+
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	uuid "github.com/satori/go.uuid"
 	"github.com/sylabs/singularity/internal/pkg/build/apps"
 	"github.com/sylabs/singularity/internal/pkg/build/assemblers"
-	"github.com/sylabs/singularity/internal/pkg/build/copy"
+	"github.com/sylabs/singularity/internal/pkg/build/files"
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
-	"github.com/sylabs/singularity/internal/pkg/buildcfg"
-	"github.com/sylabs/singularity/internal/pkg/runtime/engines/config"
-	"github.com/sylabs/singularity/internal/pkg/runtime/engines/config/oci"
-	imgbuildConfig "github.com/sylabs/singularity/internal/pkg/runtime/engines/imgbuild/config"
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
+	imgbuildConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/imgbuild/config"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
-	syexec "github.com/sylabs/singularity/internal/pkg/util/exec"
+	"github.com/sylabs/singularity/internal/pkg/util/fs/squashfs"
+	"github.com/sylabs/singularity/internal/pkg/util/starter"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/build/types/parser"
 	"github.com/sylabs/singularity/pkg/image"
+	"github.com/sylabs/singularity/pkg/image/packer"
+	"github.com/sylabs/singularity/pkg/runtime/engine/config"
 )
 
 // Build is an abstracted way to look at the entire build process.
@@ -41,26 +45,26 @@ import (
 type Build struct {
 	// stages of the build
 	stages []stage
-	// Conf contains cross stage build configuration
+	// Conf contains cross stage build configuration.
 	Conf Config
 }
 
 // Config defines how build is executed, including things like where final image is written.
 type Config struct {
-	// Dest is the location for container after build is complete
+	// Dest is the location for container after build is complete.
 	Dest string
-	// Format is the format of built container, e.g., SIF, sandbox
+	// Format is the format of built container, e.g. SIF, sandbox.
 	Format string
-	// NoCleanUp allows a user to prevent a bundle from being cleaned up after a failed build
-	// useful for debugging
+	// NoCleanUp allows a user to prevent a bundle from being cleaned
+	// up after a failed build, useful for debugging.
 	NoCleanUp bool
-	// Opts for bundles
+	// Opts for bundles.
 	Opts types.Options
 }
 
-// NewBuild creates a new Build struct from a spec (URI, definition file, etc...)
+// NewBuild creates a new Build struct from a spec (URI, definition file, etc...).
 func NewBuild(spec string, conf Config) (*Build, error) {
-	def, err := makeDef(spec, false)
+	def, err := makeDef(spec)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse spec %v: %v", spec, err)
 	}
@@ -68,25 +72,21 @@ func NewBuild(spec string, conf Config) (*Build, error) {
 	return newBuild([]types.Definition{def}, conf)
 }
 
-// NewBuildJSON creates a new build struct from a JSON byte slice
-func NewBuildJSON(r io.Reader, conf Config) (*Build, error) {
-	def, err := types.NewDefinitionFromJSON(r)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse JSON: %v", err)
-	}
-
-	return newBuild([]types.Definition{def}, conf)
-}
-
-// New creates a new build struct form a slice of definitions
+// New creates a new build struct form a slice of definitions.
 func New(defs []types.Definition, conf Config) (*Build, error) {
 	return newBuild(defs, conf)
 }
 
 func newBuild(defs []types.Definition, conf Config) (*Build, error) {
-	var err error
+	sandboxCopy := false
+	oldumask := syscall.Umask(0002)
+	defer syscall.Umask(oldumask)
 
-	syscall.Umask(0002)
+	dest, err := filepath.Abs(conf.Dest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine absolute path for %q: %v", conf.Dest, err)
+	}
+	conf.Dest = dest
 
 	// always build a sandbox if updating an existing sandbox
 	if conf.Opts.Update {
@@ -97,25 +97,84 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 		Conf: conf,
 	}
 
+	// look if there is mount options set which could conflict
+	// with the build process like nodev and noexec
+	entries, err := proc.GetMountInfoEntry("/proc/self/mountinfo")
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve mount information: %v", err)
+	}
+
+	lastStageIndex := len(defs) - 1
+
 	// create stages
-	for _, d := range defs {
+	for i, d := range defs {
 		// verify every definition has a header if there are multiple stages
 		if d.Header == nil {
 			return nil, fmt.Errorf("multiple stages detected, all must have headers")
 		}
 
-		s := stage{}
-		s.b, err = types.NewBundle(conf.Opts.TmpDir, "sbuild")
+		rootfsParent := conf.Opts.TmpDir
+		if conf.Format == "sandbox" {
+			rootfsParent = filepath.Dir(conf.Dest)
+		}
+		rootfs := filepath.Join(rootfsParent, "rootfs-"+uuid.NewV1().String())
+
+		var s stage
+		var err error
+		if conf.Opts.EncryptionKeyInfo != nil {
+			s.b, err = types.NewEncryptedBundle(rootfs, conf.Opts.TmpDir, conf.Opts.EncryptionKeyInfo)
+		} else {
+			s.b, err = types.NewBundle(rootfs, conf.Opts.TmpDir)
+		}
 		if err != nil {
 			return nil, err
 		}
 		s.name = d.Header["stage"]
 		s.b.Recipe = d
 
+		if conf.Format == "sandbox" && lastStageIndex == i {
+			// rootfs path changed during bundle creation it means that chown
+			// is not possible within the temporary rootfs, we will switch to
+			// the old behavior which is to create the temporary rootfs inside
+			// $TMPDIR and copy the final root filesystem to the destination
+			// provided
+			if s.b.RootfsPath != rootfs {
+				sandboxCopy = true
+				sylog.Warningf("The underlying filesystem on which resides %q won't allow to set ownership, "+
+					"as a consequence the sandbox could not preserve image's files/directories ownerships", conf.Dest)
+			} else {
+				// check if the final sandbox directory doesn't have noexec set
+				destEntry, err := proc.FindParentMountEntry(rootfsParent, entries)
+				if err != nil {
+					return nil, fmt.Errorf("failed to find mount point for %s: %v", rootfsParent, err)
+				}
+				for _, opt := range destEntry.Options {
+					if opt == "noexec" {
+						return nil, fmt.Errorf("'noexec' mount option set on %s, sandbox %s won't be usable at this location", destEntry.Point, conf.Dest)
+					}
+				}
+			}
+		}
+		if lastStageIndex == i {
+			// check if TMPDIR mount point have nodev and/or noexec set
+			tmpdirEntry, err := proc.FindParentMountEntry(conf.Opts.TmpDir, entries)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find mount point for %s: %v", conf.Opts.TmpDir, err)
+			}
+			for _, opt := range tmpdirEntry.Options {
+				switch opt {
+				case "nodev":
+					sylog.Warningf("'nodev' mount option set on %s, it could be a source of failure during build process", tmpdirEntry.Point)
+				case "noexec":
+					return nil, fmt.Errorf("'noexec' mount option set on %s, temporary root filesystem won't be usable at this location", tmpdirEntry.Point)
+				}
+			}
+		}
+
 		s.b.Opts = conf.Opts
 		// dont need to get cp if we're skipping bootstrap
 		if !conf.Opts.Update || conf.Opts.Force {
-			if c, err := getcp(d, conf.Opts.LibraryURL, conf.Opts.LibraryAuthToken); err == nil {
+			if c, err := conveyorPacker(d); err == nil {
 				s.c = c
 			} else {
 				return nil, fmt.Errorf("unable to get conveyorpacker: %s", err)
@@ -126,12 +185,23 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 	}
 
 	// only need an assembler for last stage
-	lastStageIndex := len(defs) - 1
 	switch conf.Format {
 	case "sandbox":
-		b.stages[lastStageIndex].a = &assemblers.SandboxAssembler{}
+		b.stages[lastStageIndex].a = &assemblers.SandboxAssembler{Copy: sandboxCopy}
 	case "sif":
-		b.stages[lastStageIndex].a = &assemblers.SIFAssembler{}
+		mksquashfsPath, err := squashfs.GetPath()
+		if err != nil {
+			return nil, fmt.Errorf("while searching for mksquashfs: %v", err)
+		}
+
+		flag, err := ensureGzipComp(b.stages[lastStageIndex].b.TmpDir, mksquashfsPath)
+		if err != nil {
+			return nil, fmt.Errorf("while ensuring correct compression algorithm: %v", err)
+		}
+		b.stages[lastStageIndex].a = &assemblers.SIFAssembler{
+			GzipFlag:       flag,
+			MksquashfsPath: mksquashfsPath,
+		}
 	default:
 		return nil, fmt.Errorf("unrecognized output format %s", conf.Format)
 	}
@@ -139,27 +209,96 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 	return b, nil
 }
 
-// cleanUp removes remnants of build from file system unless NoCleanUp is specified
-func (b Build) cleanUp() {
-	var bundlePaths []string
-	for _, s := range b.stages {
-		bundlePaths = append(bundlePaths, s.b.Path)
+// ensureGzipComp builds dummy squashfs images and checks the type of compression used
+// to deduce if we can successfully build with gzip compression. It returns an error
+// if we cannot and a boolean to indicate if the `-comp` flag is needed to specify
+// gzip compression when the final squashfs is built
+func ensureGzipComp(tmpdir, mksquashfsPath string) (bool, error) {
+	sylog.Debugf("Ensuring gzip compression for mksquashfs")
+
+	var err error
+	s := packer.NewSquashfs()
+	s.MksquashfsPath = mksquashfsPath
+
+	srcf, err := ioutil.TempFile(tmpdir, "squashfs-gzip-comp-test-src")
+	if err != nil {
+		return false, fmt.Errorf("while creating temporary file for squashfs source: %v", err)
 	}
 
+	srcf.Write([]byte("Test File Content"))
+	srcf.Close()
+
+	f, err := ioutil.TempFile(tmpdir, "squashfs-gzip-comp-test-")
+	if err != nil {
+		return false, fmt.Errorf("while creating temporary file for squashfs: %v", err)
+	}
+	f.Close()
+
+	flags := []string{"-noappend"}
+	if err := s.Create([]string{srcf.Name()}, f.Name(), flags); err != nil {
+		return false, fmt.Errorf("while creating squashfs: %v", err)
+	}
+
+	content, err := ioutil.ReadFile(f.Name())
+	if err != nil {
+		return false, fmt.Errorf("while reading test squashfs: %v", err)
+	}
+
+	comp, err := image.GetSquashfsComp(content)
+	if err != nil {
+		return false, fmt.Errorf("could not verify squashfs compression type: %v", err)
+	}
+
+	if comp == "gzip" {
+		sylog.Debugf("Gzip compression by default ensured")
+		return false, nil
+	}
+
+	flags = []string{"-noappend", "-comp", "gzip"}
+	if err := s.Create([]string{srcf.Name()}, f.Name(), flags); err != nil {
+		return false, fmt.Errorf("could not build squashfs with required gzip compression")
+	}
+
+	content, err = ioutil.ReadFile(f.Name())
+	if err != nil {
+		return false, fmt.Errorf("while reading test squashfs: %v", err)
+	}
+
+	comp, err = image.GetSquashfsComp(content)
+	if err != nil {
+		return false, fmt.Errorf("could not verify squashfs compression type: %v", err)
+	}
+
+	if comp == "gzip" {
+		sylog.Debugf("Gzip compression with -comp flag ensured")
+		return true, nil
+	}
+
+	return false, fmt.Errorf("could not build squashfs with required gzip compression")
+}
+
+// cleanUp removes remnants of build from file system unless NoCleanUp is specified.
+func (b Build) cleanUp() {
 	if b.Conf.NoCleanUp {
+		var bundlePaths []string
+		for _, s := range b.stages {
+			bundlePaths = append(bundlePaths, s.b.RootfsPath, s.b.TmpDir)
+		}
 		sylog.Infof("Build performed with no clean up option, build bundle(s) located at: %v", bundlePaths)
 		return
 	}
 
-	for _, path := range bundlePaths {
-		os.RemoveAll(path)
+	for _, s := range b.stages {
+		sylog.Debugf("Cleaning up %q and %q", s.b.RootfsPath, s.b.TmpDir)
+		err := s.b.Remove()
+		if err != nil {
+			sylog.Errorf("Could not remove bundle: %v", err)
+		}
 	}
-	sylog.Debugf("Build bundle(s) cleaned: %v", bundlePaths)
-
 }
 
-// Full runs a standard build from start to finish
-func (b *Build) Full() error {
+// Full runs a standard build from start to finish.
+func (b *Build) Full(ctx context.Context) error {
 	sylog.Infof("Starting build...")
 
 	// monitor build for termination signal and clean up
@@ -172,6 +311,8 @@ func (b *Build) Full() error {
 	}()
 	// clean up build normally
 	defer b.cleanUp()
+
+	oldumask := syscall.Umask(0002)
 
 	// build each stage one after the other
 	for i, stage := range b.stages {
@@ -189,17 +330,20 @@ func (b *Build) Full() error {
 				return err
 			}
 
-			_, err = p.Pack()
+			_, err = p.Pack(ctx)
 			if err != nil {
 				return err
 			}
 		} else {
 			// regular build or force, start build from scratch
-			if err := stage.c.Get(stage.b); err != nil {
+			if b.Conf.Opts.ImgCache == nil {
+				return fmt.Errorf("undefined image cache")
+			}
+			if err := stage.c.Get(ctx, stage.b); err != nil {
 				return fmt.Errorf("conveyor failed to get: %v", err)
 			}
 
-			_, err := stage.c.Pack()
+			_, err := stage.c.Pack(ctx)
 			if err != nil {
 				return fmt.Errorf("packer failed to pack: %v", err)
 			}
@@ -232,12 +376,14 @@ func (b *Build) Full() error {
 		}
 	}
 
+	syscall.Umask(oldumask)
+
 	sylog.Debugf("Calling assembler")
 	if err := b.stages[len(b.stages)-1].Assemble(b.Conf.Dest); err != nil {
 		return err
 	}
 
-	sylog.Infof("Build complete: %s", b.Conf.Dest)
+	sylog.Verbosef("Build complete: %s", b.Conf.Dest)
 	return nil
 }
 
@@ -249,13 +395,10 @@ func engineRequired(def types.Definition) bool {
 // runBuildEngine creates an imgbuild engine and creates a container out of our bundle in order to execute %post %setup scripts in the bundle
 func runBuildEngine(b *types.Bundle) error {
 	if syscall.Getuid() != 0 {
-		return fmt.Errorf("Attempted to build with scripts as non-root user")
+		return fmt.Errorf("attempted to build with scripts as non-root user or without --fakeroot")
 	}
 
 	sylog.Debugf("Starting build engine")
-	env := []string{sylog.GetEnvVar()}
-	starter := filepath.Join(buildcfg.LIBEXECDIR, "/singularity/bin/starter")
-	progname := []string{"singularity image-build"}
 	ociConfig := &oci.Config{}
 
 	engineConfig := &imgbuildConfig.EngineConfig{
@@ -264,7 +407,7 @@ func runBuildEngine(b *types.Bundle) error {
 	}
 
 	// surface build specific environment variables for scripts
-	sRootfs := "SINGULARITY_ROOTFS=" + b.Rootfs()
+	sRootfs := "SINGULARITY_ROOTFS=" + b.RootfsPath
 	sEnvironment := "SINGULARITY_ENVIRONMENT=" + "/.singularity.d/env/91-environment.sh"
 
 	ociConfig.Process = &specs.Process{}
@@ -276,58 +419,16 @@ func runBuildEngine(b *types.Bundle) error {
 		EngineConfig: engineConfig,
 	}
 
-	configData, err := json.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config.Common: %s", err)
-	}
-
-	starterCmd, err := syexec.PipeCommand(starter, progname, env, configData)
-	if err != nil {
-		return fmt.Errorf("failed to create cmd type: %v", err)
-	}
-
-	starterCmd.Stdout = os.Stdout
-	starterCmd.Stderr = os.Stderr
-
-	return starterCmd.Run()
+	return starter.Run(
+		"Singularity image-build",
+		config,
+		starter.WithStdout(os.Stdout),
+		starter.WithStderr(os.Stderr),
+	)
 }
 
-func getcp(def types.Definition, libraryURL, authToken string) (ConveyorPacker, error) {
-	switch def.Header["bootstrap"] {
-	case "library":
-		return &sources.LibraryConveyorPacker{}, nil
-	case "shub":
-		return &sources.ShubConveyorPacker{}, nil
-	case "docker", "docker-archive", "docker-daemon", "oci", "oci-archive":
-		return &sources.OCIConveyorPacker{}, nil
-	case "busybox":
-		return &sources.BusyBoxConveyorPacker{}, nil
-	case "debootstrap":
-		return &sources.DebootstrapConveyorPacker{}, nil
-	case "arch":
-		return &sources.ArchConveyorPacker{}, nil
-	case "localimage":
-		return &sources.LocalConveyorPacker{}, nil
-	case "yum":
-		return &sources.YumConveyorPacker{}, nil
-	case "zypper":
-		return &sources.ZypperConveyorPacker{}, nil
-	case "scratch":
-		return &sources.ScratchConveyorPacker{}, nil
-	case "":
-		return nil, fmt.Errorf("no bootstrap specification found")
-	default:
-		return nil, fmt.Errorf("invalid build source %s", def.Header["bootstrap"])
-	}
-}
-
-// MakeDef gets a definition object from a spec
-func MakeDef(spec string, remote bool) (types.Definition, error) {
-	return makeDef(spec, remote)
-}
-
-// makeDef gets a definition object from a spec
-func makeDef(spec string, remote bool) (types.Definition, error) {
+// makeDef gets a definition object from a spec.
+func makeDef(spec string) (types.Definition, error) {
 	if ok, err := uri.IsValid(spec); ok && err == nil {
 		// URI passed as spec
 		return types.NewDefinitionFromURI(spec)
@@ -345,11 +446,6 @@ func makeDef(spec string, remote bool) (types.Definition, error) {
 	}
 	defer defFile.Close()
 
-	// must be root to build from a definition
-	if os.Getuid() != 0 && !remote {
-		return types.Definition{}, fmt.Errorf("you must be the root user to build from a definition file")
-	}
-
 	d, err := parser.ParseDefinitionFile(defFile)
 	if err != nil {
 		return types.Definition{}, fmt.Errorf("while parsing definition: %s: %v", spec, err)
@@ -358,22 +454,18 @@ func makeDef(spec string, remote bool) (types.Definition, error) {
 	return d, nil
 }
 
-// MakeAllDefs gets a definition slice from a spec
-func MakeAllDefs(spec string, remote bool) ([]types.Definition, error) {
-	return makeAllDefs(spec, remote)
-}
-
-// makeAllDef gets a definition object from a spec
-func makeAllDefs(spec string, remote bool) ([]types.Definition, error) {
+// MakeAllDefs gets a definition object from a spec
+func MakeAllDefs(spec string) ([]types.Definition, error) {
 	if ok, err := uri.IsValid(spec); ok && err == nil {
 		// URI passed as spec
 		d, err := types.NewDefinitionFromURI(spec)
 		return []types.Definition{d}, err
 	}
 
-	// Check if spec is an image/sandbox
-	if _, err := image.Init(spec, false); err == nil {
-		d, err := types.NewDefinitionFromURI("localimage" + "://" + spec)
+	// check if spec is an image/sandbox
+	if i, err := image.Init(spec, false); err == nil {
+		_ = i.File.Close()
+		d, err := types.NewDefinitionFromURI("localimage://" + spec)
 		return []types.Definition{d}, err
 	}
 
@@ -383,11 +475,6 @@ func makeAllDefs(spec string, remote bool) ([]types.Definition, error) {
 		return nil, fmt.Errorf("unable to open file %s: %v", spec, err)
 	}
 	defer defFile.Close()
-
-	// must be root to build from a definition
-	if os.Getuid() != 0 && !remote {
-		return nil, fmt.Errorf("you must be the root user to build from a definition file")
-	}
 
 	d, err := parser.All(defFile)
 	if err != nil {
@@ -438,10 +525,12 @@ func (s *stage) copyFiles(b *Build) error {
 			}
 
 			// copy each file into bundle rootfs
-			transfer.Src = filepath.Join(b.stages[stageIndex].b.Rootfs(), transfer.Src)
-			transfer.Dst = filepath.Join(s.b.Rootfs(), transfer.Dst)
+			// prepend appropriate bundle path to supplied paths
+			// copying between stages should not follow symlinks
+			transfer.Src = files.AddPrefix(b.stages[stageIndex].b.RootfsPath, transfer.Src)
+			transfer.Dst = files.AddPrefix(s.b.RootfsPath, transfer.Dst)
 			sylog.Infof("Copying %v to %v", transfer.Src, transfer.Dst)
-			if err := copy.Copy(transfer.Src, transfer.Dst); err != nil {
+			if err := files.Copy(transfer.Src, transfer.Dst, false); err != nil {
 				return err
 			}
 		}

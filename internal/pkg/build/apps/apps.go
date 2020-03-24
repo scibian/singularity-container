@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the URIs of this project regarding your
 // rights to use or distribute this software.
@@ -236,7 +236,7 @@ func (pl *BuildApp) createAllApps(b *types.Bundle) error {
 		globalEnv94 += globalAppEnv(b, app)
 	}
 
-	return ioutil.WriteFile(filepath.Join(b.Rootfs(), "/.singularity.d/env/94-appsbase.sh"), []byte(globalEnv94), 0755)
+	return ioutil.WriteFile(filepath.Join(b.RootfsPath, "/.singularity.d/env/94-appsbase.sh"), []byte(globalEnv94), 0755)
 }
 
 func createAppRoot(b *types.Bundle, a *App) error {
@@ -338,7 +338,7 @@ func copyFiles(b *types.Bundle, a *App) error {
 		return nil
 	}
 
-	appBase := filepath.Join(b.Rootfs(), "/scif/apps/", a.Name)
+	appBase := filepath.Join(b.RootfsPath, "/scif/apps/", a.Name)
 	for _, line := range strings.Split(a.Files, "\n") {
 
 		// skip empty or comment lines
@@ -401,7 +401,7 @@ func writeLabels(b *types.Bundle, a *App) error {
 		return err
 	}
 
-	appBase := filepath.Join(b.Rootfs(), "/scif/apps/", a.Name)
+	appBase := filepath.Join(b.RootfsPath, "/scif/apps/", a.Name)
 	err = ioutil.WriteFile(filepath.Join(appBase, "scif/labels.json"), text, 0644)
 	return err
 }
@@ -409,7 +409,7 @@ func writeLabels(b *types.Bundle, a *App) error {
 //util funcs
 
 func appBase(b *types.Bundle, a *App) string {
-	return filepath.Join(b.Rootfs(), "/scif/apps/", a.Name)
+	return filepath.Join(b.RootfsPath, "/scif/apps/", a.Name)
 }
 
 func appMeta(b *types.Bundle, a *App) string {
@@ -417,7 +417,7 @@ func appMeta(b *types.Bundle, a *App) string {
 }
 
 func appData(b *types.Bundle, a *App) string {
-	return filepath.Join(b.Rootfs(), "/scif/data/", a.Name)
+	return filepath.Join(b.RootfsPath, "/scif/data/", a.Name)
 }
 
 func copy(src, dst string) error {
@@ -426,7 +426,7 @@ func copy(src, dst string) error {
 	copy.Stderr = &stderr
 	sylog.Debugf("Copying %v to %v", src, dst)
 	if err := copy.Run(); err != nil {
-		return fmt.Errorf("While copying %v to %v: %v: %v", src, dst, err, stderr.String())
+		return fmt.Errorf("while copying %v to %v: %v: %v", src, dst, err, stderr.String())
 	}
 
 	return nil

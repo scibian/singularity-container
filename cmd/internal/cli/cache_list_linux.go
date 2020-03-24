@@ -11,24 +11,39 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
+	"github.com/sylabs/singularity/internal/pkg/client/cache"
 	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/cmdline"
 )
 
 var (
 	cacheListTypes   []string
-	allList          bool
-	cacheListSummary bool
+	cacheListVerbose bool
 )
 
+// -T|--type
+var cacheListTypesFlag = cmdline.Flag{
+	ID:           "cacheListTypes",
+	Value:        &cacheListTypes,
+	DefaultValue: []string{"all"},
+	Name:         "type",
+	ShortHand:    "T",
+	Usage:        "a list of cache types to display, possible entries: library, oci, shub, blob(s), all",
+}
+
+// -s|--summary
+var cacheListVerboseFlag = cmdline.Flag{
+	ID:           "cacheListVerbose",
+	Value:        &cacheListVerbose,
+	DefaultValue: false,
+	Name:         "verbose",
+	ShortHand:    "v",
+	Usage:        "include cache entries in the output",
+}
+
 func init() {
-	CacheListCmd.Flags().SetInterspersed(false)
-
-	CacheListCmd.Flags().StringSliceVarP(&cacheListTypes, "type", "T", []string{"library", "oci", "blobSum"},
-		"a list of cache types to display, possible entries: library, oci, blob(s), blobSum, all")
-	CacheListCmd.Flags().SetAnnotation("type", "envkey", []string{"TYPE"})
-	CacheListCmd.Flags().BoolVarP(&cacheListSummary, "summary", "s", false, "display a cache summary")
-
-	CacheListCmd.Flags().BoolVarP(&allList, "all", "a", false, "list all cache types")
+	cmdManager.RegisterFlagForCmd(&cacheListTypesFlag, CacheListCmd)
+	cmdManager.RegisterFlagForCmd(&cacheListVerboseFlag, CacheListCmd)
 }
 
 // CacheListCmd is 'singularity cache list' and will list your local singularity cache
@@ -47,10 +62,16 @@ var CacheListCmd = &cobra.Command{
 }
 
 func cacheListCmd() error {
-	err := singularity.ListSingularityCache(cacheListTypes, allList, cacheListSummary)
+	// A get a handle for the current image cache
+	imgCache := getCacheHandle(cache.Config{})
+	if imgCache == nil {
+		sylog.Fatalf("failed to create image cache handle")
+	}
+
+	err := singularity.ListSingularityCache(imgCache, cacheListTypes, cacheListVerbose)
 	if err != nil {
-		sylog.Fatalf("Not listing cache; an error occurred: %v", err)
+		sylog.Fatalf("An error occurred while listing cache: %v", err)
 		return err
 	}
-	return err
+	return nil
 }

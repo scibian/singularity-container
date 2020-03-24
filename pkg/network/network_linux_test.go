@@ -3,9 +3,12 @@
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
+// +build integration_test
+
 package network
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -32,7 +35,7 @@ var confFiles = []struct {
 		name: "test-bridge",
 		file: "00_test-bridge.conflist",
 		content: `{
-			"cniVersion": "0.3.1",
+			"cniVersion": "0.4.0",
 			"name": "test-bridge",
 			"plugins": [
 				{
@@ -61,14 +64,14 @@ var confFiles = []struct {
 	},
 	{
 		name: "test-badbridge",
-		file: "10_badbridge.conf",
+		file: "10_badbridge.conflist",
 		content: `{
-			"cniVersion": "0.3.1",
+			"cniVersion": "0.4.0",
 			"name": "test-badbridge",
 			"plugins": [
 				{
 					"type": "badbridge",
-					"bridge": "tbr0"
+					"bridge": "bbr0"
 				}
 			]
 		}`,
@@ -77,7 +80,7 @@ var confFiles = []struct {
 		name: "test-bridge-iprange",
 		file: "20_bridge_iprange.conflist",
 		content: `{
-			"cniVersion": "0.3.1",
+			"cniVersion": "0.4.0",
 			"name": "test-bridge-iprange",
 			"plugins": [
 				{
@@ -242,6 +245,16 @@ func testSetArgs(setup *Setup, t *testing.T) {
 			success: true,
 		},
 		{
+			desc:    "good port range",
+			args:    []string{"test-bridge:portmap=65530/tcp"},
+			success: true,
+		},
+		{
+			desc:    "bad port range",
+			args:    []string{"test-bridge:portmap=65550/tcp"},
+			success: false,
+		},
+		{
 			desc:    "ipRange not supported arg",
 			args:    []string{"test-bridge:ipRange=10.1.1.0/16"},
 			success: false,
@@ -356,15 +369,15 @@ func TestNewSetup(t *testing.T) {
 func testPingIP(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout io.ReadCloser) error {
 	testIP := "10.111.111.10"
 
-	setup, err := NewSetup([]string{"test-bridge"}, "", nsPath, cniPath)
+	setup, err := NewSetup([]string{"test-bridge"}, "_test_", nsPath, cniPath)
 	if err != nil {
 		return err
 	}
 	setup.SetArgs([]string{"IP=" + testIP})
-	if err := setup.AddNetworks(); err != nil {
+	if err := setup.AddNetworks(context.Background()); err != nil {
 		return err
 	}
-	defer setup.DelNetworks()
+	defer setup.DelNetworks(context.Background())
 
 	ip, err := setup.GetNetworkIP("test-bridge", "4")
 	if err != nil {
@@ -386,14 +399,14 @@ func testPingIP(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout io
 
 // ping random acquired IP from host
 func testPingRandomIP(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout io.ReadCloser) error {
-	setup, err := NewSetup([]string{"test-bridge"}, "", nsPath, cniPath)
+	setup, err := NewSetup([]string{"test-bridge"}, "_test_", nsPath, cniPath)
 	if err != nil {
 		return err
 	}
-	if err := setup.AddNetworks(); err != nil {
+	if err := setup.AddNetworks(context.Background()); err != nil {
 		return err
 	}
-	defer setup.DelNetworks()
+	defer setup.DelNetworks(context.Background())
 
 	ip, err := setup.GetNetworkIP("test-bridge", "4")
 	if err != nil {
@@ -412,15 +425,15 @@ func testPingRandomIP(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, std
 
 // ping IP from host within requested IP range
 func testPingIPRange(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout io.ReadCloser) error {
-	setup, err := NewSetup([]string{"test-bridge-iprange"}, "", nsPath, cniPath)
+	setup, err := NewSetup([]string{"test-bridge-iprange"}, "_test_", nsPath, cniPath)
 	if err != nil {
 		return err
 	}
 	setup.SetArgs([]string{"ipRange=10.111.112.0/24"})
-	if err := setup.AddNetworks(); err != nil {
+	if err := setup.AddNetworks(context.Background()); err != nil {
 		return err
 	}
-	defer setup.DelNetworks()
+	defer setup.DelNetworks(context.Background())
 
 	ip, err := setup.GetNetworkIP("test-bridge", "4")
 	if err != nil {
@@ -446,15 +459,15 @@ func testPingIPRange(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdo
 // test port mapping by connecting to port 80 mapped inside container
 // to 31080 on host
 func testHTTPPortmap(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout io.ReadCloser) error {
-	setup, err := NewSetup([]string{"test-bridge"}, "", nsPath, cniPath)
+	setup, err := NewSetup([]string{"test-bridge"}, "_test_", nsPath, cniPath)
 	if err != nil {
 		return err
 	}
 	setup.SetArgs([]string{"portmap=31080:80/tcp"})
-	if err := setup.AddNetworks(); err != nil {
+	if err := setup.AddNetworks(context.Background()); err != nil {
 		return err
 	}
-	defer setup.DelNetworks()
+	defer setup.DelNetworks(context.Background())
 
 	eth, err := setup.GetNetworkInterface("test-bridge-iprange")
 	if err != nil {
@@ -493,10 +506,10 @@ func testBadBridge(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout
 	if err != nil {
 		return err
 	}
-	if err := setup.AddNetworks(); err == nil {
+	if err := setup.AddNetworks(context.Background()); err == nil {
 		return fmt.Errorf("unexpected success while calling non existent plugin")
 	}
-	defer setup.DelNetworks()
+	defer setup.DelNetworks(context.Background())
 
 	return nil
 }
@@ -505,14 +518,14 @@ func TestAddDelNetworks(t *testing.T) {
 	test.EnsurePrivilege(t)
 
 	// centos 6 doesn't support brigde/veth, only macvlan
-	// just skip tests on centos 6
+	// just skip tests on centos 6, rhel 6
 	b, err := ioutil.ReadFile("/etc/system-release-cpe")
 	if err == nil {
 		fields := strings.Split(string(b), ":")
 		switch fields[2] {
-		case "centos":
+		case "centos", "redhat":
 			if strings.HasPrefix(fields[4], "6") {
-				t.SkipNow()
+				t.Skipf("RHEL6/CentOS6 don't support CNI bridge/veth - skipping")
 			}
 		}
 	}
@@ -523,28 +536,34 @@ func TestAddDelNetworks(t *testing.T) {
 	}
 
 	for _, c := range []struct {
+		name    string
 		command string
 		args    []string
 		runFunc func(string, *CNIPath, io.WriteCloser, io.ReadCloser) error
 	}{
 		{
+			name:    "TestPingIP",
 			command: "cat",
 			runFunc: testPingIP,
 		},
 		{
+			name:    "TestPingRandomIP",
 			command: "cat",
 			runFunc: testPingRandomIP,
 		},
 		{
+			name:    "TestHTTPPortmap",
 			command: "nc",
-			args:    []string{"-l", "-p", "80"},
+			args:    []string{"-l", "80"},
 			runFunc: testHTTPPortmap,
 		},
 		{
+			name:    "TestPingIPRange",
 			command: "cat",
 			runFunc: testPingIPRange,
 		},
 		{
+			name:    "TestBadBridge",
 			command: "cat",
 			runFunc: testBadBridge,
 		},
@@ -577,7 +596,10 @@ func TestAddDelNetworks(t *testing.T) {
 
 		nsPath := fmt.Sprintf("/proc/%d/ns/net", cmd.Process.Pid)
 		if err := c.runFunc(nsPath, cniPath, stdinPipe, stdoutPipe); err != nil {
-			t.Error(err)
+			t.Errorf("unexpected failure for %q: %s", c.name, err)
+			if err := cmd.Process.Kill(); err != nil {
+				t.Fatalf("error killing process %q: %s", cmdPath, err)
+			}
 		}
 
 		stdoutPipe.Close()
