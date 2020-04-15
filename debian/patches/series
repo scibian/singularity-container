@@ -2,3 +2,4 @@ add-gpgkeyring_option.patch
 golang-requirement.patch
 remove-trimpath-option.patch
 remove-iserror.patch
+add-debootstrap-options.patch
