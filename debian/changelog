@@ -1,3 +1,9 @@
+singularity-container (3.5.3-0sci8u2) scibian8; urgency=medium
+
+  * Add a way to set additional deboostrap options
+
+ -- Pierre Trespeuch <pierre-externe.trespeuch@edf.fr>  Wed, 15 Apr 2020 16:52:05 +0200
+
 singularity-container (3.5.3-0sci8u1) scibian8; urgency=medium
 
   * New upstream version 3.5.3
