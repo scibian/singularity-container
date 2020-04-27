@@ -1,3 +1,9 @@
+singularity-container (3.5.3-0sci9u4) scibian9; urgency=medium
+
+  * Add a version to e2fsprogs recommendation
+
+ -- Pierre Trespeuch <pierre-externe.trespeuch@edf.fr>  Mon, 27 Apr 2020 11:11:25 +0200
+
 singularity-container (3.5.3-0sci9u3) scibian9; urgency=medium
 
   * Replace minbase deboostrap variant if needed
