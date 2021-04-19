@@ -13,6 +13,7 @@ import (
 	"github.com/buger/jsonparser"
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 )
 
@@ -65,7 +66,7 @@ func (c ctx) singularityVerifyAllKeyNum(t *testing.T) {
 	}{
 		{
 			name:         "verify number signers fail",
-			expectNumOut: 3,
+			expectNumOut: 0,
 			imageURL:     corruptedURL,
 			imagePath:    c.corruptedImage,
 			expectExit:   255,
@@ -102,7 +103,7 @@ func (c ctx) singularityVerifyAllKeyNum(t *testing.T) {
 			e2e.AsSubtest(tt.name),
 			e2e.WithProfile(e2e.UserProfile),
 			e2e.WithCommand("verify"),
-			e2e.WithArgs("--all", "--json", tt.imagePath),
+			e2e.WithArgs("--legacy-insecure", "--all", "--json", tt.imagePath),
 			e2e.ExpectExit(tt.expectExit, verifyOutput),
 		)
 	}
@@ -119,66 +120,22 @@ func (c ctx) singularityVerifySigner(t *testing.T) {
 	}{
 		// corrupted verify
 		{
-			name:        "corrupted signatures",
-			verifyLocal: false,
-			imageURL:    corruptedURL,
-			imagePath:   c.corruptedImage,
-			expectExit:  255,
-			expectOutput: []verifyOutput{
-				{
-					name:        "unknown",
-					fingerprint: "8883491F4268F173C6E5DC49EDECE4F3F38D871E",
-					local:       false,
-					keyCheck:    true,
-					dataCheck:   false,
-				},
-				{
-					name:        "WestleyK (Testing key; used for signing test containers) \u003cwestley@sylabs.io\u003e",
-					fingerprint: "7605BC2716168DF057D6C600ACEEC62C8BD91BEE",
-					local:       false,
-					keyCheck:    true,
-					dataCheck:   true,
-				},
-				{
-					name:        "unknown",
-					fingerprint: "F69C21F759C8EA06FD32CCF4536523CE1E109AF3",
-					local:       false,
-					keyCheck:    false,
-					dataCheck:   false,
-				},
-			},
+			name:         "corrupted signatures",
+			verifyLocal:  false,
+			imageURL:     corruptedURL,
+			imagePath:    c.corruptedImage,
+			expectExit:   255,
+			expectOutput: []verifyOutput{},
 		},
 
 		// corrupted verify with --local
 		{
-			name:        "corrupted signatures local",
-			imageURL:    corruptedURL,
-			imagePath:   c.corruptedImage,
-			verifyLocal: true,
-			expectExit:  255,
-			expectOutput: []verifyOutput{
-				{
-					name:        "unknown",
-					fingerprint: "8883491F4268F173C6E5DC49EDECE4F3F38D871E",
-					local:       false,
-					keyCheck:    true,
-					dataCheck:   false,
-				},
-				{
-					name:        "unknown",
-					fingerprint: "7605BC2716168DF057D6C600ACEEC62C8BD91BEE",
-					local:       false,
-					keyCheck:    true,
-					dataCheck:   true,
-				},
-				{
-					name:        "unknown",
-					fingerprint: "F69C21F759C8EA06FD32CCF4536523CE1E109AF3",
-					local:       false,
-					keyCheck:    false,
-					dataCheck:   false,
-				},
-			},
+			name:         "corrupted signatures local",
+			imageURL:     corruptedURL,
+			imagePath:    c.corruptedImage,
+			verifyLocal:  true,
+			expectExit:   255,
+			expectOutput: []verifyOutput{},
 		},
 
 		// Verify 'verify_container_success.sif'
@@ -191,7 +148,7 @@ func (c ctx) singularityVerifySigner(t *testing.T) {
 			expectOutput: []verifyOutput{
 				{
 					name:        "WestleyK (Testing key; used for signing test containers) \u003cwestley@sylabs.io\u003e",
-					fingerprint: "7605BC2716168DF057D6C600ACEEC62C8BD91BEE",
+					fingerprint: "7605bc2716168df057d6c600aceec62c8bd91bee",
 					local:       false,
 					keyCheck:    true,
 					dataCheck:   true,
@@ -201,20 +158,12 @@ func (c ctx) singularityVerifySigner(t *testing.T) {
 
 		// Verify 'verify_container_success.sif' with --local
 		{
-			name:        "verify non local fail",
-			imageURL:    successURL,
-			imagePath:   c.successImage,
-			verifyLocal: true,
-			expectExit:  255,
-			expectOutput: []verifyOutput{
-				{
-					name:        "unknown",
-					fingerprint: "7605BC2716168DF057D6C600ACEEC62C8BD91BEE",
-					local:       false,
-					keyCheck:    true,
-					dataCheck:   true,
-				},
-			},
+			name:         "verify non local fail",
+			imageURL:     successURL,
+			imagePath:    c.successImage,
+			verifyLocal:  true,
+			expectExit:   255,
+			expectOutput: []verifyOutput{},
 		},
 	}
 
@@ -276,7 +225,7 @@ func (c ctx) singularityVerifySigner(t *testing.T) {
 			t.Fatalf("image file (%s) does not exist", tt.imagePath)
 		}
 
-		args := []string{"--json"}
+		args := []string{"--legacy-insecure", "--json"}
 		if tt.verifyLocal {
 			args = append(args, "--local")
 		}
@@ -295,7 +244,7 @@ func (c ctx) singularityVerifySigner(t *testing.T) {
 }
 
 func (c ctx) checkGroupidOption(t *testing.T) {
-	cmdArgs := []string{"--groupid", "1", c.successImage}
+	cmdArgs := []string{"--legacy-insecure", "--group-id", "1", c.successImage}
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
@@ -303,13 +252,13 @@ func (c ctx) checkGroupidOption(t *testing.T) {
 		e2e.WithArgs(cmdArgs...),
 		e2e.ExpectExit(
 			0,
-			e2e.ExpectOutput(e2e.RegexMatch, "^Container is signed by"),
+			e2e.ExpectOutput(e2e.RegexMatch, "Container verified: .*/verify_success.sif"),
 		),
 	)
 }
 
 func (c ctx) checkIDOption(t *testing.T) {
-	cmdArgs := []string{"--sif-id", "1", c.successImage}
+	cmdArgs := []string{"--legacy-insecure", "--sif-id", "1", c.successImage}
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
@@ -317,13 +266,13 @@ func (c ctx) checkIDOption(t *testing.T) {
 		e2e.WithArgs(cmdArgs...),
 		e2e.ExpectExit(
 			0,
-			e2e.ExpectOutput(e2e.RegexMatch, "^Container is signed by"),
+			e2e.ExpectOutput(e2e.RegexMatch, "Container verified: .*/verify_success.sif"),
 		),
 	)
 }
 
 func (c ctx) checkAllOption(t *testing.T) {
-	cmdArgs := []string{"--all", c.successImage}
+	cmdArgs := []string{"--legacy-insecure", "--all", c.successImage}
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
@@ -331,7 +280,7 @@ func (c ctx) checkAllOption(t *testing.T) {
 		e2e.WithArgs(cmdArgs...),
 		e2e.ExpectExit(
 			0,
-			e2e.ExpectOutput(e2e.RegexMatch, "^Container is signed by"),
+			e2e.ExpectOutput(e2e.RegexMatch, "Container verified: .*/verify_success.sif"),
 		),
 	)
 }
@@ -341,7 +290,7 @@ func (c ctx) checkURLOption(t *testing.T) {
 		t.Fatalf("image file (%s) does not exist", c.successImage)
 	}
 
-	cmdArgs := []string{"--url", "https://keys.sylabs.io", c.successImage}
+	cmdArgs := []string{"--legacy-insecure", "--url", "https://keys.sylabs.io", c.successImage}
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
@@ -349,29 +298,32 @@ func (c ctx) checkURLOption(t *testing.T) {
 		e2e.WithArgs(cmdArgs...),
 		e2e.ExpectExit(
 			0,
-			e2e.ExpectOutput(e2e.RegexMatch, "^Container is signed by"),
+			e2e.ExpectOutput(e2e.RegexMatch, "Container verified: .*/verify_success.sif"),
 		),
 	)
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env:            env,
 		corruptedImage: filepath.Join(env.TestDir, "verify_corrupted.sif"),
 		successImage:   filepath.Join(env.TestDir, "verify_success.sif"),
 	}
 
-	return func(t *testing.T) {
-		// We pull the two images required for the tests once
-		e2e.PullImage(t, c.env, successURL, c.successImage)
-		e2e.PullImage(t, c.env, corruptedURL, c.corruptedImage)
+	return testhelper.Tests{
+		"ordered": func(t *testing.T) {
+			// We pull the two images required for the tests once
+			// We should be able to sign amd64 on other archs too!
+			e2e.PullImage(t, c.env, successURL, "amd64", c.successImage)
+			e2e.PullImage(t, c.env, corruptedURL, "amd64", c.corruptedImage)
 
-		t.Run("checkAllOption", c.checkAllOption)
-		t.Run("singularityVerifyAllKeyNum", c.singularityVerifyAllKeyNum)
-		t.Run("singularityVerifySigner", c.singularityVerifySigner)
-		t.Run("singularityVerifyGroupIdOption", c.checkGroupidOption)
-		t.Run("singularityVerifyIDOption", c.checkIDOption)
-		t.Run("singularityVerifyURLOption", c.checkURLOption)
+			t.Run("checkAllOption", c.checkAllOption)
+			t.Run("singularityVerifyAllKeyNum", c.singularityVerifyAllKeyNum)
+			t.Run("singularityVerifySigner", c.singularityVerifySigner)
+			t.Run("singularityVerifyGroupIdOption", c.checkGroupidOption)
+			t.Run("singularityVerifyIDOption", c.checkIDOption)
+			t.Run("singularityVerifyURLOption", c.checkURLOption)
+		},
 	}
 }

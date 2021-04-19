@@ -8,13 +8,13 @@ package docker
 import (
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"testing"
 
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
+	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"golang.org/x/sys/unix"
 )
@@ -119,14 +119,15 @@ func (c ctx) testDockerPulls(t *testing.T) {
 
 // AUFS sanity tests
 func (c ctx) testDockerAUFS(t *testing.T) {
-	imagePath := path.Join(c.env.TestDir, "container")
-	defer os.Remove(imagePath)
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "aufs-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
 
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs([]string{imagePath, "docker://dctrud/docker-aufs-sanity"}...),
+		e2e.WithArgs([]string{imagePath, "docker://sylabsio/aufs-sanity"}...),
 		e2e.ExpectExit(0),
 	)
 
@@ -165,14 +166,15 @@ func (c ctx) testDockerAUFS(t *testing.T) {
 
 // Check force permissions for user builds #977
 func (c ctx) testDockerPermissions(t *testing.T) {
-	imagePath := path.Join(c.env.TestDir, "container")
-	defer os.Remove(imagePath)
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "perm-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
 
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs([]string{imagePath, "docker://dctrud/docker-singularity-userperms"}...),
+		e2e.WithArgs([]string{imagePath, "docker://sylabsio/userperms"}...),
 		e2e.ExpectExit(0),
 	)
 
@@ -210,14 +212,15 @@ func (c ctx) testDockerPermissions(t *testing.T) {
 
 // Check whiteout of symbolic links #1592 #1576
 func (c ctx) testDockerWhiteoutSymlink(t *testing.T) {
-	imagePath := path.Join(c.env.TestDir, "container")
-	defer os.Remove(imagePath)
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "whiteout-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
 
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs([]string{imagePath, "docker://dctrud/docker-singularity-linkwh"}...),
+		e2e.WithArgs([]string{imagePath, "docker://sylabsio/linkwh"}...),
 		e2e.PostRun(func(t *testing.T) {
 			if t.Failed() {
 				return
@@ -229,6 +232,10 @@ func (c ctx) testDockerWhiteoutSymlink(t *testing.T) {
 }
 
 func (c ctx) testDockerDefFile(t *testing.T) {
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "def-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
+
 	getKernelMajor := func(t *testing.T) (major int) {
 		var buf unix.Utsname
 		if err := unix.Uname(&buf); err != nil {
@@ -249,11 +256,14 @@ func (c ctx) testDockerDefFile(t *testing.T) {
 	tests := []struct {
 		name                string
 		kernelMajorRequired int
+		archRequired        string
 		from                string
 	}{
+		// This only provides Arch for amd64
 		{
 			name:                "Arch",
 			kernelMajorRequired: 3,
+			archRequired:        "amd64",
 			from:                "dock0/arch:latest",
 		},
 		{
@@ -261,9 +271,11 @@ func (c ctx) testDockerDefFile(t *testing.T) {
 			kernelMajorRequired: 0,
 			from:                "busybox:latest",
 		},
+		// CentOS6 is for amd64 (or i386) only
 		{
 			name:                "CentOS_6",
 			kernelMajorRequired: 0,
+			archRequired:        "amd64",
 			from:                "centos:6",
 		},
 		{
@@ -288,8 +300,6 @@ func (c ctx) testDockerDefFile(t *testing.T) {
 		},
 	}
 
-	imagePath := path.Join(c.env.TestDir, "container")
-
 	for _, tt := range tests {
 		deffile := e2e.PrepareDefFile(e2e.DefFileDetails{
 			Bootstrap: "docker",
@@ -303,6 +313,7 @@ func (c ctx) testDockerDefFile(t *testing.T) {
 			e2e.WithCommand("build"),
 			e2e.WithArgs([]string{imagePath, deffile}...),
 			e2e.PreRun(func(t *testing.T) {
+				require.Arch(t, tt.archRequired)
 				if getKernelMajor(t) < tt.kernelMajorRequired {
 					t.Skipf("kernel >=%v.x required", tt.kernelMajorRequired)
 				}
@@ -323,7 +334,11 @@ func (c ctx) testDockerDefFile(t *testing.T) {
 }
 
 func (c ctx) testDockerRegistry(t *testing.T) {
-	e2e.PrepRegistry(t, c.env)
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "registry-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
+
+	e2e.EnsureRegistry(t)
 
 	tests := []struct {
 		name string
@@ -359,8 +374,6 @@ func (c ctx) testDockerRegistry(t *testing.T) {
 		},
 	}
 
-	imagePath := path.Join(c.env.TestDir, "container")
-
 	for _, tt := range tests {
 		defFile := e2e.PrepareDefFile(tt.dfd)
 
@@ -368,8 +381,7 @@ func (c ctx) testDockerRegistry(t *testing.T) {
 			t,
 			e2e.WithProfile(e2e.RootProfile),
 			e2e.WithCommand("build"),
-			e2e.WithArgs([]string{imagePath, defFile}...),
-			e2e.WithEnv(append(os.Environ(), "SINGULARITY_NOHTTPS=true")),
+			e2e.WithArgs("--nohttps", imagePath, defFile),
 			e2e.PostRun(func(t *testing.T) {
 				defer os.Remove(imagePath)
 				defer os.Remove(defFile)
@@ -386,17 +398,17 @@ func (c ctx) testDockerRegistry(t *testing.T) {
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env: env,
 	}
 
-	return testhelper.TestRunner(map[string]func(*testing.T){
+	return testhelper.Tests{
 		"AUFS":             c.testDockerAUFS,
 		"def file":         c.testDockerDefFile,
 		"permissions":      c.testDockerPermissions,
 		"pulls":            c.testDockerPulls,
 		"registry":         c.testDockerRegistry,
 		"whiteout symlink": c.testDockerWhiteoutSymlink,
-	})
+	}
 }

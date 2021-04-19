@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,7 +23,10 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
+	syoras "github.com/sylabs/singularity/internal/pkg/client/oras"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
+	"golang.org/x/sys/unix"
 )
 
 type ctx struct {
@@ -64,7 +66,7 @@ var tests = []testStruct{
 	// --force tests
 	{
 		desc:             "force existing file",
-		srcURI:           "library://alpine:3.8",
+		srcURI:           "library://alpine:3.11.5",
 		force:            true,
 		createDst:        true,
 		unauthenticated:  true,
@@ -72,7 +74,7 @@ var tests = []testStruct{
 	},
 	{
 		desc:             "force non-existing file",
-		srcURI:           "library://alpine:3.8",
+		srcURI:           "library://alpine:3.11.5",
 		force:            true,
 		createDst:        false,
 		unauthenticated:  true,
@@ -90,7 +92,7 @@ var tests = []testStruct{
 	// test version specifications
 	{
 		desc:             "image with specific hash",
-		srcURI:           "library://sylabs/tests/signed:sha256.5c439fd262095766693dae95fb81334c3a02a7f0e4dc6291e0648ed4ddc61c6c",
+		srcURI:           "library://alpine:sha256.03883ca565b32e58fa0a496316d69de35741f2ef34b5b4658a6fec04ed8149a8",
 		unauthenticated:  true,
 		expectedExitCode: 0,
 	},
@@ -104,7 +106,7 @@ var tests = []testStruct{
 	// --dir tests
 	{
 		desc:             "dir no image path",
-		srcURI:           "library://alpine:3.9",
+		srcURI:           "library://alpine:3.11.5",
 		unauthenticated:  true,
 		setPullDir:       true,
 		setImagePath:     false,
@@ -119,7 +121,7 @@ var tests = []testStruct{
 		// the directory /tmp/a/b/c/tmp/a/b does not exist, it fails to create the file
 		// image.sif in there.
 		desc:             "dir image path",
-		srcURI:           "library://alpine:3.9",
+		srcURI:           "library://alpine:3.11.5",
 		unauthenticated:  true,
 		setPullDir:       true,
 		setImagePath:     true,
@@ -129,7 +131,7 @@ var tests = []testStruct{
 	// transport tests
 	{
 		desc:             "bare image name",
-		srcURI:           "alpine:3.8",
+		srcURI:           "alpine:3.11.5",
 		force:            true,
 		unauthenticated:  true,
 		expectedExitCode: 0,
@@ -150,9 +152,18 @@ var tests = []testStruct{
 	// 	unauthenticated: false,
 	// 	expectSuccess:   true,
 	// },
+	// Finalized v1 layer mediaType (3.7 and onward)
 	{
 		desc:             "oras transport for SIF from registry",
 		srcURI:           "oras://localhost:5000/pull_test_sif:latest", // TODO(mem): obtain registry from context
+		force:            true,
+		unauthenticated:  false,
+		expectedExitCode: 0,
+	},
+	// Original/prototype layer mediaType (<3.7)
+	{
+		desc:             "oras transport for SIF from registry (SifLayerMediaTypeProto)",
+		srcURI:           "oras://localhost:5000/pull_test_sif_mediatypeproto:latest", // TODO(mem): obtain registry from context
 		force:            true,
 		unauthenticated:  false,
 		expectedExitCode: 0,
@@ -175,13 +186,13 @@ var tests = []testStruct{
 	// pulling with library URI argument
 	{
 		desc:             "bad library URI",
-		srcURI:           "library://busybox",
+		srcURI:           "library://busybox:1.31.1",
 		library:          "https://bad-library.sylabs.io",
 		expectedExitCode: 255,
 	},
 	{
 		desc:             "default library URI",
-		srcURI:           "library://busybox",
+		srcURI:           "library://busybox:1.31.1",
 		library:          "https://library.sylabs.io",
 		force:            true,
 		expectedExitCode: 0,
@@ -242,7 +253,7 @@ func getImageNameFromURI(imgURI string) string {
 
 func (c *ctx) setup(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
-	e2e.PrepRegistry(t, c.env)
+	e2e.EnsureRegistry(t)
 
 	// setup file and dir to use as invalid images
 	orasInvalidDir, err := ioutil.TempDir(c.env.TestDir, "oras_push_dir-")
@@ -259,25 +270,34 @@ func (c *ctx) setup(t *testing.T) {
 	// Note: the image name prevents collisions by using a package specific name
 	// as the registry is shared between different test packages
 	orasImages := []struct {
-		srcPath string
-		uri     string
+		srcPath        string
+		uri            string
+		layerMediaType string
 	}{
 		{
-			srcPath: c.env.ImagePath,
-			uri:     fmt.Sprintf("%s/pull_test_sif:latest", c.env.TestRegistry),
+			srcPath:        c.env.ImagePath,
+			uri:            fmt.Sprintf("%s/pull_test_sif:latest", c.env.TestRegistry),
+			layerMediaType: syoras.SifLayerMediaTypeV1,
 		},
 		{
-			srcPath: orasInvalidDir,
-			uri:     fmt.Sprintf("%s/pull_test_dir:latest", c.env.TestRegistry),
+			srcPath:        c.env.ImagePath,
+			uri:            fmt.Sprintf("%s/pull_test_sif_mediatypeproto:latest", c.env.TestRegistry),
+			layerMediaType: syoras.SifLayerMediaTypeProto,
 		},
 		{
-			srcPath: orasInvalidFile,
-			uri:     fmt.Sprintf("%s/pull_test_invalid_file:latest", c.env.TestRegistry),
+			srcPath:        orasInvalidDir,
+			uri:            fmt.Sprintf("%s/pull_test_dir:latest", c.env.TestRegistry),
+			layerMediaType: syoras.SifLayerMediaTypeV1,
+		},
+		{
+			srcPath:        orasInvalidFile,
+			uri:            fmt.Sprintf("%s/pull_test_invalid_file:latest", c.env.TestRegistry),
+			layerMediaType: syoras.SifLayerMediaTypeV1,
 		},
 	}
 
 	for _, i := range orasImages {
-		err = orasPushNoCheck(i.srcPath, i.uri)
+		err = orasPushNoCheck(i.srcPath, i.uri, i.layerMediaType)
 		if err != nil {
 			t.Fatalf("while prepping registry for oras tests: %v", err)
 		}
@@ -285,18 +305,6 @@ func (c *ctx) setup(t *testing.T) {
 }
 
 func (c ctx) testPullCmd(t *testing.T) {
-	// XXX(mem): this should come from the environment
-	sylabsAdminFingerprint := "8883491F4268F173C6E5DC49EDECE4F3F38D871E"
-	argv := []string{"key", "pull", sylabsAdminFingerprint}
-	out, err := exec.Command(c.env.CmdPath, argv...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("Cannot pull key %q: %+v\nCommand:\n%s %s\nOutput:\n%s\n",
-			sylabsAdminFingerprint,
-			err,
-			c.env.CmdPath, strings.Join(argv, " "),
-			out)
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
 			tmpdir, err := ioutil.TempDir(c.env.TestDir, "pull_test.")
@@ -382,7 +390,9 @@ func checkPullResult(t *testing.T, tt testStruct) {
 // this is a version of the oras push functionality that does not check that given the
 // file is a valid SIF, this allows us to push arbitrary objects to the local registry
 // to test the pull validation
-func orasPushNoCheck(file, ref string) error {
+// We can also set the layer mediaType - so we can push images with older media types
+// to verify that they can still be pulled.
+func orasPushNoCheck(file, ref, layerMediaType string) error {
 	ref = strings.TrimPrefix(ref, "//")
 
 	spec, err := reference.Parse(ref)
@@ -408,7 +418,7 @@ func orasPushNoCheck(file, ref string) error {
 	store := content.NewFileStore("")
 	defer store.Close()
 
-	conf, err := store.Add("$config", "application/vnd.sylabs.sif.config.v1+json", "/dev/null")
+	conf, err := store.Add("$config", syoras.SifConfigMediaTypeV1, "/dev/null")
 	if err != nil {
 		err = errors.Wrap(err, "adding manifest config to file store")
 		return fmt.Errorf("unable to add manifest config to FileStore: %+v", err)
@@ -417,7 +427,7 @@ func orasPushNoCheck(file, ref string) error {
 
 	// use last element of filepath as file name in annotation
 	fileName := filepath.Base(file)
-	desc, err := store.Add(fileName, "appliciation/vnd.sylabs.sif.layer.tar", file)
+	desc, err := store.Add(fileName, layerMediaType, file)
 	if err != nil {
 		err = errors.Wrap(err, "adding manifest SIF file to file store")
 		return fmt.Errorf("unable to add SIF file to FileStore: %+v", err)
@@ -446,33 +456,182 @@ func (c ctx) testPullDisableCacheCmd(t *testing.T) {
 	}()
 
 	c.env.ImgCacheDir = cacheDir
-	imgName := "testImg.sif"
-	imgPath := filepath.Join(c.env.TestDir, imgName)
-	cmdArgs := []string{"--disable-cache", imgPath, "library://alpine:latest"}
 
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(e2e.UserProfile),
-		e2e.WithCommand("pull"),
-		e2e.WithArgs(cmdArgs...),
-		e2e.ExpectExit(0),
-	)
+	disableCacheTests := []struct {
+		name      string
+		imagePath string
+		imageSrc  string
+	}{
+		{
+			name:      "library",
+			imagePath: filepath.Join(c.env.TestDir, "library.sif"),
+			imageSrc:  "library://alpine:latest",
+		},
+		{
+			name:      "docker",
+			imagePath: filepath.Join(c.env.TestDir, "docker.sif"),
+			imageSrc:  "docker://alpine:latest",
+		},
+		{
+			name:      "oras",
+			imagePath: filepath.Join(c.env.TestDir, "oras.sif"),
+			imageSrc:  "oras://localhost:5000/pull_test_sif:latest",
+		},
+	}
 
-	cacheEntryPath := filepath.Join(cacheDir, "cache")
-	if _, err := os.Stat(cacheEntryPath); !os.IsNotExist(err) {
-		t.Fatalf("cache created while disabled (%s exists)", cacheEntryPath)
+	for _, tt := range disableCacheTests {
+		cmdArgs := []string{"--disable-cache", tt.imagePath, tt.imageSrc}
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.UserProfile),
+			e2e.WithCommand("pull"),
+			e2e.WithArgs(cmdArgs...),
+			e2e.ExpectExit(0),
+			e2e.PostRun(func(t *testing.T) {
+				// Cache entry must not have been created
+				cacheEntryPath := filepath.Join(cacheDir, "cache")
+				if _, err := os.Stat(cacheEntryPath); !os.IsNotExist(err) {
+					t.Errorf("cache created while disabled (%s exists)", cacheEntryPath)
+				}
+				// We also need to check the image pulled is in the correct place!
+				// Issue #5628s
+				_, err := os.Stat(tt.imagePath)
+				if os.IsNotExist(err) {
+					t.Errorf("image does not exist at %s", tt.imagePath)
+				}
+			}),
+		)
+	}
+}
+
+// testPullUmask will run some pull tests with different umasks, and
+// ensure the output file hase the correct permissions.
+func (c ctx) testPullUmask(t *testing.T) {
+	umask22Image := "0022-umask-pull"
+	umask77Image := "0077-umask-pull"
+	umask27Image := "0027-umask-pull"
+
+	umaskTests := []struct {
+		name       string
+		imagePath  string
+		umask      int
+		expectPerm uint32
+		force      bool
+	}{
+		{
+			name:       "0022 umask pull",
+			imagePath:  filepath.Join(c.env.TestDir, umask22Image),
+			umask:      0022,
+			expectPerm: 0755,
+		},
+		{
+			name:       "0077 umask pull",
+			imagePath:  filepath.Join(c.env.TestDir, umask77Image),
+			umask:      0077,
+			expectPerm: 0700,
+		},
+		{
+			name:       "0027 umask pull",
+			imagePath:  filepath.Join(c.env.TestDir, umask27Image),
+			umask:      0027,
+			expectPerm: 0750,
+		},
+
+		// With the force flag, and overide the image. The permission will
+		// reset to 0666 after every test.
+		{
+			name:       "0022 umask pull overide",
+			imagePath:  filepath.Join(c.env.TestDir, umask22Image),
+			umask:      0022,
+			expectPerm: 0755,
+			force:      true,
+		},
+		{
+			name:       "0077 umask pull overide",
+			imagePath:  filepath.Join(c.env.TestDir, umask77Image),
+			umask:      0077,
+			expectPerm: 0700,
+			force:      true,
+		},
+		{
+			name:       "0027 umask pull overide",
+			imagePath:  filepath.Join(c.env.TestDir, umask27Image),
+			umask:      0027,
+			expectPerm: 0750,
+			force:      true,
+		},
+	}
+
+	// Helper function to get the file mode for a file.
+	getFilePerm := func(t *testing.T, path string) uint32 {
+		finfo, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("failed while getting file permission: %s", err)
+		}
+		return uint32(finfo.Mode().Perm())
+	}
+
+	// Set a common umask, then reset it back later.
+	oldUmask := unix.Umask(0022)
+	defer unix.Umask(oldUmask)
+
+	// TODO: should also check the cache umask.
+	for _, tc := range umaskTests {
+		var cmdArgs []string
+		if tc.force {
+			cmdArgs = append(cmdArgs, "--force")
+		}
+		cmdArgs = append(cmdArgs, tc.imagePath, "library://alpine")
+
+		c.env.RunSingularity(
+			t,
+			e2e.WithProfile(e2e.UserProfile),
+			e2e.PreRun(func(t *testing.T) {
+				// Reset the file permission after every pull.
+				err := os.Chmod(tc.imagePath, 0666)
+				if !os.IsNotExist(err) && err != nil {
+					t.Fatalf("failed chmod-ing file: %s", err)
+				}
+
+				// Set the test umask.
+				unix.Umask(tc.umask)
+			}),
+			e2e.PostRun(func(t *testing.T) {
+				// Check the file permission.
+				permOut := getFilePerm(t, tc.imagePath)
+				if tc.expectPerm != permOut {
+					t.Fatalf("Unexpected failure: expecting file perm: %o, got: %o", tc.expectPerm, permOut)
+				}
+			}),
+			e2e.WithCommand("pull"),
+			e2e.WithArgs(cmdArgs...),
+			e2e.ExpectExit(0),
+		)
 	}
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env: env,
 	}
 
-	return func(t *testing.T) {
-		c.setup(t)
-		t.Run("pull", c.testPullCmd)
-		t.Run("pullDisableCache", c.testPullDisableCacheCmd)
+	// FIX: should run in parallel but the use of Chdir conflicts
+	// with other tests and can lead to test failures
+	return testhelper.Tests{
+		"ordered": testhelper.NoParallel(func(t *testing.T) {
+			// Run the tests the do not require setup.
+			t.Run("pullUmaskCheck", c.testPullUmask)
+
+			// Setup a test registry to pull from (for oras).
+			c.setup(t)
+
+			t.Run("pull", c.testPullCmd)
+			t.Run("pullDisableCache", c.testPullDisableCacheCmd)
+
+			// Regressions
+			t.Run("issue5808", c.issue5808)
+		}),
 	}
 }

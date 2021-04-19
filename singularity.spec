@@ -29,12 +29,12 @@
 
 Summary: Application and environment virtualization
 Name: singularity
-Version: 3.5.3
+Version: 3.7.3
 Release: 1%{?dist}
 # https://spdx.org/licenses/BSD-3-Clause-LBNL.html
 License: BSD-3-Clause-LBNL
 URL: https://www.sylabs.io/singularity/
-Source: %{name}-3.5.3.tar.gz
+Source: %{name}-3.7.3.tar.gz
 ExclusiveOS: linux
 # RPM_BUILD_ROOT wasn't being set ... for some reason
 %if "%{sles_version}" == "11"
@@ -51,8 +51,6 @@ BuildRequires: golang
 BuildRequires: git
 BuildRequires: gcc
 BuildRequires: make
-BuildRequires: libuuid-devel
-BuildRequires: openssl-devel
 %if ! 0%{?el6}
 %if "%{sles_version}" != "11"
 BuildRequires: libseccomp-devel
@@ -82,8 +80,14 @@ containers that can be used across host environments.
 export RPM_BUILD_ROOT="%{buildroot}"
 %endif
 
+if [ -d %{name}-%{version} ]; then
+    # Clean up old build root
+    # First clean go's modcache because directories are unwritable
+    GOPATH=$PWD/%{name}-%{version}/gopath go clean -modcache
+    rm -rf %{name}-%{version}
+fi
+
 # Create our build root
-rm -rf %{name}-%{version}
 mkdir %{name}-%{version}
 
 %build
@@ -143,6 +147,7 @@ make DESTDIR=$RPM_BUILD_ROOT install man
 %config(noreplace) %{_sysconfdir}/singularity/*.toml
 %config(noreplace) %{_sysconfdir}/singularity/*.json
 %config(noreplace) %{_sysconfdir}/singularity/*.yaml
+%config(noreplace) %{_sysconfdir}/singularity/global-pgp-public
 %config(noreplace) %{_sysconfdir}/singularity/cgroups/*
 %config(noreplace) %{_sysconfdir}/singularity/network/*
 %config(noreplace) %{_sysconfdir}/singularity/seccomp-profiles/*

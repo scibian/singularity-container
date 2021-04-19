@@ -134,9 +134,9 @@ var authorizedTags = map[AuthorizedTag]struct {
 	HomeTag:      {false, 9},
 	TmpTag:       {true, 10},
 	ScratchTag:   {true, 11},
-	CwdTag:       {false, 12},
-	FilesTag:     {true, 13},
-	UserbindsTag: {true, 14},
+	FilesTag:     {true, 12},
+	UserbindsTag: {true, 13},
+	CwdTag:       {false, 14},
 	OtherTag:     {true, 15},
 	FinalTag:     {true, 16},
 }
@@ -159,7 +159,7 @@ var authorizedFS = map[string]fsContext{
 	"fuse":    {false},
 }
 
-var internalOptions = []string{"loop", "offset", "sizelimit", "key"}
+var internalOptions = []string{"loop", "offset", "sizelimit", "key", "skip-on-error"}
 
 // Point describes a mount point
 type Point struct {
@@ -316,6 +316,16 @@ func GetKey(options []string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("key option not found")
+}
+
+// SkipOnError returns whether the skip-on-error internal option is set for the mount
+func SkipOnError(options []string) bool {
+	for _, opt := range options {
+		if opt == "skip-on-error" {
+			return true
+		}
+	}
+	return false
 }
 
 // HasRemountFlag checks if remount flag is set or not.
@@ -632,17 +642,16 @@ func (p *Points) GetAllImages() []Point {
 }
 
 // AddBind adds a bind mount point
-func (p *Points) AddBind(tag AuthorizedTag, source string, dest string, flags uintptr) error {
+func (p *Points) AddBind(tag AuthorizedTag, source string, dest string, flags uintptr, options ...string) error {
 	bindFlags := flags | syscall.MS_BIND
-	options := ""
-
+	bindOptions := strings.Join(options, ",")
 	if source == "" {
 		return fmt.Errorf("a bind mount point must contain a source")
 	}
 	if !strings.HasPrefix(source, "/") {
 		return fmt.Errorf("source must be an absolute path")
 	}
-	return p.add(tag, source, dest, "", bindFlags, options)
+	return p.add(tag, source, dest, "", bindFlags, bindOptions)
 }
 
 // GetAllBinds returns a list of all registered bind mount points

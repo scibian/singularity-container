@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/runtime/engine/config"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"golang.org/x/sys/unix"
 )
 
@@ -132,13 +132,13 @@ func (c *Command) init(config *config.Common, ops ...CommandOp) error {
 		return fmt.Errorf("while marshaling config: %s", err)
 	}
 
-	pipeFd, err := sendData(data)
+	envConfig, err := copyConfigToEnv(data)
 	if err != nil {
-		return fmt.Errorf("while sending configuration data: %s", err)
+		return fmt.Errorf("while copying engine configuration: %s", err)
 	}
 
-	env := []string{sylog.GetEnvVar(), fmt.Sprintf("PIPE_EXEC_FD=%d", pipeFd)}
-	c.env = append(c.env, env...)
+	c.env = append(c.env, sylog.GetEnvVar())
+	c.env = append(c.env, envConfig...)
 
 	return nil
 }

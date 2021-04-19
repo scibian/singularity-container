@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -17,9 +17,9 @@ import (
 	"syscall"
 
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/mainthread"
 	signalutil "github.com/sylabs/singularity/internal/pkg/util/signal"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/crypt"
 )
 
@@ -123,7 +123,9 @@ func Master(rpcSocket, masterSocket int, containerPid int, e *engine.Engine) {
 	// we could receive signal from child with CreateContainer call so we
 	// set the signal handler earlier to queue signals until MonitorContainer
 	// is called to handle them
-	signals := make(chan os.Signal, 1)
+	// Use a channel size of two here, since we may receive SIGURG, which is
+	// used for non-cooperative goroutine preemption starting with Go 1.14.
+	signals := make(chan os.Signal, 2)
 	signal.Notify(signals)
 
 	ctx := context.TODO()

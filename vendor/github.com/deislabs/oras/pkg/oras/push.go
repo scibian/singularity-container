@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 
 	"github.com/containerd/containerd/content"
+	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/remotes"
+	artifact "github.com/deislabs/oras/pkg/artifact"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -15,9 +17,6 @@ import (
 func Push(ctx context.Context, resolver remotes.Resolver, ref string, provider content.Provider, descriptors []ocispec.Descriptor, opts ...PushOpt) (ocispec.Descriptor, error) {
 	if resolver == nil {
 		return ocispec.Descriptor{}, ErrResolverUndefined
-	}
-	if len(descriptors) == 0 {
-		return ocispec.Descriptor{}, ErrEmptyDescriptors
 	}
 	opt := pushOptsDefaults()
 	for _, o := range opts {
@@ -38,18 +37,26 @@ func Push(ctx context.Context, resolver remotes.Resolver, ref string, provider c
 		return ocispec.Descriptor{}, err
 	}
 
-	desc, provider, err := pack(provider, descriptors, opt)
+	desc, store, err := pack(provider, descriptors, opt)
 	if err != nil {
 		return ocispec.Descriptor{}, err
 	}
 
-	if err := remotes.PushContent(ctx, pusher, desc, provider, nil, opt.baseHandlers...); err != nil {
+	var wrapper func(images.Handler) images.Handler
+	if len(opt.baseHandlers) > 0 {
+		wrapper = func(h images.Handler) images.Handler {
+			return images.Handlers(append(opt.baseHandlers, h)...)
+		}
+	}
+
+	if err := remotes.PushContent(ctx, pusher, desc, store, nil, wrapper); err != nil {
 		return ocispec.Descriptor{}, err
 	}
 	return desc, nil
 }
 
-func pack(provider content.Provider, descriptors []ocispec.Descriptor, opts *pushOpts) (ocispec.Descriptor, content.Provider, error) {
+//func pack(store *hybridStore, descriptors []ocispec.Descriptor, opts *pushOpts) (ocispec.Descriptor, error) {
+func pack(provider content.Provider, descriptors []ocispec.Descriptor, opts *pushOpts) (ocispec.Descriptor, content.Store, error) {
 	store := newHybridStoreFromProvider(provider)
 
 	// Config
@@ -57,7 +64,7 @@ func pack(provider content.Provider, descriptors []ocispec.Descriptor, opts *pus
 	if opts.config == nil {
 		configBytes := []byte("{}")
 		config = ocispec.Descriptor{
-			MediaType: ocispec.MediaTypeImageConfig,
+			MediaType: artifact.UnknownConfigMediaType,
 			Digest:    digest.FromBytes(configBytes),
 			Size:      int64(len(configBytes)),
 		}
@@ -65,9 +72,21 @@ func pack(provider content.Provider, descriptors []ocispec.Descriptor, opts *pus
 	} else {
 		config = *opts.config
 	}
-	config.Annotations = opts.configAnnotations
+	if opts.configAnnotations != nil {
+		config.Annotations = opts.configAnnotations
+	}
+	if opts.configMediaType != "" {
+		config.MediaType = opts.configMediaType
+	}
 
 	// Manifest
+	if opts.manifest != nil {
+		return *opts.manifest, store, nil
+	}
+
+	if descriptors == nil {
+		descriptors = []ocispec.Descriptor{} // make it an empty array to prevent potential server-side bugs
+	}
 	manifest := ocispec.Manifest{
 		Versioned: specs.Versioned{
 			SchemaVersion: 2, // historical value. does not pertain to OCI or docker version

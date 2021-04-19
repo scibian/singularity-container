@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,10 +11,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sylabs/singularity/internal/pkg/sylog"
-	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/fs/layout"
 	"github.com/sylabs/singularity/internal/pkg/util/fs/mount"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 const (
@@ -109,7 +108,6 @@ func (o *Overlay) GetWorkDir() string {
 // given by rootFsPath
 func (o *Overlay) createLayer(rootFsPath string, system *mount.System) error {
 	sessionDir := o.session.Path()
-	st := new(syscall.Stat_t)
 
 	if sessionDir == "" {
 		return fmt.Errorf("can't determine session path")
@@ -127,40 +125,42 @@ func (o *Overlay) createLayer(rootFsPath string, system *mount.System) error {
 			// get rid of symlinks and resolve the path within the
 			// rootfs path to not have false positive while creating
 			// the layer with calls below
-			dest := fs.EvalRelative(point.Destination, rootFsPath)
+			dest := o.session.VFS.EvalRelative(point.Destination, rootFsPath)
 
 			// now we are (almost) sure that we will get path information
 			// for a path in the rootfs path and we would create the right
 			// destination in the layer
-			if syscall.Stat(filepath.Join(rootFsPath, dest), st) == nil {
+			_, err := o.session.VFS.Stat(filepath.Join(rootFsPath, dest))
+			if err == nil {
 				continue
-			}
-			if point.Type == "" {
-				if err := syscall.Stat(point.Source, st); err != nil {
-					sylog.Warningf("skipping mount of %s: %s", point.Source, err)
-					continue
-				}
 			}
 
 			dest = filepath.Join(lowerDir, dest)
 			if _, err := o.session.GetPath(dest); err == nil {
 				continue
 			}
-			// don't exist create it in overlay
-			switch st.Mode & syscall.S_IFMT {
-			case syscall.S_IFDIR:
+
+			if point.Type != "" {
 				if err := o.session.AddDir(dest); err != nil {
 					return err
 				}
-			default:
-				if point.Type == "" {
-					if err := o.session.AddFile(dest, nil); err != nil {
-						return err
-					}
-				} else {
-					if err := o.session.AddDir(dest); err != nil {
-						return err
-					}
+				continue
+			}
+
+			fi, err := o.session.VFS.Stat(point.Source)
+			if err != nil {
+				sylog.Warningf("skipping mount of %s: %s", point.Source, err)
+				continue
+			}
+
+			// don't exist create it in overlay
+			if fi.IsDir() {
+				if err := o.session.AddDir(dest); err != nil {
+					return err
+				}
+			} else {
+				if err := o.session.AddFile(dest, nil); err != nil {
+					return err
 				}
 			}
 		}

@@ -1,4 +1,5 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020, Control Command Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,34 +8,46 @@ package cli
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/sylabs/scs-library-client/client"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
-	scs "github.com/sylabs/singularity/internal/pkg/remote"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/interactive"
 	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 func init() {
-	cmdManager.RegisterCmd(deleteImageCmd)
-	cmdManager.RegisterFlagForCmd(&deleteImageArchFlag, deleteImageCmd)
-	cmdManager.RegisterFlagForCmd(&deleteImageTimeoutFlag, deleteImageCmd)
-	cmdManager.RegisterFlagForCmd(&deleteLibraryURIFlag, deleteImageCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterCmd(deleteImageCmd)
+		cmdManager.RegisterFlagForCmd(&deleteForceFlag, deleteImageCmd)
+		cmdManager.RegisterFlagForCmd(&deleteImageArchFlag, deleteImageCmd)
+		cmdManager.RegisterFlagForCmd(&deleteImageTimeoutFlag, deleteImageCmd)
+		cmdManager.RegisterFlagForCmd(&deleteLibraryURIFlag, deleteImageCmd)
+	})
+}
+
+var deleteForce bool
+var deleteForceFlag = cmdline.Flag{
+	ID:           "deleteForceFlag",
+	Value:        &deleteForce,
+	DefaultValue: false,
+	Name:         "force",
+	ShortHand:    "F",
+	Usage:        "delete image without confirmation",
+	EnvKeys:      []string{"FORCE"},
 }
 
 var deleteImageArch string
 var deleteImageArchFlag = cmdline.Flag{
 	ID:           "deleteImageArchFlag",
 	Value:        &deleteImageArch,
-	DefaultValue: "",
+	DefaultValue: runtime.GOARCH,
 	Name:         "arch",
 	ShortHand:    "A",
-	Required:     true,
 	Usage:        "specify requested image arch",
 	EnvKeys:      []string{"ARCH"},
 }
@@ -55,7 +68,7 @@ var deleteLibraryURI string
 var deleteLibraryURIFlag = cmdline.Flag{
 	ID:           "deleteLibraryURIFlag",
 	Value:        &deleteLibraryURI,
-	DefaultValue: "https://library.sylabs.io",
+	DefaultValue: "",
 	Name:         "library",
 	Usage:        "delete images from the provided library",
 	EnvKeys:      []string{"LIBRARY"},
@@ -67,23 +80,24 @@ var deleteImageCmd = &cobra.Command{
 	Long:    docs.DeleteLong,
 	Example: docs.DeleteExample,
 	Args:    cobra.ExactArgs(1),
-	PreRun:  sylabsToken,
 	Run: func(cmd *cobra.Command, args []string) {
-		handleDeleteFlags(cmd)
+		sylog.Debugf("Using library service URI: %s", deleteLibraryURI)
 
 		imageRef := strings.TrimPrefix(args[0], "library://")
 
-		libraryConfig := &client.Config{
-			BaseURL:   deleteLibraryURI,
-			AuthToken: authToken,
+		if !deleteForce {
+			y, err := interactive.AskYNQuestion("n", "Are you sure you want to delete %s (%s) [N/y] ", imageRef, deleteImageArch)
+			if err != nil {
+				sylog.Fatalf(err.Error())
+			}
+			if y == "n" {
+				return
+			}
 		}
 
-		y, err := interactive.AskYNQuestion("n", "Are you sure you want to delete %s arch[%s] [N/y] ", imageRef, deleteImageArch)
+		libraryConfig, err := getLibraryClientConfig(deleteLibraryURI)
 		if err != nil {
-			sylog.Fatalf(err.Error())
-		}
-		if y == "n" {
-			return
+			sylog.Fatalf("Error while getting library client config: %v", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(deleteImageTimeout)*time.Second)
@@ -95,17 +109,4 @@ var deleteImageCmd = &cobra.Command{
 
 		sylog.Infof("Image %s arch[%s] deleted.", imageRef, deleteImageArch)
 	},
-}
-
-func handleDeleteFlags(cmd *cobra.Command) {
-	endpoint, err := sylabsRemote(remoteConfig)
-	if err != nil {
-		if err == scs.ErrNoDefault {
-			sylog.Warningf("No default remote in use, falling back to: %v", keyServerURI)
-			return
-		}
-		sylog.Fatalf("Unable to load remote configuration: %v", err)
-	}
-
-	authToken = endpoint.Token
 }

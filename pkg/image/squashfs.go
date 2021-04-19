@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -12,7 +12,7 @@ import (
 	"os"
 	"unsafe"
 
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 const (
@@ -147,15 +147,24 @@ func (f *squashfsFormat) initializer(img *Image, fileinfo os.FileInfo) error {
 	img.Type = SQUASHFS
 	img.Partitions = []Section{
 		{
-			Offset: offset,
-			Size:   uint64(fileinfo.Size()) - offset,
-			Type:   SQUASHFS,
-			Name:   RootFs,
+			Offset:       offset,
+			Size:         uint64(fileinfo.Size()) - offset,
+			ID:           1,
+			Type:         SQUASHFS,
+			Name:         RootFs,
+			AllowedUsage: RootFsUsage | OverlayUsage | DataUsage,
 		},
 	}
 
 	if img.Writable {
-		return fmt.Errorf("could not set image writable: squashfs is a read-only filesystem")
+		// we set Writable to appropriate value to match the
+		// image open mode as some code may want to ignore this
+		// error by using IsReadOnlyFilesytem check
+		img.Writable = false
+
+		return &readOnlyFilesystemError{
+			"could not set " + img.Path + " image writable: squashfs is a read-only filesystem",
+		}
 	}
 
 	return nil
@@ -163,4 +172,8 @@ func (f *squashfsFormat) initializer(img *Image, fileinfo os.FileInfo) error {
 
 func (f *squashfsFormat) openMode(writable bool) int {
 	return os.O_RDONLY
+}
+
+func (f *squashfsFormat) lock(img *Image) error {
+	return nil
 }

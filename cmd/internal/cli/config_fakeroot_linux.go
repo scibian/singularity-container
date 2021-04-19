@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,8 +11,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 // -a|--add
@@ -63,7 +63,7 @@ var fakerootConfigDisableFlag = cmdline.Flag{
 var configFakerootCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		username := args[0]
 		var op singularity.FakerootConfigOp
@@ -94,8 +94,10 @@ var configFakerootCmd = &cobra.Command{
 }
 
 func init() {
-	cmdManager.RegisterFlagForCmd(&fakerootConfigAddFlag, configFakerootCmd)
-	cmdManager.RegisterFlagForCmd(&fakerootConfigRemoveFlag, configFakerootCmd)
-	cmdManager.RegisterFlagForCmd(&fakerootConfigEnableFlag, configFakerootCmd)
-	cmdManager.RegisterFlagForCmd(&fakerootConfigDisableFlag, configFakerootCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterFlagForCmd(&fakerootConfigAddFlag, configFakerootCmd)
+		cmdManager.RegisterFlagForCmd(&fakerootConfigRemoveFlag, configFakerootCmd)
+		cmdManager.RegisterFlagForCmd(&fakerootConfigEnableFlag, configFakerootCmd)
+		cmdManager.RegisterFlagForCmd(&fakerootConfigDisableFlag, configFakerootCmd)
+	})
 }

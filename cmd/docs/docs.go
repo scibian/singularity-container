@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 	"github.com/sylabs/singularity/cmd/internal/cli"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"golang.org/x/sys/unix"
 )
 
@@ -63,6 +63,10 @@ func main() {
 		Use:       "makeDocs {markdown | man | rst}",
 		Short:     "Generates Singularity documentation",
 		Run: func(cmd *cobra.Command, args []string) {
+			// We must Init() as loading commands etc. is deferred until this is called.
+			// Using true here will result in local docs including any content for installed
+			// plugins.
+			cli.Init(true)
 			rootCmd := cli.RootCmd()
 			switch args[0] {
 			case "markdown":

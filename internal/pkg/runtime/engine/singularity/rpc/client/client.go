@@ -6,10 +6,8 @@
 package client
 
 import (
-	"encoding/gob"
 	"net/rpc"
 	"os"
-	"syscall"
 
 	args "github.com/sylabs/singularity/internal/pkg/runtime/engine/singularity/rpc"
 	"github.com/sylabs/singularity/pkg/util/loop"
@@ -58,14 +56,12 @@ func (t *RPC) Decrypt(offset uint64, path string, key []byte, masterPid int) (st
 }
 
 // Mkdir calls the mkdir RPC using the supplied arguments.
-func (t *RPC) Mkdir(path string, perm os.FileMode) (int, error) {
+func (t *RPC) Mkdir(path string, perm os.FileMode) error {
 	arguments := &args.MkdirArgs{
 		Path: path,
 		Perm: perm,
 	}
-	var reply int
-	err := t.Client.Call(t.Name+".Mkdir", arguments, &reply)
-	return reply, err
+	return t.Client.Call(t.Name+".Mkdir", arguments, nil)
 }
 
 // Chroot calls the chroot RPC using the supplied arguments.
@@ -103,17 +99,6 @@ func (t *RPC) SetHostname(hostname string) (int, error) {
 	return reply, err
 }
 
-// SetFsID calls the setfsid RPC using the supplied arguments.
-func (t *RPC) SetFsID(uid int, gid int) (int, error) {
-	arguments := &args.SetFsIDArgs{
-		UID: uid,
-		GID: gid,
-	}
-	var reply int
-	err := t.Client.Call(t.Name+".SetFsID", arguments, &reply)
-	return reply, err
-}
-
 // Chdir calls the chdir RPC using the supplied arguments.
 func (t *RPC) Chdir(dir string) (int, error) {
 	arguments := &args.ChdirArgs{
@@ -125,20 +110,128 @@ func (t *RPC) Chdir(dir string) (int, error) {
 }
 
 // Stat calls the stat RPC using the supplied arguments.
-func (t *RPC) Stat(path string) (*syscall.Stat_t, error) {
+func (t *RPC) Stat(path string) (os.FileInfo, error) {
 	arguments := &args.StatArgs{
 		Path: path,
 	}
 	var reply args.StatReply
 	err := t.Client.Call(t.Name+".Stat", arguments, &reply)
-	if err == nil {
-		err = reply.Err
+	if err != nil {
+		return nil, err
 	}
-	return &reply.St, err
+	return reply.Fi, reply.Err
 }
 
-func init() {
-	var sysErrnoType syscall.Errno
-	// register syscall.Errno as a type we need to get back
-	gob.Register(sysErrnoType)
+// Lstat calls the lstat RPC using the supplied arguments.
+func (t *RPC) Lstat(path string) (os.FileInfo, error) {
+	arguments := &args.StatArgs{
+		Path: path,
+	}
+	var reply args.StatReply
+	err := t.Client.Call(t.Name+".Lstat", arguments, &reply)
+	if err != nil {
+		return nil, err
+	}
+	return reply.Fi, reply.Err
+}
+
+// SendFuseFd calls the SendFuseFd RPC using the supplied arguments.
+func (t *RPC) SendFuseFd(socket int, fds []int) error {
+	arguments := &args.SendFuseFdArgs{
+		Socket: socket,
+		Fds:    fds,
+	}
+	var reply int
+	err := t.Client.Call(t.Name+".SendFuseFd", arguments, &reply)
+	return err
+}
+
+// OpenSendFuseFd calls the OpenSendFuseFd RPC using the supplied arguments.
+func (t *RPC) OpenSendFuseFd(socket int) (int, error) {
+	arguments := &args.OpenSendFuseFdArgs{
+		Socket: socket,
+	}
+	var reply int
+	err := t.Client.Call(t.Name+".OpenSendFuseFd", arguments, &reply)
+	return reply, err
+}
+
+// Symlink calls the mkdir RPC using the supplied arguments.
+func (t *RPC) Symlink(old string, new string) error {
+	arguments := &args.SymlinkArgs{
+		Old: old,
+		New: new,
+	}
+	return t.Client.Call(t.Name+".Symlink", arguments, nil)
+}
+
+// ReadDir calls the readdir RPC using the supplied arguments.
+func (t *RPC) ReadDir(dir string) ([]os.FileInfo, error) {
+	arguments := &args.ReadDirArgs{
+		Dir: dir,
+	}
+	var reply args.ReadDirReply
+	err := t.Client.Call(t.Name+".ReadDir", arguments, &reply)
+	return reply.Files, err
+}
+
+// Chown calls the chown RPC using the supplied arguments.
+func (t *RPC) Chown(name string, uid int, gid int) error {
+	arguments := &args.ChownArgs{
+		Name: name,
+		UID:  uid,
+		GID:  gid,
+	}
+	return t.Client.Call(t.Name+".Chown", arguments, nil)
+}
+
+// Lchown calls the lchown RPC using the supplied arguments.
+func (t *RPC) Lchown(name string, uid int, gid int) error {
+	arguments := &args.ChownArgs{
+		Name: name,
+		UID:  uid,
+		GID:  gid,
+	}
+	return t.Client.Call(t.Name+".Lchown", arguments, nil)
+}
+
+// EvalRelative calls the evalrelative RPC using the supplied arguments.
+func (t *RPC) EvalRelative(name string, root string) string {
+	arguments := &args.EvalRelativeArgs{
+		Name: name,
+		Root: root,
+	}
+	var reply string
+	t.Client.Call(t.Name+".EvalRelative", arguments, &reply)
+	return reply
+}
+
+// Lchown calls the lchown RPC using the supplied arguments.
+func (t *RPC) Readlink(name string) (string, error) {
+	arguments := &args.ReadlinkArgs{
+		Name: name,
+	}
+	var reply string
+	err := t.Client.Call(t.Name+".Readlink", arguments, &reply)
+	return reply, err
+}
+
+// Umask calls the umask RPC using the supplied arguments.
+func (t *RPC) Umask(mask int) int {
+	arguments := &args.UmaskArgs{
+		Mask: mask,
+	}
+	var reply int
+	t.Client.Call(t.Name+".Umask", arguments, &reply)
+	return reply
+}
+
+// WriteFile calls the writefile RPC using the supplied arguments.
+func (t *RPC) WriteFile(filename string, data []byte, perm os.FileMode) error {
+	arguments := &args.WriteFileArgs{
+		Filename: filename,
+		Data:     data,
+		Perm:     perm,
+	}
+	return t.Client.Call(t.Name+".WriteFile", arguments, nil)
 }

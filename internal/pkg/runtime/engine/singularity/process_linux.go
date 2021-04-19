@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,58 +6,48 @@
 package singularity
 
 import (
+	"bufio"
+	"bytes"
 	"context"
-	"debug/elf"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sylabs/singularity/internal/pkg/instance"
+	"github.com/sylabs/singularity/internal/pkg/plugin"
 	"github.com/sylabs/singularity/internal/pkg/security"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/pkg/util/env"
+	"github.com/sylabs/singularity/internal/pkg/util/fs/files"
+	"github.com/sylabs/singularity/internal/pkg/util/machine"
+	"github.com/sylabs/singularity/internal/pkg/util/shell/interpreter"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
-	singularity "github.com/sylabs/singularity/pkg/runtime/engine/singularity/config"
+	singularitycallback "github.com/sylabs/singularity/pkg/plugin/callback/runtime/engine/singularity"
+	singularityConfig "github.com/sylabs/singularity/pkg/runtime/engine/singularity/config"
+	"github.com/sylabs/singularity/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/util/rlimit"
 	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/sys/unix"
+	"mvdan.cc/sh/v3/interp"
 )
 
 const defaultShell = "/bin/sh"
-
-// Convert an ELF architecture into a GOARCH-style string. This is not an
-// exhaustive list, so there is a default for rare cases. Adapted from
-// https://golang.org/src/cmd/internal/objfile/elf.go
-func elfToGoArch(elfFile *elf.File) string {
-	switch elfFile.Machine {
-	case elf.EM_386:
-		return "386"
-	case elf.EM_X86_64:
-		return "amd64"
-	case elf.EM_ARM:
-		return "arm"
-	case elf.EM_AARCH64:
-		return "arm64"
-	case elf.EM_PPC64:
-		if elfFile.ByteOrder == binary.LittleEndian {
-			return "ppc64le"
-		}
-		return "ppc64"
-	case elf.EM_S390:
-		return "s390x"
-	}
-	return "UNKNOWN"
-}
 
 // StartProcess is called during stage2 after RPC server finished
 // environment preparation. This is the container process itself.
@@ -68,10 +58,12 @@ func elfToGoArch(elfFile *elf.File) string {
 func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 	// Manage all signals.
 	// Queue them until they're ready to be handled below.
-	signals := make(chan os.Signal, 1)
+	// Use a channel size of two here, since we may receive SIGURG, which is
+	// used for non-cooperative goroutine preemption starting with Go 1.14.
+	signals := make(chan os.Signal, 2)
 	signal.Notify(signals)
 
-	if err := preStartProcess(e); err != nil {
+	if err := e.runFuseDrivers(true, -1); err != nil {
 		return err
 	}
 
@@ -83,10 +75,6 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 		if err := os.Chdir(e.EngineConfig.GetHomeDest()); err != nil {
 			os.Chdir("/")
 		}
-	}
-
-	if err := e.checkExec(); err != nil {
-		return err
 	}
 
 	if e.EngineConfig.File.MountDev == "minimal" || e.EngineConfig.GetContain() {
@@ -121,9 +109,6 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 		}
 	}
 
-	args := e.EngineConfig.OciConfig.Process.Args
-	env := e.EngineConfig.OciConfig.Process.Env
-
 	if e.EngineConfig.OciConfig.Linux != nil {
 		namespaces := e.EngineConfig.OciConfig.Linux.Namespaces
 		for _, ns := range namespaces {
@@ -155,55 +140,79 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 		}
 	}
 
+	// restore the stack size limit for setuid workflow
+	for _, limit := range e.EngineConfig.OciConfig.Process.Rlimits {
+		if limit.Type == "RLIMIT_STACK" {
+			if err := rlimit.Set(limit.Type, limit.Soft, limit.Hard); err != nil {
+				return fmt.Errorf("while restoring stack size limit: %s", err)
+			}
+			break
+		}
+	}
+
 	if err := security.Configure(&e.EngineConfig.OciConfig.Spec); err != nil {
 		return fmt.Errorf("failed to apply security configuration: %s", err)
 	}
 
-	if (!isInstance && !shimProcess) || bootInstance || e.EngineConfig.GetInstanceJoin() {
-		err := syscall.Exec(args[0], args, env)
-		if err != nil {
-			// We know the shell exists at this point, so let's inspect its architecture
-			shell := e.EngineConfig.GetShell()
-			if shell == "" {
-				shell = defaultShell
-			}
-			self, errElf := elf.Open(shell)
-			if errElf != nil {
-				return fmt.Errorf("failed to open %s for inspection: %s", shell, errElf)
-			}
-			defer self.Close()
-			if elfArch := elfToGoArch(self); elfArch != runtime.GOARCH {
-				return fmt.Errorf("image targets %s, cannot run on %s", elfArch, runtime.GOARCH)
-			}
-			// Assume a missing shared library on ENOENT
-			if err == syscall.ENOENT {
-				return fmt.Errorf("exec %s failed: a shared library is likely missing in the image", args[0])
-			}
-			// Return the raw error as a last resort
-			return fmt.Errorf("exec %s failed: %s", args[0], err)
-		}
+	// If necessary, set the umask that was saved from the calling environment
+	// https://github.com/hpcng/singularity/issues/5214
+	if e.EngineConfig.GetRestoreUmask() {
+		sylog.Debugf("Setting umask in container to %04o", e.EngineConfig.GetUmask())
+		_ = syscall.Umask(e.EngineConfig.GetUmask())
 	}
 
-	// Spawn and wait container process, signal handler
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: isInstance,
+	if (!isInstance && !shimProcess) || bootInstance || e.EngineConfig.GetInstanceJoin() {
+		args := e.EngineConfig.OciConfig.Process.Args
+		env := e.EngineConfig.OciConfig.Process.Env
+
+		if !bootInstance {
+			var err error
+
+			args, env, err = runActionScript(e.EngineConfig)
+			if err != nil {
+				return err
+			} else if len(args) == 0 {
+				// nothing to execute and no error was reported
+				return nil
+			}
+		}
+
+		return e.execProcess(args, env)
 	}
 
 	errChan := make(chan error, 1)
 	statusChan := make(chan syscall.WaitStatus, 1)
+	cmdPid := -2
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("exec %s failed: %s", args[0], err)
+	args, env, err := runActionScript(e.EngineConfig)
+	if err != nil {
+		return err
+	} else if len(args) > 0 {
+	cmdexec:
+		// Spawn and wait container process, signal handler
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		cmd.Env = env
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: isInstance,
+		}
+		if err := cmd.Start(); err != nil {
+			if e, ok := err.(*os.PathError); ok {
+				if e.Err.(syscall.Errno) == syscall.ENOEXEC && args[0] != defaultShell {
+					args = append([]string{defaultShell}, args...)
+					goto cmdexec
+				}
+			}
+			return fmt.Errorf("exec %s failed: %s", args[0], err)
+		}
+		cmdPid = cmd.Process.Pid
+
+		go func() {
+			errChan <- cmd.Wait()
+		}()
 	}
-
-	go func() {
-		errChan <- cmd.Wait()
-	}()
 
 	// Modify argv argument and program name shown in /proc/self/comm
 	name := "sinit"
@@ -241,10 +250,16 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 						break
 					}
 
-					if wpid == cmd.Process.Pid {
+					if wpid == cmdPid {
+						e.stopFuseDrivers()
 						statusChan <- status
 					}
 				}
+			case syscall.SIGURG:
+				// Ignore SIGURG, which is used for non-cooperative goroutine
+				// preemption starting with Go 1.14. For more information, see
+				// https://github.com/golang/go/issues/24543.
+				break
 			default:
 				signal := s.(syscall.Signal)
 				// EPERM and EINVAL are deliberately ignored because they can't be
@@ -252,13 +267,13 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 				// permissions to send signals to its childs and EINVAL would
 				// mean to update the Go runtime or the kernel to something more
 				// stable :)
-				if isInstance {
-					if err := syscall.Kill(-cmd.Process.Pid, signal); err == syscall.ESRCH {
+				if isInstance && cmdPid > 0 {
+					if err := syscall.Kill(-cmdPid, signal); err == syscall.ESRCH {
 						sylog.Debugf("No child process, exiting ...")
 						os.Exit(128 + int(signal))
 					}
-				} else if e.EngineConfig.GetSignalPropagation() {
-					if err := syscall.Kill(cmd.Process.Pid, signal); err == syscall.ESRCH {
+				} else if e.EngineConfig.GetSignalPropagation() && cmdPid > 0 {
+					if err := syscall.Kill(cmdPid, signal); err == syscall.ESRCH {
 						sylog.Debugf("No child process, exiting ...")
 						os.Exit(128 + int(signal))
 					}
@@ -307,6 +322,17 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 func (e *EngineOperations) PostStartProcess(ctx context.Context, pid int) error {
 	sylog.Debugf("Post start process")
 
+	callbackType := (singularitycallback.PostStartProcess)(nil)
+	callbacks, err := plugin.LoadCallbacks(callbackType)
+	if err != nil {
+		return fmt.Errorf("while loading plugins callbacks '%T': %s", callbackType, err)
+	}
+	for _, cb := range callbacks {
+		if err := cb.(singularitycallback.PostStartProcess)(e.CommonConfig, pid); err != nil {
+			return err
+		}
+	}
+
 	if e.EngineConfig.GetInstance() {
 		name := e.CommonConfig.ContainerID
 
@@ -323,10 +349,18 @@ func (e *EngineOperations) PostStartProcess(ctx context.Context, pid int) error 
 		if err != nil {
 			return err
 		}
+
+		logErrPath, logOutPath, err := instance.GetLogFilePaths(name, instance.LogSubDir)
+		if err != nil {
+			return fmt.Errorf("could not find log paths: %s", err)
+		}
+
 		file.User = pw.Name
 		file.Pid = pid
 		file.PPid = os.Getpid()
 		file.Image = e.EngineConfig.GetImage()
+		file.LogErrPath = logErrPath
+		file.LogOutPath = logOutPath
 
 		ip, err := e.getIP()
 		if err != nil {
@@ -352,7 +386,7 @@ func (e *EngineOperations) PostStartProcess(ctx context.Context, pid int) error 
 		}
 		for _, n := range namespaces {
 			nspath := filepath.Join(path, n.nstype)
-			e.EngineConfig.OciConfig.AddOrReplaceLinuxNamespace(string(n.ns), nspath)
+			e.EngineConfig.OciConfig.AddOrReplaceLinuxNamespace(n.ns, nspath)
 		}
 		for _, ns := range e.EngineConfig.OciConfig.Linux.Namespaces {
 			if ns.Type == specs.UserNamespace {
@@ -394,205 +428,461 @@ func (e *EngineOperations) setPathEnv() {
 	}
 }
 
-func (e *EngineOperations) checkExec() error {
-	shell := e.EngineConfig.GetShell()
-
-	if shell == "" {
-		shell = defaultShell
-	}
-
-	// Make sure the shell exists
-	if _, err := os.Stat(shell); os.IsNotExist(err) {
-		return fmt.Errorf("shell %s doesn't exist in container", shell)
-	}
-
-	args := e.EngineConfig.OciConfig.Process.Args
-	env := e.EngineConfig.OciConfig.Process.Env
-
-	// match old behavior of searching path
-	oldPath := os.Getenv("PATH")
-	defer func() {
-		os.Setenv("PATH", oldPath)
-		e.EngineConfig.OciConfig.Process.Args = args
-		e.EngineConfig.OciConfig.Process.Env = env
-	}()
-
-	e.setPathEnv()
-
-	// If args[0] is an absolute path, exec.LookPath() looks for
-	// this file directly instead of within PATH
-	if _, err := exec.LookPath(args[0]); err == nil {
-		return nil
-	}
-
-	// If args[0] isn't executable (either via PATH or absolute path),
-	// look for alternative approaches to handling it
-	switch args[0] {
-	case "/.singularity.d/actions/exec":
-		if p, err := exec.LookPath("/.exec"); err == nil {
-			args[0] = p
-			return nil
-		}
-		if p, err := exec.LookPath(args[1]); err == nil {
-			sylog.Warningf("container does not have %s, calling %s directly", args[0], args[1])
-			args[1] = p
-			args = args[1:]
-			return nil
-		}
-		return fmt.Errorf("no executable %s found", args[1])
-	case "/.singularity.d/actions/shell":
-		if p, err := exec.LookPath("/.shell"); err == nil {
-			args[0] = p
-			return nil
-		}
-		if p, err := exec.LookPath(shell); err == nil {
-			sylog.Warningf("container does not have %s, calling %s directly", args[0], shell)
-			args[0] = p
-			return nil
-		}
-		return fmt.Errorf("no %s found inside container", shell)
-	case "/.singularity.d/actions/run":
-		if p, err := exec.LookPath("/.run"); err == nil {
-			args[0] = p
-			return nil
-		}
-		if p, err := exec.LookPath("/singularity"); err == nil {
-			args[0] = p
-			return nil
-		}
-		return fmt.Errorf("no run driver found inside container")
-	case "/.singularity.d/actions/start":
-		if _, err := exec.LookPath(shell); err != nil {
-			return fmt.Errorf("no %s found inside container, can't run instance", shell)
-		}
-		args = []string{shell, "-c", `echo "instance start script not found"`}
-		return nil
-	case "/.singularity.d/actions/test":
-		if p, err := exec.LookPath("/.test"); err == nil {
-			args[0] = p
-			return nil
-		}
-		return fmt.Errorf("no test driver found inside container")
-	}
-
-	return fmt.Errorf("no %s found inside container", args[0])
-}
-
-func (e *EngineOperations) runFuseDriver(name string, program []string, fd int) error {
-	sylog.Debugf("Running FUSE driver for %s as %v, fd %d", name, program, fd)
-
-	fh := os.NewFile(uintptr(fd), "fd-"+name)
-	if fh == nil {
-		// this should never happen
-		return errors.New("cannot map /dev/fuse file descriptor to a file handle")
-	}
-	// the master process does not need this file descriptor after
-	// running the program, make sure it gets closed; ignore any
-	// errors that happen here
-	defer fh.Close()
-
-	// The assumption is that the plugin prepared "Program" in such
-	// a way that it's missing the last parameter and that must
-	// correspond to /dev/fd/N. Instead of making assumptions as to
-	// how many and which file descriptors are open at this point,
-	// simply assume that it's possible to map the existing file
-	// descriptor to the name number in the new process.
-	//
-	// "newFd" should be the same as "fd", but do not assume that
-	// either.
-	newFd := fh.Fd()
-	fdDevice := fmt.Sprintf("/dev/fd/%d", newFd)
-	args := append(program, fdDevice)
-
+// runFuseDrivers execute FUSE drivers and returns the list of FUSE process ID.
+func (e *EngineOperations) runFuseDrivers(fromContainer bool, usernsFd int) error {
 	// set PATH for the command
 	oldpath := os.Getenv("PATH")
 	defer func() {
 		os.Setenv("PATH", oldpath)
 	}()
-	e.setPathEnv()
 
-	cmd := exec.Command(args[0], args[1:]...)
-
-	// Add the /dev/fuse file descriptor to the list of file
-	// descriptors to be passed to the new process.
-	//
-	// ExtraFiles is an array of *os.File, with the position of each
-	// entry determining the resulting file descriptor number. Since
-	// we are passing /dev/fd/N above, place our file handle at
-	// position N-3, so that it gets mapped to file descriptor N in
-	// the new process (the Go library will set things up so that
-	// stdin, stdout and stderr are 0, 1, and 2, so the first
-	// element of ExtraFiles gets 3).
-	cmd.ExtraFiles = make([]*os.File, newFd-3+1)
-	cmd.ExtraFiles[newFd-3] = fh
-	// The FUSE driver will get SIGQUIT if the parent dies.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGQUIT,
+	if fromContainer {
+		e.setPathEnv()
+	} else {
+		os.Setenv("PATH", env.DefaultPath)
 	}
 
-	if err := cmd.Run(); err != nil {
-		sylog.Warningf("cannot run program %v: %v\n", args, err)
-		return err
+	for _, fd := range e.EngineConfig.GetUnixSocketPair() {
+		if fd >= 0 {
+			unix.Close(fd)
+		}
+	}
+
+	var usernsFh *os.File
+
+	if usernsFd >= 0 {
+		usernsFh = os.NewFile(uintptr(usernsFd), "/proc/self/ns/user")
+		if usernsFh == nil {
+			// this should never happen
+			return errors.New("cannot map /proc/self/ns/user file descriptor to a file handle")
+		}
+		defer usernsFh.Close()
+	}
+
+	fuseMounts := e.EngineConfig.GetFuseMount()
+	for i := range fuseMounts {
+		if fromContainer != fuseMounts[i].FromContainer {
+			syscall.Close(fuseMounts[i].Fd)
+			continue
+		}
+
+		mnt := fuseMounts[i].MountPoint
+		program := fuseMounts[i].Program
+		fd := fuseMounts[i].Fd
+
+		sylog.Debugf("Running FUSE driver for %s as %v, fd %d", mnt, program, fd)
+
+		fh := os.NewFile(uintptr(fd), "/dev/fuse")
+		if fh == nil {
+			// this should never happen
+			return errors.New("cannot map /dev/fuse file descriptor to a file handle")
+		}
+		// the master process does not need this file descriptor after
+		// running the program, make sure it gets closed; ignore any
+		// errors that happen here
+		defer fh.Close()
+
+		// as we pass file handle as first element in ExtraFiles
+		// the fuse file descriptor becomes 3 for the FUSE program
+		args := append(program, "/dev/fd/3")
+
+		// add -f to run FUSE in foreground mode
+		if !fuseMounts[i].Daemon {
+			args = append(args, "-f")
+		}
+
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stderr = os.Stderr
+		cmd.Stdout = os.Stdout
+
+		// Add the /dev/fuse file descriptor to the list of file
+		// descriptors to be passed to the new process.
+		// The Go library will set things up so that stdin, stdout
+		// and stderr are 0, 1, and 2, so the first element of
+		// ExtraFiles gets 3
+		cmd.ExtraFiles = make([]*os.File, 1)
+		cmd.ExtraFiles[0] = fh
+
+		// Add /proc/<container_pid>/ns/user file descriptor for nsenter
+		// so it could join the container user namespace by using /dev/fd/4
+		if usernsFh != nil {
+			cmd.ExtraFiles = append(cmd.ExtraFiles, usernsFh)
+		}
+
+		if fuseMounts[i].Daemon {
+			if err := cmd.Run(); err != nil {
+				cmdline := strings.Join(args, " ")
+				return fmt.Errorf("could not start program %s: %s", cmdline, err)
+			}
+		} else {
+			if err := cmd.Start(); err != nil {
+				cmdline := strings.Join(args, " ")
+				return fmt.Errorf("could not start program %s: %s", cmdline, err)
+			}
+			fuseMounts[i].Cmd = cmd
+		}
 	}
 
 	return nil
 }
 
-// setupFuseDrivers runs the operations required by FUSE
-// drivers before the user process starts.
-func setupFuseDrivers(e *EngineOperations) error {
-	// close file descriptors open for FUSE mount
-	for _, name := range e.EngineConfig.GetPluginFuseMounts() {
-		var cfg struct {
-			Fuse singularity.FuseInfo
+// stopFuseDrivers notifies FUSE drivers running in foreground mode
+// with a SIGTERM signal.
+func (e *EngineOperations) stopFuseDrivers() {
+	for _, fuseMount := range e.EngineConfig.GetFuseMount() {
+		if fuseMount.Cmd != nil {
+			cmd := fuseMount.Cmd
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				sylog.Warningf("Can not send SIGTERM to FUSE process: %s", err)
+				continue
+			}
+			mnt := fuseMount.MountPoint
+			_, err := cmd.Process.Wait()
+			if err != nil {
+				sylog.Warningf("FUSE process for mount point %s terminated with error: %s", mnt, err)
+			} else {
+				sylog.Debugf("FUSE process for mount point %s terminated", mnt)
+			}
 		}
-		if err := e.EngineConfig.GetPluginConfig(name, &cfg); err != nil {
-			return err
-		}
-
-		if err := e.runFuseDriver(name, cfg.Fuse.Program, cfg.Fuse.DevFuseFd); err != nil {
-			return err
-		}
-
-		syscall.Close(cfg.Fuse.DevFuseFd)
 	}
-
-	return nil
-}
-
-// preStartProcess does the final set up before starting the user's process.
-func preStartProcess(e *EngineOperations) error {
-	// TODO(mem): most of the StartProcess method should be here, as
-	// it's doing preparation for actually starting the user
-	// process.
-	//
-	// For now it's limited to doing the final set up for FUSE
-	// drivers
-	if err := setupFuseDrivers(e); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (e *EngineOperations) getIP() (string, error) {
-	if e.EngineConfig.Network == nil {
+	if networkSetup == nil {
 		return "", nil
 	}
 
 	net := strings.Split(e.EngineConfig.GetNetwork(), ",")
 
-	ip, err := e.EngineConfig.Network.GetNetworkIP(net[0], "4")
+	ip, err := networkSetup.GetNetworkIP(net[0], "4")
 	if err == nil {
 		return ip.String(), nil
 	}
 	sylog.Warningf("Could not get ipv4 %s", err)
 
-	ip, err = e.EngineConfig.Network.GetNetworkIP(net[0], "6")
+	ip, err = networkSetup.GetNetworkIP(net[0], "6")
 	if err == nil {
 		return ip.String(), nil
 	}
 	sylog.Warningf("Could not get ipv6 %s", err)
 
 	return "", errors.New("could not get ip")
+}
+
+func getExecError(err error, args []string, shell string) error {
+	// We know the shell exists at this point, so let's inspect its architecture
+	if shell == "" {
+		shell = defaultShell
+	}
+	elfArch, elfErr := machine.ArchFromElf(shell)
+	if elfErr != nil && elfErr != machine.ErrUnknownArch {
+		return fmt.Errorf("failed to open %s for inspection: %s", shell, elfErr)
+	} else if elfErr == machine.ErrUnknownArch {
+		elfArch = "unknown architecture"
+	}
+	if elfArch != runtime.GOARCH {
+		return fmt.Errorf("image targets '%s', cannot run on '%s'", elfArch, runtime.GOARCH)
+	}
+	// Assume a missing shared library on ENOENT
+	if err == syscall.ENOENT {
+		return fmt.Errorf("exec %s failed: a shared library is likely missing in the image", args[0])
+	}
+	// Return the raw error as a last resort
+	return fmt.Errorf("exec %s failed: %s", args[0], err)
+}
+
+func (e *EngineOperations) execProcess(args, env []string) error {
+	err := syscall.Exec(args[0], args, env)
+	if err == nil {
+		return nil
+	}
+	if err == syscall.ENOEXEC && args[0] != defaultShell {
+		args = append([]string{defaultShell}, args...)
+		return e.execProcess(args, env)
+	}
+	return getExecError(err, args, e.EngineConfig.GetShell())
+}
+
+// bufferCloser wraps a bytes.Buffer with a Close method
+// required by the open handler of the shell interpreter.
+type bufferCloser struct {
+	bytes.Buffer
+}
+
+func (b *bufferCloser) Close() error {
+	b.Reset()
+	return nil
+}
+
+// Register a virtual file /.singularity.d/env/inject-singularity-env.sh sourced
+// after /.singularity.d/env/99-base.sh or /environment.
+// This handler turns all SINGUALRITYENV_KEY=VAL defined variables into their form:
+// export KEY=VAL. It can be sourced only once otherwise it returns an empty content.
+func injectEnvHandler(senv map[string]string) interpreter.OpenHandler {
+	var once sync.Once
+
+	return func(_ string, _ int, _ os.FileMode) (io.ReadWriteCloser, error) {
+		b := new(bufferCloser)
+
+		once.Do(func() {
+			defaultPathSnippet := `
+			if ! test -v PATH; then
+				export PATH=%q
+			fi
+			`
+			b.WriteString(fmt.Sprintf(defaultPathSnippet, env.DefaultPath))
+
+			snippet := `
+			if test -v %[1]s; then
+				sylog debug "Overriding %[1]s environment variable"
+			fi
+			export %[1]s=%[2]q
+			`
+			for key, value := range senv {
+				if key == "LD_LIBRARY_PATH" && value != "" {
+					b.WriteString(fmt.Sprintf(snippet, key, value+":/.singularity.d/libs"))
+					continue
+				}
+				b.WriteString(fmt.Sprintf(snippet, key, value))
+			}
+		})
+
+		return b, nil
+	}
+}
+
+func runtimeVarsHandler(senv map[string]string) interpreter.OpenHandler {
+	var once sync.Once
+
+	return func(path string, _ int, _ os.FileMode) (io.ReadWriteCloser, error) {
+		b := new(bufferCloser)
+
+		once.Do(func() {
+			b.WriteString(files.RuntimeVars)
+		})
+
+		return b, nil
+	}
+}
+
+// sylogBuiltin allows to use sylog logger from shell script.
+func sylogBuiltin(ctx context.Context, argv []string) error {
+	if len(argv) < 2 {
+		return fmt.Errorf("sylog builtin requires two arguments")
+	}
+	switch argv[0] {
+	case "info":
+		sylog.Infof(argv[1])
+	case "error":
+		sylog.Errorf(argv[1])
+	case "verbose":
+		sylog.Verbosef(argv[1])
+	case "debug":
+		sylog.Debugf(argv[1])
+	case "warning":
+		sylog.Warningf(argv[1])
+	}
+	return nil
+}
+
+// unescapeBuiltin returns a string, unescaping \n to a newline
+// Used to return newlines when we export a var in the action script
+func unescapeBuiltin(ctx context.Context, argv []string) error {
+	if len(argv) < 1 {
+		return fmt.Errorf("unescape builtin requires one argument")
+	}
+	hc := interp.HandlerCtx(ctx)
+	fmt.Fprintf(hc.Stdout, "%s", strings.Replace(argv[0], "\\n", "\n", -1))
+	return nil
+}
+
+// getEnvKeyBuiltin returns the KEY part of an environment variable.
+func getEnvKeyBuiltin(ctx context.Context, argv []string) error {
+	if len(argv) < 1 {
+		return fmt.Errorf("getenvkey builtin requires one argument")
+	}
+	hc := interp.HandlerCtx(ctx)
+	fmt.Fprintf(hc.Stdout, "%s\n", strings.SplitN(argv[0], "=", 2)[0])
+	return nil
+}
+
+// getAllEnvBuiltin display all exported variables in the form KEY=VALUE.
+func getAllEnvBuiltin(shell *interpreter.Shell) interpreter.ShellBuiltin {
+	return func(ctx context.Context, argv []string) error {
+		hc := interp.HandlerCtx(ctx)
+
+		keyRe := regexp.MustCompile(`^[a-zA-Z_]+[a-zA-Z0-9_]*$`)
+
+		for _, env := range interpreter.GetEnv(hc) {
+			// Exclude environment vars that contain invalid characters
+			// in their KEY - e.g. bash functions in the environment
+			// like "BASH_FUNC_module%%"
+			key := strings.SplitN(env, "=", 2)[0]
+			if !keyRe.MatchString(key) {
+				sylog.Debugf("Not exporting %q to container environment: invalid key", key)
+				continue
+			}
+
+			// Because we are using IFS=\n we need to escape newlines
+			// here and unescape them in the action script when we
+			// export the var again.
+			env := strings.Replace(env, "\n", "\\n", -1)
+			fmt.Fprintf(hc.Stdout, "%s\n", env)
+		}
+		return nil
+	}
+}
+
+// fixPathBuiltin takes the current path value to fix it by injecting
+// missing default path and returns value on shell interpreter output.
+func fixPathBuiltin(ctx context.Context, argv []string) error {
+	hc := interp.HandlerCtx(ctx)
+
+	currentPath := filepath.SplitList(hc.Env.Get("PATH").String())
+	finalPath := currentPath
+
+	for _, d := range filepath.SplitList(env.DefaultPath) {
+		found := false
+		for _, p := range currentPath {
+			if d == p {
+				found = true
+				continue
+			}
+		}
+		if !found {
+			finalPath = append(finalPath, d)
+		}
+	}
+
+	listSep := string(os.PathListSeparator)
+	fmt.Fprintf(hc.Stdout, "%s\n", strings.Join(finalPath, listSep))
+	return nil
+}
+
+// hashBuiltin is a noop function for hash bash builtin, since we don't
+// store resolved path in a hash table, there is nothing to do.
+func hashBuiltin(ctx context.Context, argv []string) error {
+	return nil
+}
+
+func umaskBuiltin(ctx context.Context, argv []string) error {
+	hc := interp.HandlerCtx(ctx)
+
+	if len(argv) == 0 {
+		old := unix.Umask(0)
+		unix.Umask(old)
+		fmt.Fprintf(hc.Stdout, "%#.4o\n", old)
+	} else {
+		umask, err := strconv.ParseUint(argv[0], 8, 16)
+		if err != nil {
+			return fmt.Errorf("umask: %s: invalid octal number: %s", argv[0], err)
+		}
+		unix.Umask(int(umask))
+	}
+
+	return nil
+}
+
+// runActionScript interprets and executes the action script within
+// an embedded shell interpreter.
+func runActionScript(engineConfig *singularityConfig.EngineConfig) ([]string, []string, error) {
+	args := engineConfig.OciConfig.Process.Args
+	env := append(engineConfig.OciConfig.Process.Env, "SINGULARITY_COMMAND="+filepath.Base(args[0]))
+
+	b := bytes.NewBufferString(files.ActionScript)
+
+	shell, err := interpreter.New(b, args[0], args[1:], env)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	execBuiltin := func(ctx context.Context, argv []string) error {
+		cmd, err := shell.LookPath(ctx, argv[0])
+		if err != nil {
+			return err
+		}
+		env = interpreter.GetEnv(interp.HandlerCtx(ctx))
+		argv[0] = cmd
+		args = argv
+		return nil
+	}
+
+	// inject SINGULARITYENV_ defined variables
+	senv := engineConfig.GetSingularityEnv()
+	shell.RegisterOpenHandler("/.inject-singularity-env.sh", injectEnvHandler(senv))
+
+	shell.RegisterOpenHandler("/.singularity.d/env/99-runtimevars.sh", runtimeVarsHandler(senv))
+
+	// register few builtin
+	shell.RegisterShellBuiltin("getallenv", getAllEnvBuiltin(shell))
+	shell.RegisterShellBuiltin("getenvkey", getEnvKeyBuiltin)
+	shell.RegisterShellBuiltin("sylog", sylogBuiltin)
+	shell.RegisterShellBuiltin("fixpath", fixPathBuiltin)
+	shell.RegisterShellBuiltin("hash", hashBuiltin)
+	shell.RegisterShellBuiltin("unescape", unescapeBuiltin)
+	shell.RegisterShellBuiltin("umask_builtin", umaskBuiltin)
+
+	// exec builtin won't execute the command but instead
+	// it returns arguments and environment variables and
+	// let the responsibility to the caller of this
+	// function to execute the command
+	shell.RegisterShellBuiltin("exec", execBuiltin)
+
+	err = shell.Run()
+	if err != nil {
+		if shell.Status() != 0 {
+			os.Exit(int(shell.Status()))
+		}
+		return nil, nil, err
+	}
+
+	if len(args) > 0 && args[0] == "/.singularity.d/runscript" {
+		b, err := getDockerRunscript(args[0])
+		if err != nil {
+			return nil, nil, err
+		} else if b != nil {
+			interp, err := interpreter.New(b, args[0], args[1:], env)
+			if err != nil {
+				return nil, nil, err
+			}
+			interp.RegisterShellBuiltin("exec", execBuiltin)
+			err = interp.Run()
+			if err != nil {
+				if interp.Status() != 0 {
+					os.Exit(int(interp.Status()))
+				}
+				return nil, nil, err
+			}
+		}
+	}
+
+	return args, env, nil
+}
+
+// getDockerRunscript returns the content as a reader of
+// the default runscript set for docker images if any.
+func getDockerRunscript(path string) (io.Reader, error) {
+	r, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("while reading %s: %s", path, err)
+	}
+	var b bytes.Buffer
+
+	if _, err := b.Write(r); err != nil {
+		return nil, err
+	}
+
+	scanner := bufio.NewScanner(&b)
+
+	for scanner.Scan() {
+		if scanner.Text() == "eval \"set ${SINGULARITY_OCI_RUN}\"" {
+			b.Reset()
+			if _, err := b.Write(r); err != nil {
+				return nil, err
+			}
+			return &b, nil
+		}
+	}
+
+	return nil, nil
 }

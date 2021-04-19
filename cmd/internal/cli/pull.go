@@ -1,4 +1,5 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020, Control Command Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,22 +7,22 @@
 package cli
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 
 	"github.com/spf13/cobra"
-	"github.com/sylabs/scs-library-client/client"
 	"github.com/sylabs/singularity/docs"
-	"github.com/sylabs/singularity/internal/app/singularity"
-	"github.com/sylabs/singularity/internal/pkg/client/cache"
-	ociclient "github.com/sylabs/singularity/internal/pkg/client/oci"
-	scs "github.com/sylabs/singularity/internal/pkg/remote"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/pkg/cache"
+	"github.com/sylabs/singularity/internal/pkg/client/library"
+	"github.com/sylabs/singularity/internal/pkg/client/net"
+	"github.com/sylabs/singularity/internal/pkg/client/oci"
+	"github.com/sylabs/singularity/internal/pkg/client/oras"
+	"github.com/sylabs/singularity/internal/pkg/client/shub"
+	"github.com/sylabs/singularity/internal/pkg/remote/endpoint"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
-	net "github.com/sylabs/singularity/pkg/client/net"
 	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 const (
@@ -44,8 +45,6 @@ var (
 	pullLibraryURI string
 	// pullImageName holds the name to be given to the pulled image.
 	pullImageName string
-	// keyServerURL server URL.
-	keyServerURL = "https://keys.sylabs.io"
 	// unauthenticatedPull when true; wont ask to keep a unsigned container after pulling it.
 	unauthenticatedPull bool
 	// pullDir is the path that the containers will be pulled to, if set.
@@ -69,7 +68,7 @@ var pullArchFlag = cmdline.Flag{
 var pullLibraryURIFlag = cmdline.Flag{
 	ID:           "pullLibraryURIFlag",
 	Value:        &pullLibraryURI,
-	DefaultValue: "https://library.sylabs.io",
+	DefaultValue: "",
 	Name:         "library",
 	Usage:        "download images from the provided library",
 	EnvKeys:      []string{"LIBRARY"},
@@ -131,31 +130,32 @@ var pullAllowUnauthenticatedFlag = cmdline.Flag{
 }
 
 func init() {
-	cmdManager.RegisterCmd(PullCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterCmd(PullCmd)
 
-	cmdManager.RegisterFlagForCmd(&commonForceFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&pullLibraryURIFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&pullNameFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&commonNoHTTPSFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&commonTmpDirFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&pullDisableCacheFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&pullDirFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&commonForceFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&pullLibraryURIFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&pullNameFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&commonNoHTTPSFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&commonTmpDirFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&pullDisableCacheFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&pullDirFlag, PullCmd)
 
-	cmdManager.RegisterFlagForCmd(&dockerUsernameFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&dockerPasswordFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&dockerLoginFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&dockerUsernameFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&dockerPasswordFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&dockerLoginFlag, PullCmd)
 
-	cmdManager.RegisterFlagForCmd(&buildNoCleanupFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&pullAllowUnsignedFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&pullAllowUnauthenticatedFlag, PullCmd)
-	cmdManager.RegisterFlagForCmd(&pullArchFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&buildNoCleanupFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&pullAllowUnsignedFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&pullAllowUnauthenticatedFlag, PullCmd)
+		cmdManager.RegisterFlagForCmd(&pullArchFlag, PullCmd)
+	})
 }
 
 // PullCmd singularity pull
 var PullCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
 	Args:                  cobra.RangeArgs(1, 2),
-	PreRun:                sylabsToken,
 	Run:                   pullRun,
 	Use:                   docs.PullUse,
 	Short:                 docs.PullShort,
@@ -164,7 +164,7 @@ var PullCmd = &cobra.Command{
 }
 
 func pullRun(cmd *cobra.Command, args []string) {
-	ctx := context.TODO()
+	ctx := cmd.Context()
 
 	imgCache := getCacheHandle(cache.Config{Disable: disableCache})
 	if imgCache == nil {
@@ -203,26 +203,24 @@ func pullRun(cmd *cobra.Command, args []string) {
 
 	switch transport {
 	case LibraryProtocol, "":
-		handlePullFlags(cmd)
-
-		libraryConfig := &client.Config{
-			BaseURL:   pullLibraryURI,
-			AuthToken: authToken,
-		}
-		lib, err := singularity.NewLibrary(libraryConfig, imgCache, keyServerURL)
+		lc, err := getLibraryClientConfig(pullLibraryURI)
 		if err != nil {
-			sylog.Fatalf("Could not initialize library: %v", err)
+			sylog.Fatalf("Unable to get library client configuration: %v", err)
+		}
+		co, err := getKeyserverClientOpts("", endpoint.KeyserverVerifyOp)
+		if err != nil {
+			sylog.Fatalf("Unable to get keyserver client configuration: %v", err)
 		}
 
-		err = lib.Pull(ctx, pullFrom, pullTo, pullArch)
-		if err != nil && err != singularity.ErrLibraryPullUnsigned {
+		_, err = library.PullToFile(ctx, imgCache, pullTo, pullFrom, pullArch, tmpDir, lc, co)
+		if err != nil && err != library.ErrLibraryPullUnsigned {
 			sylog.Fatalf("While pulling library image: %v", err)
 		}
-		if err == singularity.ErrLibraryPullUnsigned {
+		if err == library.ErrLibraryPullUnsigned {
 			sylog.Warningf("Skipping container verification")
 		}
 	case ShubProtocol:
-		err := singularity.PullShub(imgCache, pullTo, pullFrom, noHTTPS)
+		_, err := shub.PullToFile(ctx, imgCache, pullTo, pullFrom, tmpDir, noHTTPS)
 		if err != nil {
 			sylog.Fatalf("While pulling shub image: %v\n", err)
 		}
@@ -232,56 +230,26 @@ func pullRun(cmd *cobra.Command, args []string) {
 			sylog.Fatalf("Unable to make docker oci credentials: %s", err)
 		}
 
-		err = singularity.OrasPull(ctx, imgCache, pullTo, ref, forceOverwrite, ociAuth)
+		_, err = oras.PullToFile(ctx, imgCache, pullTo, pullFrom, tmpDir, ociAuth)
 		if err != nil {
 			sylog.Fatalf("While pulling image from oci registry: %v", err)
 		}
 	case HTTPProtocol, HTTPSProtocol:
-		err := net.DownloadImage(pullTo, pullFrom)
+		_, err := net.PullToFile(ctx, imgCache, pullTo, pullFrom, tmpDir)
 		if err != nil {
 			sylog.Fatalf("While pulling from image from http(s): %v\n", err)
 		}
-	case ociclient.IsSupported(transport):
+	case oci.IsSupported(transport):
 		ociAuth, err := makeDockerCredentials(cmd)
 		if err != nil {
 			sylog.Fatalf("While creating Docker credentials: %v", err)
 		}
 
-		err = singularity.OciPull(ctx, imgCache, pullTo, pullFrom, tmpDir, ociAuth, noHTTPS, buildArgs.noCleanUp)
+		_, err = oci.PullToFile(ctx, imgCache, pullTo, pullFrom, tmpDir, ociAuth, noHTTPS, buildArgs.noCleanUp)
 		if err != nil {
 			sylog.Fatalf("While making image from oci registry: %v", err)
 		}
 	default:
 		sylog.Fatalf("Unsupported transport type: %s", transport)
 	}
-}
-
-func handlePullFlags(cmd *cobra.Command) {
-	// if we can load config and if default endpoint is set, use that
-	// otherwise fall back on regular authtoken and URI behavior
-	endpoint, err := sylabsRemote(remoteConfig)
-	if err == scs.ErrNoDefault {
-		sylog.Warningf("No default remote in use, falling back to: %v", pullLibraryURI)
-		sylog.Debugf("Using default key server url: %v", keyServerURL)
-		return
-	}
-	if err != nil {
-		sylog.Fatalf("Unable to load remote configuration: %v", err)
-	}
-
-	authToken = endpoint.Token
-	if !cmd.Flags().Lookup("library").Changed {
-		libraryURI, err := endpoint.GetServiceURI("library")
-		if err != nil {
-			sylog.Fatalf("Unable to get library service URI: %v", err)
-		}
-		pullLibraryURI = libraryURI
-	}
-
-	keystoreURI, err := endpoint.GetServiceURI("keystore")
-	if err != nil {
-		sylog.Warningf("Unable to get library service URI: %v, defaulting to %s", err, keyServerURL)
-		return
-	}
-	keyServerURL = keystoreURI
 }

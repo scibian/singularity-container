@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -21,7 +21,7 @@ import (
 
 	expect "github.com/Netflix/go-expect"
 	"github.com/pkg/errors"
-	"github.com/sylabs/singularity/internal/pkg/client/cache"
+	"github.com/sylabs/singularity/internal/pkg/cache"
 )
 
 // SingularityCmdResultOp is a function type executed
@@ -45,8 +45,10 @@ const (
 	ContainMatch MatchType = iota
 	// ExactMatch is for exact match
 	ExactMatch
-	// UnwantedMatch is for unwanted match
-	UnwantedMatch
+	// UnwaantedContainMatch checks that output does not contain text
+	UnwantedContainMatch
+	// UnwantedExactMatch checks that output does not exactly match text
+	UnwantedExactMatch
 	// RegexMatch is for regular expression match
 	RegexMatch
 )
@@ -57,8 +59,10 @@ func (m MatchType) String() string {
 		return "ContainMatch"
 	case ExactMatch:
 		return "ExactMatch"
-	case UnwantedMatch:
-		return "UnwantedMatch"
+	case UnwantedContainMatch:
+		return "UnwantedContainMatch"
+	case UnwantedExactMatch:
+		return "UnwantedExactMatch"
 	case RegexMatch:
 		return "RegexMatch"
 	default:
@@ -105,7 +109,14 @@ func (r *SingularityCmdResult) expectMatch(mt MatchType, stream streamType, patt
 				r.FullCmd, streamName, pattern, streamName, output,
 			)
 		}
-	case UnwantedMatch:
+	case UnwantedContainMatch:
+		if strings.Contains(output, pattern) {
+			return errors.Errorf(
+				"Command %q:\nExpect %s stream does not contain:\n%s\nCommand %s stream:\n%s",
+				r.FullCmd, streamName, pattern, streamName, output,
+			)
+		}
+	case UnwantedExactMatch:
 		if strings.TrimSuffix(output, "\n") == pattern {
 			return errors.Errorf(
 				"Command %q:\nExpect %s stream not matching:\n%s\nCommand %s output:\n%s",
@@ -262,21 +273,22 @@ type SingularityCmdOp func(*singularityCmd)
 
 // singularityCmd defines a Singularity command execution test.
 type singularityCmd struct {
-	cmd         []string
-	args        []string
-	envs        []string
-	dir         string // Working directory to be used when executing the command
-	subtestName string
-	stdin       io.Reader
-	waitErr     error
-	preFn       func(*testing.T)
-	postFn      func(*testing.T)
-	consoleFn   SingularityCmdOp
-	console     *expect.Console
-	resultFn    SingularityCmdOp
-	result      *SingularityCmdResult
-	t           *testing.T
-	profile     Profile
+	globalOptions []string
+	cmd           []string
+	args          []string
+	envs          []string
+	dir           string // Working directory to be used when executing the command
+	subtestName   string
+	stdin         io.Reader
+	waitErr       error
+	preFn         func(*testing.T)
+	postFn        func(*testing.T)
+	consoleFn     SingularityCmdOp
+	console       *expect.Console
+	resultFn      SingularityCmdOp
+	result        *SingularityCmdResult
+	t             *testing.T
+	profile       Profile
 }
 
 // AsSubtest requests the command to be run as a subtest
@@ -338,6 +350,15 @@ func WithProfile(profile Profile) SingularityCmdOp {
 func WithStdin(r io.Reader) SingularityCmdOp {
 	return func(s *singularityCmd) {
 		s.stdin = r
+	}
+}
+
+// WithGlobalOptions sets global singularity option (eg: --debug, --silent).
+func WithGlobalOptions(options ...string) SingularityCmdOp {
+	return func(s *singularityCmd) {
+		if len(options) > 0 {
+			s.globalOptions = append(s.globalOptions, options...)
+		}
 	}
 }
 
@@ -478,7 +499,7 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 		t.Helper()
 
 		s.result = new(SingularityCmdResult)
-		pargs := append([]string{"--debug"}, s.cmd...)
+		pargs := append(s.globalOptions, s.cmd...)
 		pargs = append(pargs, s.profile.args(s.cmd)...)
 		s.args = append(pargs, s.args...)
 		s.result.FullCmd = fmt.Sprintf("%s %s", cmdPath, strings.Join(s.args, " "))
@@ -555,6 +576,14 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("PWD=%s", cmd.Dir))
 		}
 
+		// propagate proxy environment variables
+		for _, env := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+			val := os.Getenv(env)
+			if val != "" {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", env, val))
+			}
+		}
+
 		cmd.Stdin = s.stdin
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -570,8 +599,8 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 		if s.consoleFn != nil {
 			var err error
 
-			s.console, err = expect.NewTestConsole(
-				t,
+			// NewTestConsole is prone to race, use NewConsole for now
+			s.console, err = expect.NewConsole(
 				expect.WithStdout(cmd.Stdout, cmd.Stderr),
 				expect.WithDefaultTimeout(10*time.Second),
 			)
@@ -585,11 +614,12 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 			cmd.Stdin = s.console.Tty()
 			cmd.Stdout = s.console.Tty()
 			cmd.Stderr = s.console.Tty()
+			cmd.ExtraFiles = []*os.File{s.console.Tty()}
 
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				Setctty: true,
 				Setsid:  true,
-				Ctty:    int(s.console.Tty().Fd()),
+				Ctty:    3,
 			}
 		}
 		if s.postFn != nil {

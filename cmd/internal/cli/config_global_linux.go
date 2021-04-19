@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,8 +11,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 // -s|--set
@@ -74,7 +74,7 @@ var globalConfigDryRunFlag = cmdline.Flag{
 var configGlobalCmd = &cobra.Command{
 	Args:                  cobra.RangeArgs(1, 2),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRootOrUnpriv,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var op singularity.GlobalConfigOp
 
@@ -90,7 +90,7 @@ var configGlobalCmd = &cobra.Command{
 			return fmt.Errorf("you must specify an option (eg: --set/--unset)")
 		}
 
-		if err := singularity.GlobalConfig(args, globalConfigDryRun, op); err != nil {
+		if err := singularity.GlobalConfig(args, configurationFile, globalConfigDryRun, op); err != nil {
 			sylog.Fatalf("%s", err)
 		}
 
@@ -104,9 +104,11 @@ var configGlobalCmd = &cobra.Command{
 }
 
 func init() {
-	cmdManager.RegisterFlagForCmd(&globalConfigSetFlag, configGlobalCmd)
-	cmdManager.RegisterFlagForCmd(&globalConfigUnsetFlag, configGlobalCmd)
-	cmdManager.RegisterFlagForCmd(&globalConfigGetFlag, configGlobalCmd)
-	cmdManager.RegisterFlagForCmd(&globalConfigResetFlag, configGlobalCmd)
-	cmdManager.RegisterFlagForCmd(&globalConfigDryRunFlag, configGlobalCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterFlagForCmd(&globalConfigSetFlag, configGlobalCmd)
+		cmdManager.RegisterFlagForCmd(&globalConfigUnsetFlag, configGlobalCmd)
+		cmdManager.RegisterFlagForCmd(&globalConfigGetFlag, configGlobalCmd)
+		cmdManager.RegisterFlagForCmd(&globalConfigResetFlag, configGlobalCmd)
+		cmdManager.RegisterFlagForCmd(&globalConfigDryRunFlag, configGlobalCmd)
+	})
 }

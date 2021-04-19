@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,10 +14,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	uuid "github.com/satori/go.uuid"
-
+	"github.com/sylabs/singularity/e2e/ecl"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
+	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 )
 
@@ -49,19 +49,22 @@ func (c imgBuildTests) tempDir(t *testing.T, namespace string) (string, func()) 
 }
 
 func (c imgBuildTests) buildFrom(t *testing.T) {
-	e2e.PrepRegistry(t, c.env)
+	e2e.EnsureRegistry(t)
 
 	// use a trailing slash in tests for sandbox intentionally to make sure
 	// `singularity build -s /tmp/sand/ docker://alpine` works,
 	// see https://github.com/sylabs/singularity/issues/4407
 	tt := []struct {
-		name       string
-		dependency string
-		buildSpec  string
+		name        string
+		dependency  string
+		buildSpec   string
+		requireArch string
 	}{
 		{
 			name:      "BusyBox",
 			buildSpec: "../examples/busybox/Singularity",
+			// TODO: example has arch hard coded in download URL
+			requireArch: "amd64",
 		},
 		{
 			name:       "Debootstrap",
@@ -98,6 +101,9 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 			name:       "Yum",
 			dependency: "yum",
 			buildSpec:  "../examples/centos/Singularity",
+			// TODO - Centos puts non-amd64 at a different mirror location
+			// need multiple def files to test on other archs
+			requireArch: "amd64",
 		},
 		{
 			name:       "Zypper",
@@ -128,6 +134,8 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 					e2e.WithCommand("build"),
 					e2e.WithArgs(args...),
 					e2e.PreRun(func(t *testing.T) {
+						require.Arch(t, tc.requireArch)
+
 						if tc.dependency == "" {
 							return
 						}
@@ -153,31 +161,32 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 
 func (c imgBuildTests) nonRootBuild(t *testing.T) {
 	tt := []struct {
-		name      string
-		buildSpec string
-		args      []string
+		name        string
+		buildSpec   string
+		args        []string
+		requireArch string
 	}{
+		// TODO: our sif in git repo is amd64 only - add other archs
 		{
-			name:      "local sif",
-			buildSpec: "testdata/busybox.sif",
+			name:        "local sif",
+			buildSpec:   "testdata/busybox.sif",
+			requireArch: "amd64",
 		},
+		// TODO: our sif in git repo is amd64 only - add other archs
 		{
-			name:      "local sif to sandbox",
-			buildSpec: "testdata/busybox.sif",
-			args:      []string{"--sandbox"},
+			name:        "local sif to sandbox",
+			buildSpec:   "testdata/busybox.sif",
+			args:        []string{"--sandbox"},
+			requireArch: "amd64",
 		},
 		{
 			name:      "library sif",
-			buildSpec: "library://sylabs/tests/busybox:1.0.0",
+			buildSpec: "library://busybox:1.31.1",
 		},
 		{
 			name:      "library sif sandbox",
-			buildSpec: "library://sylabs/tests/busybox:1.0.0",
+			buildSpec: "library://busybox:1.31.1",
 			args:      []string{"--sandbox"},
-		},
-		{
-			name:      "library sif sha",
-			buildSpec: "library://sylabs/tests/busybox:sha256.8b5478b0f2962eba3982be245986eb0ea54f5164d90a65c078af5b83147009ba",
 		},
 		// TODO: uncomment when shub is working
 		//{
@@ -204,6 +213,13 @@ func (c imgBuildTests) nonRootBuild(t *testing.T) {
 			e2e.WithProfile(e2e.UserProfile),
 			e2e.WithCommand("build"),
 			e2e.WithArgs(args...),
+			e2e.PreRun(func(t *testing.T) {
+				if tc.requireArch != "" {
+					require.Arch(t, tc.requireArch)
+
+				}
+			}),
+
 			e2e.PostRun(func(t *testing.T) {
 				c.env.ImageVerify(t, imagePath, e2e.UserProfile)
 			}),
@@ -812,7 +828,7 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 }
 
 func (c *imgBuildTests) ensureImageIsEncrypted(t *testing.T, imgPath string) {
-	sifID := "2" // Which SIF descriptor slots contains encryption information
+	sifID := "4" // Which SIF descriptor slot contains the (encrypted) rootfs
 	cmdArgs := []string{"info", sifID, imgPath}
 	c.env.RunSingularity(
 		t,
@@ -907,7 +923,7 @@ func (c imgBuildTests) buildEncryptPassphrase(t *testing.T) {
 	err := e2e.CheckCryptsetupVersion()
 	if err != nil {
 		expectedExitCode = 255
-		expectedStderr = ": available cryptsetup is not supported"
+		expectedStderr = ": installed version of cryptsetup is not supported, >=2.0.0 required"
 	}
 
 	// First with the command line argument, only using --passphrase
@@ -1044,37 +1060,197 @@ func (c imgBuildTests) buildUpdateSandbox(t *testing.T) {
 	}
 }
 
-func (c imgBuildTests) issue4837(t *testing.T) {
-	sandboxName := uuid.NewV4().String()
-	u := e2e.FakerootProfile.HostUser(t)
+// buildWithFingerprint checks that we correctly verify a source image fingerprint when specified
+func (c imgBuildTests) buildWithFingerprint(t *testing.T) {
+	tmpDir, remove := e2e.MakeTempDir(t, "", "imgbuild-fingerprint-", "")
+	defer func() {
+		c.env.KeyringDir = ""
+		remove(t)
+	}()
 
-	def, err := filepath.Abs("testdata/Singularity")
-	if err != nil {
-		t.Fatalf("failed to retrieve absolute path for testdata/Singularity: %s", err)
+	pgpDir, _ := e2e.MakeSyPGPDir(t, tmpDir)
+	c.env.KeyringDir = pgpDir
+	invalidFingerPrint := "0000000000000000000000000000000000000000"
+	singleSigned := filepath.Join(tmpDir, "singleSigned.sif")
+	doubleSigned := filepath.Join(tmpDir, "doubleSigned.sif")
+	unsigned := filepath.Join(tmpDir, "unsigned.sif")
+	output := filepath.Join(tmpDir, "output.sif")
+
+	// Prepare the test source images
+	prep := []struct {
+		name       string
+		command    string
+		args       []string
+		consoleOps []e2e.SingularityConsoleOp
+	}{
+		{
+			name:    "import key1 local",
+			command: "key import",
+			args:    []string{"testdata/ecl-pgpkeys/key1.asc"},
+			consoleOps: []e2e.SingularityConsoleOp{
+				e2e.ConsoleSendLine("e2e"),
+			},
+		},
+		{
+			name:    "import key2 local",
+			command: "key import",
+			args:    []string{"testdata/ecl-pgpkeys/key2.asc"},
+			consoleOps: []e2e.SingularityConsoleOp{
+				e2e.ConsoleSendLine("e2e"),
+			},
+		},
+		{
+			name:    "build single signed source image",
+			command: "build",
+			args:    []string{singleSigned, "library://busybox"},
+		},
+		{
+			name:    "build double signed source image",
+			command: "build",
+			args:    []string{doubleSigned, singleSigned},
+		},
+		{
+			name:    "build unsigned source image",
+			command: "build",
+			args:    []string{unsigned, singleSigned},
+		},
+		{
+			name:    "sign single signed image with key1",
+			command: "sign",
+			args:    []string{"-k", "0", singleSigned},
+			consoleOps: []e2e.SingularityConsoleOp{
+				e2e.ConsoleSendLine("e2e"),
+			},
+		},
+		{
+			name:    "sign double signed image with key1",
+			command: "sign",
+			args:    []string{"-k", "0", doubleSigned},
+			consoleOps: []e2e.SingularityConsoleOp{
+				e2e.ConsoleSendLine("e2e"),
+			},
+		},
+		{
+			name:    "sign double signed image with key2",
+			command: "sign",
+			args:    []string{"-k", "1", doubleSigned},
+			consoleOps: []e2e.SingularityConsoleOp{
+				e2e.ConsoleSendLine("e2e"),
+			},
+		},
 	}
 
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(e2e.FakerootProfile),
-		e2e.WithDir(u.Dir),
-		e2e.WithCommand("build"),
-		e2e.WithArgs("--sandbox", sandboxName, def),
-		e2e.PostRun(func(t *testing.T) {
-			if !t.Failed() {
-				os.RemoveAll(filepath.Join(u.Dir, sandboxName))
-			}
-		}),
-		e2e.ExpectExit(0),
-	)
+	for _, tt := range prep {
+		cmdOps := []e2e.SingularityCmdOp{
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.UserProfile),
+			e2e.WithCommand(tt.command),
+			e2e.WithArgs(tt.args...),
+			e2e.ExpectExit(0),
+		}
+		if tt.consoleOps != nil {
+			cmdOps = append(cmdOps, e2e.ConsoleRun(tt.consoleOps...))
+		}
+		c.env.RunSingularity(t, cmdOps...)
+	}
+
+	// Test builds with "Fingerprint:" headers
+	tests := []struct {
+		name       string
+		definition string
+		exit       int
+		wantErr    string
+	}{
+		{
+			name:       "build single signed one fingerprint",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s\n", singleSigned, ecl.KeyMap["key1"]),
+			exit:       0,
+		},
+		{
+			name:       "build single signed two fingerprints",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s,%s\n", singleSigned, ecl.KeyMap["key1"], ecl.KeyMap["key2"]),
+			exit:       255,
+			wantErr:    "image not signed by required entities",
+		},
+		{
+			name:       "build single signed one wrong fingerprint",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s\n", singleSigned, invalidFingerPrint),
+			exit:       255,
+			wantErr:    "image not signed by required entities",
+		},
+		{
+			name:       "build single signed two fingerprints one wrong",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s,%s\n", singleSigned, invalidFingerPrint, ecl.KeyMap["key2"]),
+			exit:       255,
+			wantErr:    "image not signed by required entities",
+		},
+		{
+			name:       "build double signed one fingerprint",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s\n", doubleSigned, ecl.KeyMap["key1"]),
+			exit:       0,
+		},
+		{
+			name:       "build double signed two fingerprints",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s,%s\n", doubleSigned, ecl.KeyMap["key1"], ecl.KeyMap["key2"]),
+			exit:       0,
+		},
+		{
+			name:       "build double signed one wrong fingerprint",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s\n", doubleSigned, invalidFingerPrint),
+			exit:       255,
+			wantErr:    "image not signed by required entities",
+		},
+		{
+			name:       "build double signed two fingerprints one wrong",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s,%s\n", doubleSigned, invalidFingerPrint, ecl.KeyMap["key2"]),
+			exit:       255,
+			wantErr:    "image not signed by required entities",
+		},
+		{
+			name:       "build unsigned one fingerprint",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s\n", unsigned, ecl.KeyMap["key1"]),
+			exit:       255,
+			wantErr:    "signature not found",
+		},
+		{
+			name:       "build unsigned two fingerprints",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints: %s,%s\n", unsigned, ecl.KeyMap["key1"], ecl.KeyMap["key2"]),
+			exit:       255,
+			wantErr:    "signature not found",
+		},
+		{
+			name:       "build unsigned empty fingerprints",
+			definition: fmt.Sprintf("Bootstrap: localimage\nFrom: %s\nFingerprints:\n", unsigned),
+			exit:       0,
+		},
+	}
+
+	for _, tt := range tests {
+		defFile, err := e2e.WriteTempFile(c.env.TestDir, "testFile-", tt.definition)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.Remove(defFile)
+		c.env.RunSingularity(t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.RootProfile),
+			e2e.WithCommand("build"),
+			e2e.WithArgs("-F", output, defFile),
+			e2e.ExpectExit(tt.exit,
+				e2e.ExpectError(e2e.ContainMatch, tt.wantErr),
+			),
+		)
+	}
+
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := imgBuildTests{
 		env: env,
 	}
 
-	return testhelper.TestRunner(map[string]func(*testing.T){
+	return testhelper.Tests{
 		"bad path":                        c.badPath,                   // try to build from a non existent path
 		"build encrypt with PEM file":     c.buildEncryptPemFile,       // build encrypted images with certificate
 		"build encrypted with passphrase": c.buildEncryptPassphrase,    // build encrypted images with passphrase
@@ -1084,6 +1260,23 @@ func E2ETests(env e2e.TestEnv) func(*testing.T) {
 		"multistage":                      c.buildMultiStageDefinition, // multistage build from definition templates
 		"non-root build":                  c.nonRootBuild,              // build sifs from non-root
 		"build and update sandbox":        c.buildUpdateSandbox,        // build/update sandbox
+		"fingerprint check":               c.buildWithFingerprint,      // definition file includes fingerprint check
+		"issue 3848":                      c.issue3848,                 // https://github.com/hpcng/singularity/issues/3848
+		"issue 4203":                      c.issue4203,                 // https://github.com/sylabs/singularity/issues/4203
+		"issue 4407":                      c.issue4407,                 // https://github.com/sylabs/singularity/issues/4407
+		"issue 4524":                      c.issue4524,                 // https://github.com/sylabs/singularity/issues/4524
+		"issue 4583":                      c.issue4583,                 // https://github.com/sylabs/singularity/issues/4583
+		"issue 4820":                      c.issue4820,                 // https://github.com/sylabs/singularity/issues/4820
 		"issue 4837":                      c.issue4837,                 // https://github.com/sylabs/singularity/issues/4837
-	})
+		"issue 4943":                      c.issue4943,                 // https://github.com/sylabs/singularity/issues/4943
+		"issue 4967":                      c.issue4967,                 // https://github.com/sylabs/singularity/issues/4967
+		"issue 4969":                      c.issue4969,                 // https://github.com/sylabs/singularity/issues/4969
+		"issue 5166":                      c.issue5166,                 // https://github.com/sylabs/singularity/issues/5166
+		"issue 5172":                      c.issue5172,                 // https://github.com/sylabs/singularity/issues/5172
+		"issue 5250":                      c.issue5250,                 // https://github.com/sylabs/singularity/issues/5250
+		"issue 5315":                      c.issue5315,                 // https://github.com/sylabs/singularity/issues/5315
+		"issue 5435":                      c.issue5435,                 // https://github.com/hpcng/singularity/issues/5435
+		"issue 5668":                      c.issue5668,                 // https://github.com/hpcng/singularity/issues/5435
+		"issue 5690":                      c.issue5690,                 // https://github.com/hpcng/singularity/issues/5690
+	}
 }

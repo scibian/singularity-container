@@ -12,17 +12,32 @@ import (
 	"strings"
 
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
-	"github.com/sylabs/singularity/pkg/runtime/engine/config"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 )
+
+func getConfig() (*singularityconf.File, error) {
+	// if the caller has set the current config use it
+	// otherwise parse the default configuration file
+	cfg := singularityconf.GetCurrentConfig()
+	if cfg == nil {
+		var err error
+
+		configFile := buildcfg.SINGULARITY_CONF_FILE
+		cfg, err = singularityconf.Parse(configFile)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse singularity.conf file: %s", err)
+		}
+	}
+	return cfg, nil
+}
 
 // GetPath figures out where the mksquashfs binary is
 // and return an error is not available or not usable.
 func GetPath() (string, error) {
 	// Parse singularity configuration file
-	configFile := buildcfg.SINGULARITY_CONF_FILE
-	c, err := config.ParseFile(configFile)
+	c, err := getConfig()
 	if err != nil {
-		return "", fmt.Errorf("unable to parse singularity.conf file: %s", err)
+		return "", err
 	}
 
 	// p is either "" or the string value in the conf file
@@ -35,4 +50,26 @@ func GetPath() (string, error) {
 
 	// exec.LookPath functions on absolute paths (ignoring $PATH) as well
 	return exec.LookPath(p)
+}
+
+func GetProcs() (uint, error) {
+	c, err := getConfig()
+	if err != nil {
+		return 0, err
+	}
+	// proc is either "" or the string value in the conf file
+	proc := c.MksquashfsProcs
+
+	return proc, err
+}
+
+func GetMem() (string, error) {
+	c, err := getConfig()
+	if err != nil {
+		return "", err
+	}
+	// mem is either "" or the string value in the conf file
+	mem := c.MksquashfsMem
+
+	return mem, err
 }

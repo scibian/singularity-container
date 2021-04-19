@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 // Lots of love from:
@@ -126,7 +126,7 @@ func getHypervisorArgs(sifImage, bzImage, initramfs, singAction, cliExtra string
 			sylog.Debugf("Image is sandbox. Setting up share.")
 			pciArgs = fmt.Sprintf("4:1,virtio-9p,runimg=%s", sifImage)
 			args = append(args, "-s", pciArgs)
-			sboxImgBind := fmt.Sprintf("runimg:/runImage")
+			sboxImgBind := "runimg:/runImage"
 			singBinds = append(singBinds, sboxImgBind)
 		} else {
 			// We are not a sandbox

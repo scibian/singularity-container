@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
@@ -114,14 +114,14 @@ func (c ctx) testHelpOption(t *testing.T) {
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env: env,
 	}
 
-	return testhelper.TestRunner(map[string]func(*testing.T){
+	return testhelper.Tests{
 		"equal version":    c.testEqualVersion,
 		"help option":      c.testHelpOption,
 		"semantic version": c.testSemanticVersion,
-	})
+	}
 }

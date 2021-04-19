@@ -70,11 +70,30 @@ type UploadImageResponse struct {
 	Error *jsonresp.Error `json:"error,omitempty"`
 }
 
+// QuotaResponse contains quota usage and total available storage
+type QuotaResponse struct {
+	QuotaTotalBytes int64 `json:"quotaTotal"`
+	QuotaUsageBytes int64 `json:"quotaUsage"`
+}
+
+// UploadImageComplete contains data from upload image completion
+type UploadImageComplete struct {
+	Quota        QuotaResponse `json:"quota"`
+	ContainerURL string        `json:"containerUrl"`
+}
+
+// UploadImageCompleteResponse is the response to the upload image completion request
+type UploadImageCompleteResponse struct {
+	Data  UploadImageComplete `json:"data"`
+	Error *jsonresp.Error     `json:"error,omitempty"`
+}
+
 // MultipartUpload - Contains data for multipart image upload start request
 type MultipartUpload struct {
-	UploadID   string `json:"uploadID"`
-	TotalParts int    `json:"totalParts"`
-	PartSize   int64  `json:"partSize"`
+	UploadID   string            `json:"uploadID"`
+	TotalParts int               `json:"totalParts"`
+	PartSize   int64             `json:"partSize"`
+	Options    map[string]string `json:"options"`
 }
 
 // MultipartUploadStartResponse - Response from the API for a multipart image upload start request
@@ -94,12 +113,8 @@ type UploadImagePartResponse struct {
 	Error *jsonresp.Error `json:"error,omitempty"`
 }
 
-// CompleteMultipartUpload - (Currently empty) data for multipart image upload complete request
-type CompleteMultipartUpload struct {
-}
-
-// CompleteMultipartUploadResponse - Response from the API for a multipart image upload complet request
+// CompleteMultipartUploadResponse - Response from the API for a multipart image upload complete request
 type CompleteMultipartUploadResponse struct {
-	Data  CompleteMultipartUpload `json:"data"`
-	Error *jsonresp.Error         `json:"error,omitempty"`
+	Data  UploadImageComplete `json:"data"`
+	Error *jsonresp.Error     `json:"error,omitempty"`
 }

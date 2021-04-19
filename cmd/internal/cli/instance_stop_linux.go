@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,17 +14,19 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/signal"
 	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 func init() {
-	cmdManager.RegisterFlagForCmd(&instanceStopUserFlag, instanceStopCmd)
-	cmdManager.RegisterFlagForCmd(&instanceStopAllFlag, instanceStopCmd)
-	cmdManager.RegisterFlagForCmd(&instanceStopForceFlag, instanceStopCmd)
-	cmdManager.RegisterFlagForCmd(&instanceStopSignalFlag, instanceStopCmd)
-	cmdManager.RegisterFlagForCmd(&instanceStopTimeoutFlag, instanceStopCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterFlagForCmd(&instanceStopUserFlag, instanceStopCmd)
+		cmdManager.RegisterFlagForCmd(&instanceStopAllFlag, instanceStopCmd)
+		cmdManager.RegisterFlagForCmd(&instanceStopForceFlag, instanceStopCmd)
+		cmdManager.RegisterFlagForCmd(&instanceStopSignalFlag, instanceStopCmd)
+		cmdManager.RegisterFlagForCmd(&instanceStopTimeoutFlag, instanceStopCmd)
+	})
 }
 
 // -u|--user

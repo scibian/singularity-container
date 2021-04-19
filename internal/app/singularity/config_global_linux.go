@@ -10,8 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sylabs/singularity/internal/pkg/buildcfg"
-	"github.com/sylabs/singularity/pkg/runtime/engine/config"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 	"golang.org/x/sys/unix"
 )
 
@@ -38,27 +37,27 @@ func contains(slice []string, val string) bool {
 	return false
 }
 
-func generateConfig(file string, directives config.Directives, dry bool) error {
+func generateConfig(path string, directives singularityconf.Directives, dry bool) error {
 	out := os.Stdout
 
 	if !dry {
 		unix.Umask(0)
 
 		flags := os.O_CREATE | os.O_TRUNC | unix.O_NOFOLLOW | os.O_RDWR
-		nf, err := os.OpenFile(file, flags, 0644)
+		nf, err := os.OpenFile(path, flags, 0644)
 		if err != nil {
-			return fmt.Errorf("while creating configuration file %s: %s", file, err)
+			return fmt.Errorf("while creating configuration file %s: %s", path, err)
 		}
 		defer nf.Close()
 		out = nf
 	}
 
-	c, err := config.GetConfig(directives)
+	c, err := singularityconf.GetConfig(directives)
 	if err != nil {
 		return err
 	}
 
-	if err := config.Generate(out, "", c); err != nil {
+	if err := singularityconf.Generate(out, "", c); err != nil {
 		return fmt.Errorf("while generating configuration from template: %s", err)
 	}
 
@@ -67,7 +66,7 @@ func generateConfig(file string, directives config.Directives, dry bool) error {
 
 // GlobalConfig allows to set/unset/reset a configuration directive value
 // in singularity.conf
-func GlobalConfig(args []string, dry bool, op GlobalConfigOp) error {
+func GlobalConfig(args []string, configFile string, dry bool, op GlobalConfigOp) error {
 	directive := args[0]
 	value := ""
 
@@ -78,11 +77,9 @@ func GlobalConfig(args []string, dry bool, op GlobalConfigOp) error {
 		value = args[1]
 	}
 
-	if !config.HasDirective(directive) {
+	if !singularityconf.HasDirective(directive) {
 		return fmt.Errorf("%q is not a valid configuration directive", directive)
 	}
-
-	configFile := buildcfg.SINGULARITY_CONF_FILE
 
 	f, err := os.OpenFile(configFile, os.O_RDONLY, 0644)
 	if err != nil {
@@ -90,7 +87,7 @@ func GlobalConfig(args []string, dry bool, op GlobalConfigOp) error {
 	}
 	defer f.Close()
 
-	directives, err := config.GetDirectives(f)
+	directives, err := singularityconf.GetDirectives(f)
 	if err != nil {
 		return err
 	}

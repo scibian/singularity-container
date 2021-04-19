@@ -29,12 +29,15 @@
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <signal.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <sys/syscall.h>
 #include <net/if.h>
 #include <sys/eventfd.h>
+#include <sys/sysmacros.h>
+#include <linux/magic.h>
 
 #ifdef SINGULARITY_SECUREBITS
 #  include <linux/securebits.h>
@@ -52,6 +55,8 @@
 #define SELF_IPC_NS     "/proc/self/ns/ipc"
 #define SELF_MNT_NS     "/proc/self/ns/mnt"
 #define SELF_CGROUP_NS  "/proc/self/ns/cgroup"
+
+#define capflag(x)  (1ULL << x)
 
 /* current starter configuration */
 struct starterConfig *sconfig;
@@ -73,14 +78,21 @@ typedef struct stack {
     char ptr[0];
 } fork_stack_t;
 
+/*
+ * fork_ns child stack living in BSS section, instead of
+ * allocating dynamically the stack during each call, a stack
+ * of 4096 bytes is set, on x86_64 around 80 bytes are used for
+ * the stack, 4096 should let enough room for Go runtime which
+ * should jump on its own stack
+ */
+static fork_stack_t child_stack = {0};
+
 /* child function called by clone to return directly to sigsetjmp in fork_ns */
 __attribute__((noinline)) static int clone_fn(void *arg) {
     siglongjmp(*(sigjmp_buf *)arg, 0);
 }
 
 __attribute__ ((returns_twice)) __attribute__((noinline)) static int fork_ns(unsigned int flags) {
-    /* setup the stack */
-    fork_stack_t stack;
     sigjmp_buf env;
 
     /*
@@ -94,7 +106,7 @@ __attribute__ ((returns_twice)) __attribute__((noinline)) static int fork_ns(uns
         return 0;
     }
     /* parent process */
-    return clone(clone_fn, stack.ptr, (SIGCHLD|flags), env);
+    return clone(clone_fn, child_stack.ptr, (SIGCHLD|flags), env);
 }
 
 static void priv_escalate(bool keep_fsuid) {
@@ -184,17 +196,72 @@ static bool is_namespace_enter(const char *nspath, const char *selfns) {
     return nspath[0] != 0;
 }
 
-static int apply_container_privileges(struct privileges *privileges) {
-    uid_t currentUID = getuid();
-    uid_t targetUID = currentUID;
+static struct capabilities *get_process_capabilities() {
     struct __user_cap_header_struct header;
     struct __user_cap_data_struct data[2];
+    struct capabilities *current = (struct capabilities *)malloc(sizeof(struct capabilities));
+
+    if ( current == NULL ) {
+        fatalf("Could not allocate memory");
+    }
 
     header.version = LINUX_CAPABILITY_VERSION;
     header.pid = 0;
 
     if ( capget(&header, data) < 0 ) {
         fatalf("Failed to get processus capabilities\n");
+    }
+
+    current->permitted = ((unsigned long long)data[1].permitted << 32) | data[0].permitted;
+    current->effective = ((unsigned long long)data[1].effective << 32) | data[0].effective;
+    current->inheritable = ((unsigned long long)data[1].inheritable << 32) | data[0].inheritable;
+
+    return current;
+}
+
+static int get_last_cap(void) {
+    int last_cap;
+    for ( last_cap = CAPSET_MIN; last_cap <= CAPSET_MAX; last_cap++ ) {
+        if ( prctl(PR_CAPBSET_READ, last_cap) < 0 ) {
+            /* an error means that capability is not valid, take the last valid */
+            break;
+        }
+    }
+    return --last_cap;
+}
+
+static void apply_privileges(struct privileges *privileges, struct capabilities *current) {
+    uid_t currentUID = getuid();
+    uid_t targetUID = currentUID;
+    struct __user_cap_header_struct header;
+    struct __user_cap_data_struct data[2];
+    int last_cap = get_last_cap();
+    int caps_index;
+
+    /* adjust capabilities based on the lastest capability supported by the system */
+    for ( caps_index = last_cap + 1; caps_index <= CAPSET_MAX; caps_index++ ) {
+        privileges->capabilities.effective &= ~capflag(caps_index);
+        privileges->capabilities.permitted &= ~capflag(caps_index);
+        privileges->capabilities.bounding &= ~capflag(caps_index);
+        privileges->capabilities.inheritable &= ~capflag(caps_index);
+        privileges->capabilities.ambient &= ~capflag(caps_index);
+    }
+
+    debugf("Effective capabilities:   0x%016llx\n", privileges->capabilities.effective);
+    debugf("Permitted capabilities:   0x%016llx\n", privileges->capabilities.permitted);
+    debugf("Bounding capabilities:    0x%016llx\n", privileges->capabilities.bounding);
+    debugf("Inheritable capabilities: 0x%016llx\n", privileges->capabilities.inheritable);
+#ifdef USER_CAPABILITIES
+    debugf("Ambient capabilities:     0x%016llx\n", privileges->capabilities.ambient);
+#endif
+
+    /* compare requested effective set with the current permitted set */
+    if ( (privileges->capabilities.effective & current->permitted) != privileges->capabilities.effective ) {
+        fatalf(
+            "Requesting capability set 0x%016llx while permitted capability set is 0x%016llx\n",
+            privileges->capabilities.effective,
+            current->permitted
+        );
     }
 
     data[1].inheritable = (__u32)(privileges->capabilities.inheritable >> 32);
@@ -204,18 +271,10 @@ static int apply_container_privileges(struct privileges *privileges) {
     data[1].effective = (__u32)(privileges->capabilities.effective >> 32);
     data[0].effective = (__u32)(privileges->capabilities.effective & 0xFFFFFFFF);
 
-    int last_cap;
-    for ( last_cap = CAPSET_MAX; ; last_cap-- ) {
-        if ( prctl(PR_CAPBSET_READ, last_cap) > 0 || last_cap == 0 ) {
-            break;
-        }
-    }
-
-    int caps_index;
     for ( caps_index = 0; caps_index <= last_cap; caps_index++ ) {
-        if ( !(privileges->capabilities.bounding & (1ULL << caps_index)) ) {
+        if ( !(privileges->capabilities.bounding & capflag(caps_index)) ) {
             if ( prctl(PR_CAPBSET_DROP, caps_index) < 0 ) {
-                fatalf("Failed to drop bounding capabilities set: %s\n", strerror(errno));
+                fatalf("Failed to drop cap %d bounding capabilities set: %s\n", caps_index, strerror(errno));
             }
         }
     }
@@ -256,8 +315,6 @@ static int apply_container_privileges(struct privileges *privileges) {
         fatalf("Failed to set all user ID to %d: %s\n", targetUID, strerror(errno));
     }
 
-    set_parent_death_signal(SIGKILL);
-
     if ( privileges->noNewPrivs ) {
         if ( prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 ) {
             fatalf("Failed to set no new privs flag: %s\n", strerror(errno));
@@ -267,6 +324,9 @@ static int apply_container_privileges(struct privileges *privileges) {
         }
     }
 
+    header.version = LINUX_CAPABILITY_VERSION;
+    header.pid = 0;
+
     if ( capset(&header, data) < 0 ) {
         fatalf("Failed to set process capabilities\n");
     }
@@ -274,13 +334,157 @@ static int apply_container_privileges(struct privileges *privileges) {
 #ifdef USER_CAPABILITIES
     // set ambient capabilities if supported
     for ( caps_index = 0; caps_index <= last_cap; caps_index++ ) {
-        if ( (privileges->capabilities.ambient & (1ULL << caps_index)) ) {
+        if ( (privileges->capabilities.ambient & capflag(caps_index)) ) {
             if ( prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, caps_index, 0, 0) < 0 ) {
                 fatalf("Failed to set ambient capability: %s\n", strerror(errno));
             }
         }
     }
 #endif
+}
+
+static void set_rpc_privileges(void) {
+    struct privileges *priv = (struct privileges *)malloc(sizeof(struct privileges));
+    struct capabilities *current = get_process_capabilities();
+
+    if ( priv == NULL ) {
+        fatalf("Could not allocate memory\n");
+    }
+
+    memset(priv, 0, sizeof(struct privileges));
+
+    priv->capabilities.effective = capflag(CAP_SYS_ADMIN);
+    /*
+     * for some operations like container decryption, overlay mount,
+     * chroot and creation of loop devices, the following capabilities
+     * must be in the permitted set:
+     * - CAP_MKNOD
+     * - CAP_SYS_CHROOT
+     * - CAP_SETGID
+     * - CAP_SETUID
+     * - CAP_FOWNER
+     * - CAP_DAC_OVERRIDE
+     * - CAP_DAC_READ_SEARCH
+     * - CAP_CHOWN
+     * - CAP_IPC_LOCK
+     * - CAP_SYS_PTRACE
+     */
+    priv->capabilities.permitted = current->permitted;
+    /* required by cryptsetup */
+    priv->capabilities.bounding = capflag(CAP_SYS_ADMIN);
+    priv->capabilities.bounding |= capflag(CAP_IPC_LOCK);
+    priv->capabilities.bounding |= capflag(CAP_MKNOD);
+
+    debugf("Set RPC privileges\n");
+    apply_privileges(priv, current);
+    set_parent_death_signal(SIGKILL);
+
+    free(priv);
+    free(current);
+}
+
+static void set_master_privileges(void) {
+    struct privileges *priv = (struct privileges *)malloc(sizeof(struct privileges));
+    struct capabilities *current = get_process_capabilities();
+
+    if ( priv == NULL ) {
+        fatalf("could not allocate memory\n");
+    }
+
+    memset(priv, 0, sizeof(struct privileges));
+
+    priv->capabilities.effective |= capflag(CAP_SETGID);
+    priv->capabilities.effective |= capflag(CAP_SETUID);
+
+    priv->capabilities.permitted = current->permitted;
+    priv->capabilities.bounding = current->permitted;
+    priv->capabilities.inheritable = current->permitted;
+
+    debugf("Set master privileges\n");
+    apply_privileges(priv, current);
+
+    free(priv);
+    free(current);
+}
+
+#define MSG_SIZE 1024
+
+static char *nserror(int err, int nstype) {
+    char *msg = (char *)malloc(MSG_SIZE);
+    char *path = (char *)malloc(MAX_PATH_SIZE);
+    char *ns = NULL;
+    char *name = NULL;
+
+    if ( msg == NULL || path == NULL ) {
+        fatalf("could not allocate memory\n");
+    }
+
+    memset(msg, 0, MSG_SIZE);
+    memset(path, 0, MAX_PATH_SIZE);
+
+    switch(nstype) {
+    case CLONE_NEWNET:
+        name = "network";
+        ns = "net";
+        break;
+    case CLONE_NEWIPC:
+        name = "ipc";
+        ns = name;
+        break;
+    case CLONE_NEWPID:
+        name = "pid";
+        ns = name;
+        break;
+    case CLONE_NEWNS:
+        name = "mount";
+        ns = "mnt";
+        break;
+    case CLONE_NEWUTS:
+        name = "uts";
+        ns = name;
+        break;
+    case CLONE_NEWUSER:
+        name = "user";
+        ns = name;
+        break;
+    case CLONE_NEWCGROUP:
+        name = "cgroup";
+        ns = name;
+        break;
+    }
+    if ( err == EINVAL ) {
+        snprintf(path, MAX_PATH_SIZE-1, "/proc/self/ns/%s", ns);
+        if ( access(path, 0) < 0 ) {
+            snprintf(msg, MSG_SIZE-1, "%s namespace not supported by your system", name);
+        } else {
+            snprintf(msg, MSG_SIZE-1, "%s namespace disabled", name);
+        }
+    } else if ( err == EUSERS ) {
+        snprintf(msg, MSG_SIZE-1, "limit on the nesting depth of %s namespaces was exceeded", name);
+    } else if ( err == ENOSPC ) {
+        snprintf(path, MAX_PATH_SIZE-1, "/proc/sys/user/max_%s_namespaces", ns);
+        if ( access(path, 0) == 0 ) {
+            snprintf(msg, MSG_SIZE-1, "maximum number of %s namespaces exceeded, check %s", name, path);
+        } else {
+            snprintf(msg, MSG_SIZE-1, "limit on the nesting depth of %s namespaces was exceeded", name);
+        }
+    } else if ( err == EPERM ) {
+        if ( nstype != CLONE_NEWUSER ) {
+            snprintf(msg, MSG_SIZE-1, "%s namespace requires privileges, check Singularity installation", name);
+        } else {
+            snprintf(path, MAX_PATH_SIZE-1, "/proc/sys/kernel/unprivileged_userns_clone");
+            if ( access(path, 0) == 0 ) {
+                snprintf(msg, MSG_SIZE-1, "user namespace requires to set %s to 1", path);
+            } else {
+                snprintf(msg, MSG_SIZE-1, "not allowed to create user namespace");
+            }
+        }
+    } else {
+        free(msg);
+        msg = strerror(err);
+    }
+    free(path);
+    return msg;
 }
 
 static int create_namespace(int nstype) {
@@ -348,7 +552,7 @@ static int enter_namespace(char *nspath, int nstype) {
         return(-1);
     }
 
-    if ( setns(ns_fd, nstype) < 0 ) {
+    if ( xsetns(ns_fd, nstype) < 0 ) {
         int err = errno;
         close(ns_fd);
         errno = err;
@@ -501,7 +705,7 @@ static int network_namespace_init(struct namespace *nsconfig) {
         return ENTER_NAMESPACE;
     } else if ( is_namespace_create(nsconfig, CLONE_NEWNET) ) {
         if ( create_namespace(CLONE_NEWNET) < 0 ) {
-            fatalf("Failed to create network namespace: %s\n", strerror(errno));
+            fatalf("Failed to create network namespace: %s\n", nserror(errno, CLONE_NEWNET));
         }
         if ( nsconfig->bringLoopbackInterface ) {
             struct ifreq req;
@@ -535,7 +739,7 @@ static int uts_namespace_init(struct namespace *nsconfig) {
         return ENTER_NAMESPACE;
     } else if ( is_namespace_create(nsconfig, CLONE_NEWUTS) ) {
         if ( create_namespace(CLONE_NEWUTS) < 0 ) {
-            fatalf("Failed to create uts namespace: %s\n", strerror(errno));
+            fatalf("Failed to create uts namespace: %s\n", nserror(errno, CLONE_NEWUTS));
         }
         return CREATE_NAMESPACE;
     }
@@ -549,7 +753,7 @@ static int ipc_namespace_init(struct namespace *nsconfig) {
         return ENTER_NAMESPACE;
     } else if ( is_namespace_create(nsconfig, CLONE_NEWIPC) ) {
         if ( create_namespace(CLONE_NEWIPC) < 0 ) {
-            fatalf("Failed to create ipc namespace: %s\n", strerror(errno));
+            fatalf("Failed to create ipc namespace: %s\n", nserror(errno, CLONE_NEWIPC));
         }
         return CREATE_NAMESPACE;
     }
@@ -563,7 +767,7 @@ static int cgroup_namespace_init(struct namespace *nsconfig) {
         return ENTER_NAMESPACE;
     } else if ( is_namespace_create(nsconfig, CLONE_NEWCGROUP) ) {
         if ( create_namespace(CLONE_NEWCGROUP) < 0 ) {
-            fatalf("Failed to create cgroup namespace: %s\n", strerror(errno));
+            fatalf("Failed to create cgroup namespace: %s\n", nserror(errno, CLONE_NEWCGROUP));
         }
         return CREATE_NAMESPACE;
     }
@@ -583,7 +787,7 @@ static int mount_namespace_init(struct namespace *nsconfig, bool masterPropagate
                 fatalf("Failed to unshare root file system: %s\n", strerror(errno));
             }
             if ( create_namespace(CLONE_NEWNS) < 0 ) {
-                fatalf("Failed to create mount namespace: %s\n", strerror(errno));
+                fatalf("Failed to create mount namespace: %s\n", nserror(errno, CLONE_NEWNS));
             }
             if ( propagation && mount(NULL, "/", NULL, propagation, NULL) < 0 ) {
                 fatalf("Failed to set mount propagation: %s\n", strerror(errno));
@@ -591,7 +795,7 @@ static int mount_namespace_init(struct namespace *nsconfig, bool masterPropagate
         } else {
             /* create a namespace for container process to separate master during pivot_root */
             if ( create_namespace(CLONE_NEWNS) < 0 ) {
-                fatalf("Failed to create mount namespace: %s\n", strerror(errno));
+                fatalf("Failed to create mount namespace: %s\n", nserror(errno, CLONE_NEWNS));
             }
 
             /* set shared propagation to propagate few mount points to master */
@@ -614,7 +818,7 @@ static int shared_mount_namespace_init(struct namespace *nsconfig) {
         fatalf("Failed to unshare root file system: %s\n", strerror(errno));
     }
     if ( create_namespace(CLONE_NEWNS) < 0 ) {
-        fatalf("Failed to create mount namespace: %s\n", strerror(errno));
+        fatalf("Failed to create mount namespace: %s\n", nserror(errno, CLONE_NEWNS));
     }
     if ( mount(NULL, "/", NULL, propagation, NULL) < 0 ) {
         fatalf("Failed to set mount propagation: %s\n", strerror(errno));
@@ -850,6 +1054,29 @@ static void fix_streams(void) {
     }
 }
 
+/* fix_userns_devfuse_fd reopens /dev/fuse file descriptors in a user namespace */
+static void fix_userns_devfuse_fd(struct starter *starter) {
+    struct stat st;
+    int i, newfd, oldfd;
+
+    for ( i = 0; i < starter->numfds; i++ ) {
+        oldfd = starter->fds[i];
+        if ( fstat(oldfd, &st) < 0 ) {
+            fatalf("Failed to get file information for file descriptor %d: %s\n", oldfd, strerror(errno));
+        }
+        if ( major(st.st_rdev) == 10 && minor(st.st_rdev) == 229 ) {
+            newfd = open("/dev/fuse", O_RDWR);
+            if ( newfd < 0 ) {
+                fatalf("Failed to open /dev/fuse: %s\n", strerror(errno));
+            }
+            if ( dup3(newfd, oldfd, O_CLOEXEC) < 0 ) {
+                fatalf("Failed to duplicate file descriptor: %s\n", strerror(errno));
+            }
+            close(newfd);
+        }
+    }
+}
+
 static void wait_child(const char *name, pid_t child_pid, bool noreturn) {
     int status;
     int exit_status = 0;
@@ -898,7 +1125,7 @@ static void cleanenv(void) {
         fatalf("no environment variables set\n");
     }
 
-    /* 
+    /*
      * keep only SINGULARITY_MESSAGELEVEL for GO runtime, set others to empty
      * string and not NULL (see issue #3703 for why)
      */
@@ -907,30 +1134,6 @@ static void cleanenv(void) {
             *e = "";
         }
     }
-}
-
-/*
- * get_pipe_exec_fd returns the pipe file descriptor stored in
- * the PIPE_EXEC_FD environment variable. The returned pipe contains
- * JSON configuration for an engine to run a container.
- */
-static int get_pipe_exec_fd(void) {
-    int pipe_fd;
-    char *pipe_fd_env = getenv("PIPE_EXEC_FD");
-
-    if ( pipe_fd_env != NULL ) {
-        if ( sscanf(pipe_fd_env, "%d", &pipe_fd) != 1 ) {
-            fatalf("Failed to parse PIPE_EXEC_FD environment variable: %s\n", strerror(errno));
-        }
-        debugf("PIPE_EXEC_FD value: %d\n", pipe_fd);
-        if ( pipe_fd < 0 || pipe_fd >= sysconf(_SC_OPEN_MAX) ) {
-            fatalf("Bad PIPE_EXEC_FD file descriptor value\n");
-        }
-    } else {
-        fatalf("PIPE_EXEC_FD environment variable isn't set\n");
-    }
-
-    return pipe_fd;
 }
 
 /* "noop" mount operation to force kernel to load overlay module */
@@ -943,7 +1146,65 @@ void load_overlay_module(void) {
             } else {
                 debugf("Overlay seems not supported by the kernel\n");
             }
-        };
+        }
+    }
+}
+
+/* read engine configuration from environment variables */
+static void read_engine_config(struct engine *engine) {
+    char *engine_config[MAX_ENGINE_CONFIG_CHUNK];
+    char env_key[ENGINE_CONFIG_ENV_PADDING] = {0};
+    char *engine_chunk;
+    unsigned long int nchunk = 0;
+    off_t offset = 0;
+    size_t length;
+    int i;
+
+    debugf("Read engine configuration\n");
+
+    engine_chunk = getenv(ENGINE_CONFIG_CHUNK_ENV);
+    if ( engine_chunk == NULL ) {
+        fatalf("No engine config chunk provided\n");
+    }
+    nchunk = strtoul(engine_chunk, NULL, 10);
+    if ( nchunk == 0 || nchunk > MAX_ENGINE_CONFIG_CHUNK ) {
+        fatalf("Bad number of engine config chunk provided '%s': 0 or > %d\n", engine_chunk, MAX_ENGINE_CONFIG_CHUNK);
+    }
+
+    for ( i = 0; i < nchunk; i++ ) {
+        snprintf(env_key, sizeof(env_key)-1, ENGINE_CONFIG_ENV"%d", i+1);
+        engine_config[i] = getenv(env_key);
+        if ( engine_config[i] == NULL ) {
+            fatalf("No engine configuration found in %s\n", env_key);
+        }
+        engine->size += strnlen(engine_config[i], MAX_CHUNK_SIZE);
+    }
+
+    if ( engine->size >= MAX_ENGINE_CONFIG_SIZE ) {
+        fatalf("Engine configuration too big >= %d bytes\n", MAX_ENGINE_CONFIG_SIZE);
+    }
+
+    /* allocate additional space for stage1 */
+    engine->map_size = engine->size + MAX_CHUNK_SIZE;
+    engine->config = (char *)mmap(NULL, engine->map_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+    if ( engine->config == MAP_FAILED ) {
+        fatalf("Memory allocation failed: %s\n", strerror(errno));
+    }
+
+    for ( i = 0; i < nchunk; i++ ) {
+        length = strnlen(engine_config[i], MAX_CHUNK_SIZE);
+        memcpy(&engine->config[offset], engine_config[i], length);
+        offset += length;
+    }
+}
+
+/* release previously mmap'ed memory */
+static void release_memory(struct starterConfig *sconfig) {
+    if ( munmap(sconfig->engine.config, sconfig->engine.map_size) < 0 ) {
+        fatalf("Engine configuration memory release failed: %s\n", strerror(errno));
+    }
+    if ( munmap(sconfig, sizeof(struct starterConfig)) < 0 ) {
+        fatalf("Starter configuration memory release failed: %s\n", strerror(errno));
     }
 }
 
@@ -962,7 +1223,6 @@ __attribute__((constructor)) static void init(void) {
     uid_t uid = getuid();
     sigset_t mask;
     pid_t process;
-    int pipe_fd = -1;
     int clone_flags = 0;
     int userns = NO_NAMESPACE, pidns = NO_NAMESPACE;
     fdlist_t *master_fds;
@@ -975,15 +1235,6 @@ __attribute__((constructor)) static void init(void) {
 
     /* force loading overlay kernel module if requested */
     load_overlay_module();
-
-    /*
-     * get pipe file descriptor from environment variable PIPE_EXEC_FD
-     * to read engine configuration
-     */
-    pipe_fd = get_pipe_exec_fd();
-
-    /* cleanup environment variables */
-    cleanenv();
 
     /* initialize starter configuration in shared memory to later share with child processes */
     sconfig = (struct starterConfig *)mmap(NULL, sizeof(struct starterConfig), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
@@ -998,13 +1249,11 @@ __attribute__((constructor)) static void init(void) {
         priv_drop(false);
     }
 
-    debugf("Read engine configuration\n");
+    /* retrieve engine configuration from environment variables */
+    read_engine_config(&sconfig->engine);
 
-    /* read engine configuration from pipe */
-    if ( ( sconfig->engine.size = read(pipe_fd, sconfig->engine.config, MAX_JSON_SIZE - 1) ) <= 0 ) {
-        fatalf("Read engine configuration from pipe failed: %s\n", strerror(errno));
-    }
-    close(pipe_fd);
+    /* cleanup environment variables */
+    cleanenv();
 
     /* fix I/O streams to point to /dev/null if they are closed */
     fix_streams();
@@ -1131,7 +1380,11 @@ __attribute__((constructor)) static void init(void) {
          * user namespace not enabled, continue with privileged workflow
          * this will fail if starter is run without suid
          */
-        priv_escalate(true);
+        if ( sconfig->starter.isSuid ) {
+            priv_escalate(true);
+        } else if ( uid != 0 ) {
+            fatalf("No setuid installation found, for unprivileged installation use: ./mconfig --without-suid\n");
+        }
         break;
     case ENTER_NAMESPACE:
         if ( sconfig->starter.isSuid && !sconfig->starter.hybridWorkflow ) {
@@ -1145,7 +1398,7 @@ __attribute__((constructor)) static void init(void) {
             }
             /* master and container processes lives in the same user namespace */
             if ( create_namespace(CLONE_NEWUSER) < 0 ) {
-                fatalf("Failed to create user namespace: %s\n", strerror(errno));
+                fatalf("Failed to create user namespace: %s\n", nserror(errno, CLONE_NEWUSER));
             }
         } else {
             /*
@@ -1165,19 +1418,24 @@ __attribute__((constructor)) static void init(void) {
 
     process = fork_ns(clone_flags);
     if ( process == 0 ) {
+        struct capabilities *current = NULL;
+
+        /* close master end of the communication socket */
+        close(master_socket[0]);
+
         /* in the user namespace without any privileges */
         if ( userns == CREATE_NAMESPACE ) {
+            /* re-open /dev/fuse file descriptors if any in the new user namespace */
+            fix_userns_devfuse_fd(&sconfig->starter);
+
             /* wait parent write user namespace mappings */
             if ( wait_event(master_socket[1]) < 0 ) {
-                fatalf("Error while waiting event for user namespace mappings\n");
+                fatalf("Error while waiting event for user namespace mappings: %s\n", strerror(errno));
             }
         }
 
         /* at this stage we are PID 1 if PID namespace requested */
         set_parent_death_signal(SIGKILL);
-
-        /* close master end of the communication socket */
-        close(master_socket[0]);
 
         /* initialize remaining namespaces */
         network_namespace_init(&sconfig->container.namespace);
@@ -1215,7 +1473,9 @@ __attribute__((constructor)) static void init(void) {
              */
             process = fork_ns(CLONE_FS);
             if ( process == 0 ) {
-                set_parent_death_signal(SIGKILL);
+                if ( sconfig->starter.isSuid && geteuid() == 0 ) {
+                    set_rpc_privileges();
+                }
                 verbosef("Spawn RPC server\n");
                 goexecute = RPC_SERVER;
                 /* continue execution with Go runtime in main_linux.go */
@@ -1241,7 +1501,12 @@ __attribute__((constructor)) static void init(void) {
             verbosef("Don't execute RPC server, joining instance\n");
         }
 
-        apply_container_privileges(&sconfig->container.privileges);
+        debugf("Set container privileges\n");
+        current = get_process_capabilities();
+        apply_privileges(&sconfig->container.privileges, current);
+        set_parent_death_signal(SIGKILL);
+        free(current);
+
         goexecute = STAGE2;
         /* continue execution with Go runtime in main_linux.go */
         return;
@@ -1250,6 +1515,9 @@ __attribute__((constructor)) static void init(void) {
 
         verbosef("Spawn master process\n");
         sconfig->container.pid = process;
+
+        /* close container end of the communication socket */
+        close(master_socket[1]);
 
         /*
          * case where we joined a PID namespace already,
@@ -1262,9 +1530,6 @@ __attribute__((constructor)) static void init(void) {
             }
         }
 
-        /* close container end of the communication socket */
-        close(master_socket[1]);
-
         /*
          * go to /proc/<pid> to open mount namespace and set user mappings with relative paths,
          * before that we open current working directory to restore it later, we don't use
@@ -1274,7 +1539,6 @@ __attribute__((constructor)) static void init(void) {
         if ( cwdfd < 0 ) {
             fatalf("Failed to open current working directory: %s\n", strerror(errno));
         }
-        chdir_to_proc_pid(sconfig->container.pid);
 
         /* user namespace created, write user mappings */
         if ( userns == CREATE_NAMESPACE ) {
@@ -1288,8 +1552,10 @@ __attribute__((constructor)) static void init(void) {
                      * call.
                      */
                     priv_escalate(false);
+                    chdir_to_proc_pid(sconfig->container.pid);
                     setup_userns_mappings(&sconfig->container.privileges);
                 } else {
+                    chdir_to_proc_pid(sconfig->container.pid);
                     /* use newuidmap/newgidmap as fallback for hybrid workflow */
                     setup_userns_mappings_external(&sconfig->container);
                     /*
@@ -1301,9 +1567,12 @@ __attribute__((constructor)) static void init(void) {
                     }
                 }
             } else {
+                chdir_to_proc_pid(sconfig->container.pid);
                 setup_userns_mappings(&sconfig->container.privileges);
             }
             send_event(master_socket[0]);
+        } else {
+            chdir_to_proc_pid(sconfig->container.pid);
         }
 
         /* wait child finish namespaces initialization */
@@ -1314,10 +1583,47 @@ __attribute__((constructor)) static void init(void) {
 
         /* engine requested to propagate mount to container */
         if ( sconfig->starter.masterPropagateMount && userns != ENTER_NAMESPACE ) {
+            struct stat rootfs, newrootfs;
+
+            /* keep stat information for root filesystem comparison */
+            if ( stat("/", &rootfs) < 0 ) {
+                fatalf("Failed to get root directory information: %s", strerror(errno));
+            }
+
             /* join child shared mount namespace with relative path */
             if ( enter_namespace("ns/mnt", CLONE_NEWNS) < 0 ) {
                 fatalf("Failed to enter in shared mount namespace: %s\n", strerror(errno));
             }
+
+            /* take stat information after namespace join */
+            if ( stat("/", &newrootfs) < 0 ) {
+                fatalf("Failed to get root directory information: %s", strerror(errno));
+            }
+
+            /*
+             * we compare st_dev and st_ino to check if we are in the current root
+             * filesystem, on some systems the mount namespace join above could escape the
+             * current root filesystem when an init process (initrd, container or chrooted process)
+             * do a chroot instead of switch_root for the initrd case or didn't use
+             * pivot_root/mount MS_MOVE for the container solution case
+             */
+            if ( rootfs.st_dev != newrootfs.st_dev || rootfs.st_ino != newrootfs.st_ino ) {
+                struct statfs fs;
+
+                debugf("Root filesystem change detected, retrieving new root filesystem information\n");
+                if ( statfs("/", &fs) < 0 ) {
+                    fatalf("Failed to retrieve root filesystem information: %s", strerror(errno));
+                }
+
+                /* check if we are in the ram disk filesystem */
+                if ( newrootfs.st_ino == 2 && (fs.f_type == RAMFS_MAGIC || fs.f_type == TMPFS_MAGIC) ) {
+                    warningf("Initrd uses chroot instead of switch_root to setup the root filesystem\n");
+                } else {
+                    warningf("Running inside a weak chrooted environment, prefer pivot_root instead of chroot\n");
+                }
+                fatalf("Aborting as Singularity cannot run correctly without modifications to your environment\n");
+            }
+
             send_event(master_socket[0]);
         }
 
@@ -1333,18 +1639,19 @@ __attribute__((constructor)) static void init(void) {
                 priv_drop(true);
             }
             debugf("Wait stage 2 child process\n");
-            wait_child("stage 2", sconfig->container.pid, true);
+            release_memory(sconfig);
+            wait_child("stage 2", process, true);
         } else {
             /* close container end of rpc communication socket */
             close(rpc_socket[1]);
 
             /*
-             * container creation, keep saved uid to allow further privileges
-             * escalation from master process, because container network requires
-             * privileges
+             * container creation, just keep setuid/setgid capabilities for
+             * further privileges escalation and set UID/GID to the original
+             * user when using setuid workflow
              */
-            if ( sconfig->starter.isSuid  ) {
-                priv_drop(false);
+            if ( sconfig->starter.isSuid && geteuid() == 0 ) {
+                set_master_privileges();
             }
 
             goexecute = MASTER;
@@ -1352,5 +1659,10 @@ __attribute__((constructor)) static void init(void) {
             return;
         }
     }
-    fatalf("Failed to create container namespaces\n");
+    if ( clone_flags & CLONE_NEWPID != 0 && clone_flags & CLONE_NEWUSER == 0 ) {
+        fatalf("Failed to create container namespace: %s\n", nserror(errno, CLONE_NEWPID));
+    } else if ( clone_flags & CLONE_NEWUSER != 0 ) {
+        fatalf("Failed to create container namespace: %s\n", nserror(errno, CLONE_NEWUSER));
+    }
+    fatalf("Failed to create container process: %s\n", strerror(errno));
 }

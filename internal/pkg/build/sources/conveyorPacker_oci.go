@@ -1,4 +1,5 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020, Control Command Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -19,20 +20,22 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/containers/image/copy"
-	"github.com/containers/image/docker"
-	dockerarchive "github.com/containers/image/docker/archive"
-	dockerdaemon "github.com/containers/image/docker/daemon"
-	ociarchive "github.com/containers/image/oci/archive"
-	oci "github.com/containers/image/oci/layout"
-	"github.com/containers/image/signature"
-	"github.com/containers/image/types"
+	"github.com/containers/image/v5/copy"
+	"github.com/containers/image/v5/docker"
+	dockerarchive "github.com/containers/image/v5/docker/archive"
+	dockerdaemon "github.com/containers/image/v5/docker/daemon"
+	ociarchive "github.com/containers/image/v5/oci/archive"
+	ocilayout "github.com/containers/image/v5/oci/layout"
+	"github.com/containers/image/v5/signature"
+	"github.com/containers/image/v5/types"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
-	ociclient "github.com/sylabs/singularity/internal/pkg/client/oci"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/pkg/build/oci"
 	"github.com/sylabs/singularity/internal/pkg/util/shell"
-	buildTypes "github.com/sylabs/singularity/pkg/build/types"
 	sytypes "github.com/sylabs/singularity/pkg/build/types"
+	"github.com/sylabs/singularity/pkg/image"
+	"github.com/sylabs/singularity/pkg/syfs"
+	"github.com/sylabs/singularity/pkg/sylog"
+	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
 )
 
 // OCIConveyorPacker holds stuff that needs to be packed into the bundle
@@ -56,11 +59,21 @@ func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err er
 		return err
 	}
 
+	// DockerInsecureSkipTLSVerify is set only if --nohttps is specified to honor
+	// configuration from /etc/containers/registries.conf because DockerInsecureSkipTLSVerify
+	// can have three possible values true/false and undefined, so we left it as undefined instead
+	// of forcing it to false in order to delegate decision to /etc/containers/registries.conf:
+	// https://github.com/sylabs/singularity/issues/5172
 	cp.sysCtx = &types.SystemContext{
-		OCIInsecureSkipTLSVerify:    cp.b.Opts.NoHTTPS,
-		DockerInsecureSkipTLSVerify: types.NewOptionalBool(cp.b.Opts.NoHTTPS),
-		DockerAuthConfig:            cp.b.Opts.DockerAuthConfig,
-		OSChoice:                    "linux",
+		OCIInsecureSkipTLSVerify: cp.b.Opts.NoHTTPS,
+		DockerAuthConfig:         cp.b.Opts.DockerAuthConfig,
+		OSChoice:                 "linux",
+		AuthFilePath:             syfs.DockerConf(),
+		DockerRegistryUserAgent:  useragent.Value(),
+		BigFilesTemporaryDir:     b.TmpDir,
+	}
+	if cp.b.Opts.NoHTTPS {
+		cp.sysCtx.DockerInsecureSkipTLSVerify = types.NewOptionalBool(true)
 	}
 
 	// add registry and namespace to reference if specified
@@ -82,14 +95,14 @@ func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err er
 	case "docker-daemon":
 		cp.srcRef, err = dockerdaemon.ParseReference(ref)
 	case "oci":
-		cp.srcRef, err = oci.ParseReference(ref)
+		cp.srcRef, err = ocilayout.ParseReference(ref)
 	case "oci-archive":
 		if os.Geteuid() == 0 {
 			// As root, the direct oci-archive handling will work
 			cp.srcRef, err = ociarchive.ParseReference(ref)
 		} else {
 			// As non-root we need to do a dumb tar extraction first
-			tmpDir, err := ioutil.TempDir(cp.b.Opts.TmpDir, "temp-oci-")
+			tmpDir, err := ioutil.TempDir(b.TmpDir, "temp-oci-")
 			if err != nil {
 				return fmt.Errorf("could not create temporary oci directory: %v", err)
 			}
@@ -102,9 +115,9 @@ func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err er
 			}
 			// We may or may not have had a ':tag' in the source to handle
 			if len(refParts) == 2 {
-				cp.srcRef, err = oci.ParseReference(tmpDir + ":" + refParts[1])
+				cp.srcRef, err = ocilayout.ParseReference(tmpDir + ":" + refParts[1])
 			} else {
-				cp.srcRef, err = oci.ParseReference(tmpDir)
+				cp.srcRef, err = ocilayout.ParseReference(tmpDir)
 			}
 
 			if err != nil {
@@ -122,7 +135,7 @@ func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err er
 
 	if !cp.b.Opts.NoCache {
 		// Grab the modified source ref from the cache
-		cp.srcRef, err = ociclient.ConvertReference(ctx, b.Opts.ImgCache, cp.srcRef, cp.sysCtx)
+		cp.srcRef, err = oci.ConvertReference(ctx, b.Opts.ImgCache, cp.srcRef, cp.sysCtx)
 		if err != nil {
 			return err
 		}
@@ -130,7 +143,7 @@ func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err er
 
 	// To to do the RootFS extraction we also have to have a location that
 	// contains *only* this image
-	cp.tmpfsRef, err = oci.ParseReference(cp.b.TmpDir + ":" + "tmp")
+	cp.tmpfsRef, err = ocilayout.ParseReference(cp.b.TmpDir + ":" + "tmp")
 
 	err = cp.fetch(ctx)
 	if err != nil {
@@ -205,7 +218,7 @@ func (cp *OCIConveyorPacker) insertOCIConfig() error {
 		return err
 	}
 
-	cp.b.JSONObjects[buildTypes.OCIConfigJSON] = conf
+	cp.b.JSONObjects[image.SIFDescOCIConfigJSON] = conf
 	return nil
 }
 
@@ -403,12 +416,12 @@ func (cp *OCIConveyorPacker) insertEnv() (err error) {
 		export := ""
 		envParts := strings.SplitN(element, "=", 2)
 		if len(envParts) == 1 {
-			export = fmt.Sprintf("export %s=${%s:-}\n", envParts[0], envParts[0])
+			export = fmt.Sprintf("export %s=\"${%s:-}\"\n", envParts[0], envParts[0])
 		} else {
 			if envParts[0] == "PATH" {
 				export = fmt.Sprintf("export %s=%q\n", envParts[0], shell.Escape(envParts[1]))
 			} else {
-				export = fmt.Sprintf("export %s=${%s:-%q}\n", envParts[0], envParts[0], shell.Escape(envParts[1]))
+				export = fmt.Sprintf("export %s=\"${%s:-%q}\"\n", envParts[0], envParts[0], shell.Escape(envParts[1]))
 			}
 		}
 		_, err = f.WriteString(export)

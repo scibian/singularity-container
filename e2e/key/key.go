@@ -1,3 +1,4 @@
+// Copyright (c) 2020, Control Command Inc. All rights reserved.
 // Copyright (c) 2019, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
 )
 
 type ctx struct {
@@ -37,11 +39,12 @@ func (c *ctx) singularityKeyList(t *testing.T) {
 		name   string
 		args   []string
 		stdout string
+		exit   int
 	}{
 		{
 			name:   "key list help",
 			args:   []string{"list", "--help"},
-			stdout: "^List keys in your local keyring",
+			stdout: "^List keys in your local or in the global keyring",
 		},
 		{
 			name:   "key list",
@@ -53,6 +56,12 @@ func (c *ctx) singularityKeyList(t *testing.T) {
 			args:   []string{"list", "--secret"},
 			stdout: "^Private key listing",
 		},
+		{
+			name:   "key list global secret",
+			args:   []string{"list", "--global", "--secret"},
+			stdout: "^Private key listing",
+			exit:   255,
+		},
 	}
 
 	for _, tt := range tests {
@@ -62,7 +71,7 @@ func (c *ctx) singularityKeyList(t *testing.T) {
 			e2e.WithProfile(e2e.UserProfile),
 			e2e.WithCommand("key"),
 			e2e.WithArgs(tt.args...),
-			e2e.ExpectExit(0, e2e.ExpectOutput(e2e.RegexMatch, tt.stdout)),
+			e2e.ExpectExit(tt.exit, e2e.ExpectOutput(e2e.RegexMatch, tt.stdout)),
 		)
 	}
 }
@@ -247,7 +256,7 @@ func (c *ctx) singularityKeyImport(t *testing.T) {
 		{
 			name:       "import help",
 			args:       []string{"import", "--help"},
-			stdout:     "Import a local key into the local keyring",
+			stdout:     "Import a local key into the local or global keyring",
 			expectExit: 0,
 		},
 		{
@@ -393,7 +402,7 @@ func (c *ctx) singularityKeyRemove(t *testing.T) {
 			name:          "remove help",
 			cmdArgs:       []string{"--help"},
 			expectedExit:  0,
-			expectedRegex: `^Remove a local public key from your keyring`,
+			expectedRegex: `^Remove a local public key from your local or the global keyring`,
 		},
 	}
 	for _, tt := range tests {
@@ -482,6 +491,101 @@ func (c *ctx) checkKeyLength(t *testing.T, expectedKeyLength int) {
 	}
 }
 
+func (c *ctx) globalKeyring(t *testing.T) {
+	var keyMap = map[string]string{
+		"key1": "0C5B8C9A5FFC44E2A0AC79851CD6FA281D476DD1",
+		"key2": "78F8AD36B0DCB84B707F23853D608DAE21C8CA10",
+	}
+
+	tests := []struct {
+		name     string
+		command  string
+		args     []string
+		profile  e2e.Profile
+		resultOp []e2e.SingularityCmdResultOp
+		exit     int
+	}{
+		{
+			name:    "import pubkey1 global as user",
+			command: "key import",
+			profile: e2e.UserProfile,
+			args:    []string{"--global", "testdata/ecl-pgpkeys/pubkey1.asc"},
+			exit:    255,
+		},
+		{
+			name:    "import pubkey1 global",
+			command: "key import",
+			profile: e2e.RootProfile,
+			args:    []string{"--global", "testdata/ecl-pgpkeys/pubkey1.asc"},
+			exit:    0,
+		},
+		{
+			name:    "import pubkey2 global",
+			command: "key import",
+			profile: e2e.RootProfile,
+			args:    []string{"--global", "testdata/ecl-pgpkeys/pubkey2.asc"},
+			exit:    0,
+		},
+		{
+			name:    "list global",
+			command: "key list",
+			profile: e2e.UserProfile,
+			args:    []string{"--global"},
+			resultOp: []e2e.SingularityCmdResultOp{
+				e2e.ExpectOutput(e2e.ContainMatch, keyMap["key1"]),
+				e2e.ExpectOutput(e2e.ContainMatch, keyMap["key2"]),
+			},
+			exit: 0,
+		},
+		{
+			name:    "newpair with global flag",
+			command: "key newpair",
+			profile: e2e.RootProfile,
+			args:    []string{"--global"},
+			exit:    1,
+		},
+		{
+			name:    "search with global flag",
+			command: "key search",
+			profile: e2e.UserProfile,
+			args:    []string{"--global", "test"},
+			exit:    1,
+		},
+		{
+			name:    "remove unknown from global",
+			command: "key remove",
+			profile: e2e.RootProfile,
+			args:    []string{"--global", "0100000000000001"},
+			exit:    255,
+		},
+		{
+			name:    "remove pubkey1 from global",
+			command: "key remove",
+			profile: e2e.RootProfile,
+			args:    []string{"--global", keyMap["key1"]},
+			exit:    0,
+		},
+		{
+			name:    "remove pubkey2 from global",
+			command: "key remove",
+			profile: e2e.RootProfile,
+			args:    []string{"--global", keyMap["key2"]},
+			exit:    0,
+		},
+	}
+
+	for _, tt := range tests {
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(tt.profile),
+			e2e.WithCommand(tt.command),
+			e2e.WithArgs(tt.args...),
+			e2e.ExpectExit(tt.exit, tt.resultOp...),
+		)
+	}
+}
+
 // Run the 'key' tests in order
 func (c ctx) singularityKeyCmd(t *testing.T) {
 	c.singularityKeySearch(t)
@@ -498,7 +602,7 @@ func (c ctx) singularityKeyCmd(t *testing.T) {
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env:                    env,
 		publicExportPath:       filepath.Join(env.TestDir, "public_key.asc"),
@@ -507,10 +611,13 @@ func E2ETests(env e2e.TestEnv) func(*testing.T) {
 		privateExportASCIIPath: filepath.Join(env.TestDir, "private_ascii_key.asc"),
 		keyRing:                filepath.Join(env.TestDir, "sypgp-test-keyring"),
 	}
+	c.env.KeyringDir = c.keyRing
 
-	return func(t *testing.T) {
-		c.env.KeyringDir = c.keyRing
-		t.Run("keyCmd", c.singularityKeyCmd)                       // Run all the tests in order
-		t.Run("keyNewpairWithLen", c.singularityKeyNewpairWithLen) // We run a separate test for `key newpair --bit-length` because it requires handling a keyring a specific way
+	return testhelper.Tests{
+		"global": testhelper.NoParallel(c.globalKeyring), // global keyring
+		"ordered": func(t *testing.T) {
+			t.Run("keyCmd", c.singularityKeyCmd)                       // Run all the tests in order
+			t.Run("keyNewpairWithLen", c.singularityKeyNewpairWithLen) // We run a separate test for `key newpair --bit-length` because it requires handling a keyring a specific way
+		},
 	}
 }

@@ -1,8 +1,11 @@
 /*Package golden provides tools for comparing large mutli-line strings.
 
 Golden files are files in the ./testdata/ subdirectory of the package under test.
+Golden files can be automatically updated to match new values by running
+`go test pkgname -test.update-golden`. To ensure the update is correct
+compare the diff of the old expected value to the new expected value.
 */
-package golden // import "gotest.tools/golden"
+package golden // import "gotest.tools/v3/golden"
 
 import (
 	"bytes"
@@ -21,6 +24,24 @@ var flagUpdate = flag.Bool("test.update-golden", false, "update golden file")
 
 type helperT interface {
 	Helper()
+}
+
+// NormalizeCRLFToLF enables end-of-line normalization for actual values passed
+// to Assert and String, as well as the values saved to golden files with
+// -test.update-golden.
+//
+// Defaults to true. If you use the core.autocrlf=true git setting on windows
+// you will need to set this to false.
+//
+// The value may be set to false by setting GOTESTTOOLS_GOLDEN_NormalizeCRLFToLF=false
+// in the environment before running tests.
+//
+// The default value may change in a future major release.
+var NormalizeCRLFToLF = os.Getenv("GOTESTTOOLS_GOLDEN_NormalizeCRLFToLF") != "false"
+
+// FlagUpdate returns true when the -test.update-golden flag has been set.
+func FlagUpdate() bool {
+	return *flagUpdate
 }
 
 // Open opens the file in ./testdata
@@ -51,28 +72,19 @@ func Path(filename string) string {
 	return filepath.Join("testdata", filename)
 }
 
-func update(filename string, actual []byte, normalize normalize) error {
-	if *flagUpdate {
-		return ioutil.WriteFile(Path(filename), normalize(actual), 0644)
-	}
-	return nil
-}
-
-type normalize func([]byte) []byte
-
 func removeCarriageReturn(in []byte) []byte {
+	if !NormalizeCRLFToLF {
+		return in
+	}
 	return bytes.Replace(in, []byte("\r\n"), []byte("\n"), -1)
 }
 
-func exactBytes(in []byte) []byte {
-	return in
-}
-
-// Assert compares the actual content to the expected content in the golden file.
-// If the `-test.update-golden` flag is set then the actual content is written
+// Assert compares actual to the expected value in the golden file.
+//
+// Running `go test pkgname -test.update-golden` will write the value of actual
 // to the golden file.
-// Returns whether the assertion was successful (true) or not (false).
-// This is equivalent to assert.Check(t, String(actual, filename))
+//
+// This is equivalent to assert.Assert(t, String(actual, filename))
 func Assert(t assert.TestingT, actual string, filename string, msgAndArgs ...interface{}) {
 	if ht, ok := t.(helperT); ok {
 		ht.Helper()
@@ -82,7 +94,8 @@ func Assert(t assert.TestingT, actual string, filename string, msgAndArgs ...int
 
 // String compares actual to the contents of filename and returns success
 // if the strings are equal.
-// If the `-test.update-golden` flag is set then the actual content is written
+//
+// Running `go test pkgname -test.update-golden` will write the value of actual
 // to the golden file.
 //
 // Any \r\n substrings in actual are converted to a single \n character
@@ -92,7 +105,7 @@ func Assert(t assert.TestingT, actual string, filename string, msgAndArgs ...int
 func String(actual string, filename string) cmp.Comparison {
 	return func() cmp.Result {
 		actualBytes := removeCarriageReturn([]byte(actual))
-		result, expected := compare(actualBytes, filename, removeCarriageReturn)
+		result, expected := compare(actualBytes, filename)
 		if result != nil {
 			return result
 		}
@@ -102,15 +115,23 @@ func String(actual string, filename string) cmp.Comparison {
 			From: "expected",
 			To:   "actual",
 		})
-		return cmp.ResultFailure("\n" + diff)
+		return cmp.ResultFailure("\n" + diff + failurePostamble(filename))
 	}
 }
 
-// AssertBytes compares the actual result to the expected result in the golden
-// file. If the `-test.update-golden` flag is set then the actual content is
-// written to the golden file.
-// Returns whether the assertion was successful (true) or not (false).
-// This is equivalent to assert.Check(t, Bytes(actual, filename))
+func failurePostamble(filename string) string {
+	return fmt.Sprintf(`
+
+You can run 'go test . -test.update-golden' to automatically update %s to the new expected value.'
+`, Path(filename))
+}
+
+// AssertBytes compares actual to the expected value in the golden.
+//
+// Running `go test pkgname -test.update-golden` will write the value of actual
+// to the golden file.
+//
+// This is equivalent to assert.Assert(t, Bytes(actual, filename))
 func AssertBytes(
 	t assert.TestingT,
 	actual []byte,
@@ -125,21 +146,22 @@ func AssertBytes(
 
 // Bytes compares actual to the contents of filename and returns success
 // if the bytes are equal.
-// If the `-test.update-golden` flag is set then the actual content is written
+//
+// Running `go test pkgname -test.update-golden` will write the value of actual
 // to the golden file.
 func Bytes(actual []byte, filename string) cmp.Comparison {
 	return func() cmp.Result {
-		result, expected := compare(actual, filename, exactBytes)
+		result, expected := compare(actual, filename)
 		if result != nil {
 			return result
 		}
 		msg := fmt.Sprintf("%v (actual) != %v (expected)", actual, expected)
-		return cmp.ResultFailure(msg)
+		return cmp.ResultFailure(msg + failurePostamble(filename))
 	}
 }
 
-func compare(actual []byte, filename string, normalize normalize) (cmp.Result, []byte) {
-	if err := update(filename, actual, normalize); err != nil {
+func compare(actual []byte, filename string) (cmp.Result, []byte) {
+	if err := update(filename, actual); err != nil {
 		return cmp.ResultFromError(err), nil
 	}
 	expected, err := ioutil.ReadFile(Path(filename))
@@ -150,4 +172,16 @@ func compare(actual []byte, filename string, normalize normalize) (cmp.Result, [
 		return cmp.ResultSuccess, nil
 	}
 	return nil, expected
+}
+
+func update(filename string, actual []byte) error {
+	if dir := filepath.Dir(filename); dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+	if *flagUpdate {
+		return ioutil.WriteFile(Path(filename), actual, 0644)
+	}
+	return nil
 }

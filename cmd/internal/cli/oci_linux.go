@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,8 +11,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 var ociArgs singularity.OciArgs
@@ -131,42 +131,44 @@ var ociUpdateFromFileFlag = cmdline.Flag{
 }
 
 func init() {
-	cmdManager.RegisterCmd(OciCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciStartCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciCreateCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciRunCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciDeleteCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciKillCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciStateCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciAttachCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciExecCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciUpdateCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciPauseCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciResumeCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciMountCmd)
-	cmdManager.RegisterSubCmd(OciCmd, OciUmountCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterCmd(OciCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciStartCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciCreateCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciRunCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciDeleteCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciKillCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciStateCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciAttachCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciExecCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciUpdateCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciPauseCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciResumeCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciMountCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciUmountCmd)
 
-	cmdManager.SetCmdGroup("create_run", OciCreateCmd, OciRunCmd)
-	createRunCmd := cmdManager.GetCmdGroup("create_run")
+		cmdManager.SetCmdGroup("create_run", OciCreateCmd, OciRunCmd)
+		createRunCmd := cmdManager.GetCmdGroup("create_run")
 
-	cmdManager.RegisterFlagForCmd(&ociBundleFlag, createRunCmd...)
-	cmdManager.RegisterFlagForCmd(&ociSyncSocketFlag, createRunCmd...)
-	cmdManager.RegisterFlagForCmd(&ociLogPathFlag, createRunCmd...)
-	cmdManager.RegisterFlagForCmd(&ociLogFormatFlag, createRunCmd...)
-	cmdManager.RegisterFlagForCmd(&ociPidFileFlag, createRunCmd...)
-	cmdManager.RegisterFlagForCmd(&ociCreateEmptyProcessFlag, OciCreateCmd)
-	cmdManager.RegisterFlagForCmd(&ociKillForceFlag, OciKillCmd)
-	cmdManager.RegisterFlagForCmd(&ociKillSignalFlag, OciKillCmd)
-	cmdManager.RegisterFlagForCmd(&ociKillTimeoutFlag, OciKillCmd)
-	cmdManager.RegisterFlagForCmd(&ociUpdateFromFileFlag, OciUpdateCmd)
-	cmdManager.RegisterFlagForCmd(&ociSyncSocketFlag, OciStateCmd)
+		cmdManager.RegisterFlagForCmd(&ociBundleFlag, createRunCmd...)
+		cmdManager.RegisterFlagForCmd(&ociSyncSocketFlag, createRunCmd...)
+		cmdManager.RegisterFlagForCmd(&ociLogPathFlag, createRunCmd...)
+		cmdManager.RegisterFlagForCmd(&ociLogFormatFlag, createRunCmd...)
+		cmdManager.RegisterFlagForCmd(&ociPidFileFlag, createRunCmd...)
+		cmdManager.RegisterFlagForCmd(&ociCreateEmptyProcessFlag, OciCreateCmd)
+		cmdManager.RegisterFlagForCmd(&ociKillForceFlag, OciKillCmd)
+		cmdManager.RegisterFlagForCmd(&ociKillSignalFlag, OciKillCmd)
+		cmdManager.RegisterFlagForCmd(&ociKillTimeoutFlag, OciKillCmd)
+		cmdManager.RegisterFlagForCmd(&ociUpdateFromFileFlag, OciUpdateCmd)
+		cmdManager.RegisterFlagForCmd(&ociSyncSocketFlag, OciStateCmd)
+	})
 }
 
 // OciCreateCmd represents oci create command.
 var OciCreateCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciCreate(args[0], &ociArgs); err != nil {
 			sylog.Fatalf("%s", err)
@@ -182,7 +184,7 @@ var OciCreateCmd = &cobra.Command{
 var OciRunCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.TODO()
 
@@ -200,7 +202,7 @@ var OciRunCmd = &cobra.Command{
 var OciStartCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciStart(args[0]); err != nil {
 			sylog.Fatalf("%s", err)
@@ -216,7 +218,7 @@ var OciStartCmd = &cobra.Command{
 var OciDeleteCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.TODO()
 
@@ -234,7 +236,7 @@ var OciDeleteCmd = &cobra.Command{
 var OciKillCmd = &cobra.Command{
 	Args:                  cobra.MinimumNArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		timeout := int(ociArgs.KillTimeout)
 		killSignal := ""
@@ -260,7 +262,7 @@ var OciKillCmd = &cobra.Command{
 var OciStateCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciState(args[0], &ociArgs); err != nil {
 			sylog.Fatalf("%s", err)
@@ -276,7 +278,7 @@ var OciStateCmd = &cobra.Command{
 var OciAttachCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.TODO()
 
@@ -294,7 +296,7 @@ var OciAttachCmd = &cobra.Command{
 var OciExecCmd = &cobra.Command{
 	Args:                  cobra.MinimumNArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciExec(args[0], args[1:]); err != nil {
 			sylog.Fatalf("%s", err)
@@ -310,7 +312,7 @@ var OciExecCmd = &cobra.Command{
 var OciUpdateCmd = &cobra.Command{
 	Args:                  cobra.MinimumNArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciUpdate(args[0], &ociArgs); err != nil {
 			sylog.Fatalf("%s", err)
@@ -326,7 +328,7 @@ var OciUpdateCmd = &cobra.Command{
 var OciPauseCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciPauseResume(args[0], true); err != nil {
 			sylog.Fatalf("%s", err)
@@ -342,7 +344,7 @@ var OciPauseCmd = &cobra.Command{
 var OciResumeCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciPauseResume(args[0], false); err != nil {
 			sylog.Fatalf("%s", err)
@@ -358,7 +360,7 @@ var OciResumeCmd = &cobra.Command{
 var OciMountCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(2),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciMount(args[0], args[1]); err != nil {
 			sylog.Fatalf("%s", err)
@@ -374,7 +376,7 @@ var OciMountCmd = &cobra.Command{
 var OciUmountCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
-	PreRun:                EnsureRootPriv,
+	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciUmount(args[0]); err != nil {
 			sylog.Fatalf("%s", err)

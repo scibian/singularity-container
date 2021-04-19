@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -15,7 +15,7 @@ import (
 
 	imageSpecs "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/opencontainers/runtime-tools/generate"
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci/generate"
 
 	"github.com/sylabs/singularity/pkg/image"
 	"github.com/sylabs/singularity/pkg/ocibundle"
@@ -31,9 +31,9 @@ type sifBundle struct {
 
 func (s *sifBundle) writeConfig(img *image.Image, g *generate.Generator) error {
 	// check if SIF file contain an OCI image configuration
-	reader, err := image.NewSectionReader(img, "oci-config.json", -1)
+	reader, err := image.NewSectionReader(img, image.SIFDescOCIConfigJSON, -1)
 	if err != nil && err != image.ErrNoSection {
-		return fmt.Errorf("failed to read oci-config.json section: %s", err)
+		return fmt.Errorf("failed to read %s section: %s", image.SIFDescOCIConfigJSON, err)
 	} else if err == image.ErrNoSection {
 		return tools.SaveBundleConfig(s.bundlePath, g)
 	}
@@ -41,7 +41,7 @@ func (s *sifBundle) writeConfig(img *image.Image, g *generate.Generator) error {
 	var imgConfig imageSpecs.ImageConfig
 
 	if err := json.NewDecoder(reader).Decode(&imgConfig); err != nil {
-		return fmt.Errorf("failed to decode oci-config.json: %s", err)
+		return fmt.Errorf("failed to decode %s: %s", image.SIFDescOCIConfigJSON, err)
 	}
 
 	if len(g.Config.Process.Args) == 1 && g.Config.Process.Args[0] == tools.RunScript {
@@ -102,14 +102,17 @@ func (s *sifBundle) Create(ociConfig *specs.Spec) error {
 	if img.Type != image.SIF {
 		return fmt.Errorf("%s is not a SIF image", s.image)
 	}
-	if !img.HasRootFs() {
-		return fmt.Errorf("no root filesystem found in SIF %s", s.image)
+
+	part, err := img.GetRootFsPartition()
+	if err != nil {
+		return fmt.Errorf("while getting root filesystem in SIF %s: %s", s.image, err)
 	}
-	if img.Partitions[0].Type != image.SQUASHFS {
-		return fmt.Errorf("unsupported image fs type: %v", img.Partitions[0].Type)
+
+	if part.Type != image.SQUASHFS {
+		return fmt.Errorf("unsupported image fs type: %v", part.Type)
 	}
-	offset := img.Partitions[0].Offset
-	size := img.Partitions[0].Size
+	offset := part.Offset
+	size := part.Size
 
 	// generate OCI bundle directory and config
 	g, err := tools.GenerateBundleConfig(s.bundlePath, ociConfig)
@@ -118,11 +121,12 @@ func (s *sifBundle) Create(ociConfig *specs.Spec) error {
 	}
 
 	// associate SIF image with a block
-	loop, err := tools.CreateLoop(img.File, offset, size)
+	loop, loopCloser, err := tools.CreateLoop(img.File, offset, size)
 	if err != nil {
 		tools.DeleteBundle(s.bundlePath)
 		return fmt.Errorf("failed to find loop device: %s", err)
 	}
+	defer loopCloser.Close()
 
 	rootFs := tools.RootFs(s.bundlePath).Path()
 	if err := syscall.Mount(loop, rootFs, "squashfs", syscall.MS_RDONLY, ""); err != nil {

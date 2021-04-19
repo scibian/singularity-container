@@ -26,9 +26,11 @@ func TestScanDefinitionFile(t *testing.T) {
 		sections string
 	}{
 		{"Arch", "testdata_good/arch/arch", "testdata_good/arch/arch_sections.json"},
+		{"Apps", "testdata_good/apps/apps", "testdata_good/apps/apps_sections.json"},
 		{"BusyBox", "testdata_good/busybox/busybox", "testdata_good/busybox/busybox_sections.json"},
 		{"Debootstrap", "testdata_good/debootstrap/debootstrap", "testdata_good/debootstrap/debootstrap_sections.json"},
 		{"Docker", "testdata_good/docker/docker", "testdata_good/docker/docker_sections.json"},
+		{"Fingerprint", "testdata_good/fingerprint/fingerprint", "testdata_good/fingerprint/fingerprint_sections.json"},
 		{"LocalImage", "testdata_good/localimage/localimage", "testdata_good/localimage/localimage_sections.json"},
 		{"Scratch", "testdata_good/scratch/scratch", "testdata_good/scratch/scratch_sections.json"},
 		// TODO(mem): reenable this; disabled while shub is down
@@ -101,19 +103,20 @@ func TestParseTokenSection(t *testing.T) {
 
 	// Incorrect token; map not used
 	str := "test test1"
-	myerr := parseTokenSection(str, nil, nil)
+	myerr := parseTokenSection(str, nil, nil, nil)
 	if myerr == nil {
 		t.Fatal("test expected to fail but succeeded")
 	}
 
 	// Another incorrect token case; map not used
-	myerr = parseTokenSection("apptest\ntest", nil, nil)
+	myerr = parseTokenSection("apptest\ntest", nil, nil, nil)
 	if myerr == nil {
 		t.Fatal("test expected to fail but succeeded")
 	}
 
 	// Correct token
-	myerr = parseTokenSection("appenv apptest apptest2\ntest", testMap, nil)
+	appOrder := []string{}
+	myerr = parseTokenSection("appenv apptest apptest2\ntest", testMap, nil, &appOrder)
 	if myerr != nil {
 		t.Fatal("error while parsing sections")
 	}
@@ -167,9 +170,11 @@ func TestParseDefinitionFile(t *testing.T) {
 		jsonPath string
 	}{
 		{"Arch", "testdata_good/arch/arch", "testdata_good/arch/arch.json"},
+		{"Apps", "testdata_good/apps/apps", "testdata_good/apps/apps.json"},
 		{"BusyBox", "testdata_good/busybox/busybox", "testdata_good/busybox/busybox.json"},
 		{"Debootstrap", "testdata_good/debootstrap/debootstrap", "testdata_good/debootstrap/debootstrap.json"},
 		{"Docker", "testdata_good/docker/docker", "testdata_good/docker/docker.json"},
+		{"Fingerprint", "testdata_good/fingerprint/fingerprint", "testdata_good/fingerprint/fingerprint.json"},
 		{"LocalImage", "testdata_good/localimage/localimage", "testdata_good/localimage/localimage.json"},
 		{"Scratch", "testdata_good/scratch/scratch", "testdata_good/scratch/scratch.json"},
 		// TODO(mem): reenable this; disabled while shub is down
@@ -182,7 +187,8 @@ func TestParseDefinitionFile(t *testing.T) {
 		{"NoHeaderWhiteSpace", "testdata_good/noheaderwhitespace/noheaderwhitespace", "testdata_good/noheaderwhitespace/noheaderwhitespace.json"},
 		{"MultipleScripts", "testdata_good/multiplescripts/multiplescripts", "testdata_good/multiplescripts/multiplescripts.json"},
 		{"SectionArgs", "testdata_good/sectionargs/sectionargs", "testdata_good/sectionargs/sectionargs.json"},
-		{"MultipleFiless", "testdata_good/multiplefiles/multiplefiles", "testdata_good/multiplefiles/multiplefiles.json"},
+		{"MultipleFiles", "testdata_good/multiplefiles/multiplefiles", "testdata_good/multiplefiles/multiplefiles.json"},
+		{"QuotedFiles", "testdata_good/quotedfiles/quotedfiles", "testdata_good/quotedfiles/quotedfiles.json"},
 		{"Shebang", "testdata_good/shebang/shebang", "testdata_good/shebang/shebang.json"},
 	}
 
@@ -211,6 +217,10 @@ func TestParseDefinitionFile(t *testing.T) {
 			}
 
 			if !reflect.DeepEqual(defTest, defCorrect) {
+				b, _ := json.MarshalIndent(defCorrect, "", "  ")
+				t.Logf("Expected:\n%s", string(b))
+				b, _ = json.MarshalIndent(defTest, "", "  ")
+				t.Logf("Got:\n%s", string(b))
 				t.Fatal("parsed definition did not match reference")
 			}
 		}))
@@ -286,13 +296,14 @@ func TestPopulateDefinition(t *testing.T) {
 
 	emptyMap := make(map[string]*types.Script)
 	emptyFiles := []types.Files{}
+	emptyAppOrder := []string{}
 
 	//
 	// Test with invalid data
 	//
 	invalidData := new(types.Definition)
 	invalidData.Labels = make(map[string]string)
-	populateDefinition(emptyMap, &emptyFiles, invalidData)
+	populateDefinition(emptyMap, &emptyFiles, &emptyAppOrder, invalidData)
 
 	//
 	// Test with very specific maps
@@ -302,7 +313,7 @@ func TestPopulateDefinition(t *testing.T) {
 	myData := new(types.Definition)
 	myData.Labels = make(map[string]string)
 
-	myerr := populateDefinition(testMap, &testFiles, myData)
+	myerr := populateDefinition(testMap, &testFiles, &emptyAppOrder, myData)
 	if myerr != nil {
 		t.Fatal("Test failed while testing populateDefinition()")
 	}
