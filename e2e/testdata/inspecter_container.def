@@ -1,5 +1,5 @@
 bootstrap: library
-from: alpine:latest
+from: alpine:3.11.5
 
 %help
 This is a e2e test container used for testing the 'inspect'
@@ -13,6 +13,12 @@ E2E AWSOME
 hi "hello world"
 HI "HELLO WORLD"
 
+%post
+echo "export hello=\"world\"" >> $SINGULARITY_ENVIRONMENT
+# add labels from post section
+k=first; echo "$k.build.labels  $k" >> $SINGULARITY_LABELS
+k=second; echo "$k.build.labels $k" >> $SINGULARITY_LABELS
+
 %test
 ls /
 test -d /
@@ -25,8 +31,24 @@ export e2e="e2e testing"
 %runscript
 cat /.singularity.d/runscript.help
 
+%startscript
+exec "$@"
+
 %apprun hello
 echo "hello"
+
+%apphelp hello
+This is the help for hello!
+
+%applabels hello
+HELLOTHISIS hello
+
+%appenv hello
+HELLOTHISIS=hello
+export HELLOTHISIS
+
+%apptest hello
+echo "THIS IS A HELLO TEST"
 
 %apprun world
 echo "world"

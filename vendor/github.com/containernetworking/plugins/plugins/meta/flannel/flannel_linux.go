@@ -22,11 +22,55 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+
 	"github.com/containernetworking/cni/pkg/invoke"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
-	"os"
 )
+
+// Return IPAM section for Delegate using input IPAM if present and replacing
+// or complementing as needed.
+func getDelegateIPAM(n *NetConf, fenv *subnetEnv) (map[string]interface{}, error) {
+	ipam := n.IPAM
+	if ipam == nil {
+		ipam = map[string]interface{}{}
+	}
+
+	if !hasKey(ipam, "type") {
+		ipam["type"] = "host-local"
+	}
+
+	var rangesSlice [][]map[string]interface{}
+
+	if fenv.sn != nil && fenv.sn.String() != "" {
+		rangesSlice = append(rangesSlice, []map[string]interface{}{
+			{"subnet": fenv.sn.String()},
+		},
+		)
+	}
+	if fenv.ip6Sn != nil && fenv.ip6Sn.String() != "" {
+		rangesSlice = append(rangesSlice, []map[string]interface{}{
+			{"subnet": fenv.ip6Sn.String()},
+		},
+		)
+	}
+	ipam["ranges"] = rangesSlice
+
+	rtes, err := getIPAMRoutes(n)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read IPAM routes: %w", err)
+	}
+	if fenv.nw != nil {
+		rtes = append(rtes, types.Route{Dst: *fenv.nw})
+	}
+	if fenv.ip6Nw != nil {
+		rtes = append(rtes, types.Route{Dst: *fenv.ip6Nw})
+	}
+	ipam["routes"] = rtes
+
+	return ipam, nil
+}
 
 func doCmdAdd(args *skel.CmdArgs, n *NetConf, fenv *subnetEnv) error {
 	n.Delegate["name"] = n.Name
@@ -55,21 +99,17 @@ func doCmdAdd(args *skel.CmdArgs, n *NetConf, fenv *subnetEnv) error {
 		n.Delegate["cniVersion"] = n.CNIVersion
 	}
 
-	n.Delegate["ipam"] = map[string]interface{}{
-		"type":   "host-local",
-		"subnet": fenv.sn.String(),
-		"routes": []types.Route{
-			{
-				Dst: *fenv.nw,
-			},
-		},
+	ipam, err := getDelegateIPAM(n, fenv)
+	if err != nil {
+		return fmt.Errorf("failed to assemble Delegate IPAM: %w", err)
 	}
+	n.Delegate["ipam"] = ipam
 
 	return delegateAdd(args.ContainerID, n.DataDir, n.Delegate)
 }
 
-func doCmdDel(args *skel.CmdArgs, n *NetConf) error {
-	netconfBytes, err := consumeScratchNetConf(args.ContainerID, n.DataDir)
+func doCmdDel(args *skel.CmdArgs, n *NetConf) (err error) {
+	cleanup, netConfBytes, err := consumeScratchNetConf(args.ContainerID, n.DataDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Per spec should ignore error if resources are missing / already removed
@@ -78,10 +118,15 @@ func doCmdDel(args *skel.CmdArgs, n *NetConf) error {
 		return err
 	}
 
+	// cleanup will work when no error happens
+	defer func() {
+		cleanup(err)
+	}()
+
 	nc := &types.NetConf{}
-	if err = json.Unmarshal(netconfBytes, nc); err != nil {
+	if err = json.Unmarshal(netConfBytes, nc); err != nil {
 		return fmt.Errorf("failed to parse netconf: %v", err)
 	}
 
-	return invoke.DelegateDel(context.TODO(), nc.Type, netconfBytes, nil)
+	return invoke.DelegateDel(context.TODO(), nc.Type, netConfBytes, nil)
 }

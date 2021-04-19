@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the URIs of this project regarding your
 // rights to use or distribute this software.
@@ -16,11 +16,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/build/types"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 const name = "singularity_apps"
@@ -46,6 +47,8 @@ var (
 		sectionLabels:  true,
 	}
 )
+
+var reg = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 
 const (
 	globalEnv94Base = `## App Global Exports For: %[1]s
@@ -203,7 +206,12 @@ func (pl *BuildApp) HandleBundle(b *types.Bundle) {
 func (pl *BuildApp) createAllApps(b *types.Bundle) error {
 	globalEnv94 := ""
 
-	for name, app := range pl.Apps {
+	for _, name := range b.Recipe.AppOrder {
+		app, ok := pl.Apps[name]
+		if !ok {
+			return fmt.Errorf("No BuildApp record for app %s", name)
+		}
+
 		sylog.Debugf("Creating %s app in bundle", name)
 		if err := createAppRoot(b, app); err != nil {
 			return err
@@ -286,18 +294,20 @@ func writeEnvFile(b *types.Bundle, a *App) error {
 }
 
 func globalAppEnv(b *types.Bundle, a *App) string {
-	content := fmt.Sprintf(globalEnv94Base, a.Name)
+	name := reg.ReplaceAllString(a.Name, "_")
+
+	content := fmt.Sprintf(globalEnv94Base, name)
 
 	if _, err := os.Stat(filepath.Join(appMeta(b, a), "/env/90-environment.sh")); err == nil {
-		content += fmt.Sprintf(globalEnv94AppEnv, a.Name)
+		content += fmt.Sprintf(globalEnv94AppEnv, name)
 	}
 
 	if _, err := os.Stat(filepath.Join(appMeta(b, a), "/labels.json")); err == nil {
-		content += fmt.Sprintf(globalEnv94AppLabels, a.Name)
+		content += fmt.Sprintf(globalEnv94AppLabels, name)
 	}
 
 	if _, err := os.Stat(filepath.Join(appMeta(b, a), "/runscript")); err == nil {
-		content += fmt.Sprintf(globalEnv94AppRun, a.Name)
+		content += fmt.Sprintf(globalEnv94AppRun, name)
 	}
 
 	return content
@@ -433,15 +443,21 @@ func copy(src, dst string) error {
 }
 
 // HandlePost returns a script that should run after %post
-func (pl *BuildApp) HandlePost() string {
+func (pl *BuildApp) HandlePost(b *types.Bundle) (string, error) {
 	post := ""
-	for name, app := range pl.Apps {
+	for _, name := range b.Recipe.AppOrder {
+		sylog.Debugf("Fetching app[%s] post script section", name)
+		app, ok := pl.Apps[name]
+		if !ok {
+			return "", fmt.Errorf("No BuildApp record for app %s", name)
+		}
+
 		sylog.Debugf("Building app[%s] post script section", name)
 
 		post += buildPost(app)
 	}
 
-	return post
+	return post, nil
 }
 
 func buildPost(a *App) string {

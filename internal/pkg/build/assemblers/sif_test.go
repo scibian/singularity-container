@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the URIs of this project regarding your
 // rights to use or distribute this software.
@@ -14,7 +14,7 @@ import (
 
 	"github.com/sylabs/singularity/internal/pkg/build/assemblers"
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
-	"github.com/sylabs/singularity/internal/pkg/client/cache"
+	"github.com/sylabs/singularity/internal/pkg/cache"
 	testCache "github.com/sylabs/singularity/internal/pkg/test/tool/cache"
 	"github.com/sylabs/singularity/pkg/build/types"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
@@ -35,6 +35,10 @@ func TestMain(m *testing.M) {
 
 // TestSIFAssemblerDocker sees if we can build a SIF image from an image from a Docker registry
 func TestSIFAssemblerDocker(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	mksquashfsPath, err := exec.LookPath("mksquashfs")
 	if err != nil {
 		t.Fatalf("could not find mksquashfs: %v", err)
@@ -54,7 +58,7 @@ func TestSIFAssemblerDocker(t *testing.T) {
 	// set a clean image cache
 	imgCacheDir := testCache.MakeDir(t, "")
 	defer testCache.DeleteDir(t, imgCacheDir)
-	imgCache, err := cache.NewHandle(cache.Config{BaseDir: imgCacheDir})
+	imgCache, err := cache.New(cache.Config{ParentDir: imgCacheDir})
 	if err != nil {
 		t.Fatalf("failed to create an image cache handle: %s", err)
 	}
@@ -85,6 +89,10 @@ func TestSIFAssemblerDocker(t *testing.T) {
 
 // TestSIFAssemblerShub sees if we can build a SIF image from an image from a Singularity registry
 func TestSIFAssemblerShub(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	// TODO(mem): reenable this; disabled while shub is down
 	t.Skip("Skipping tests that access singularity hub")
 

@@ -57,6 +57,7 @@ fi
 
 with_network=1
 with_suid=1
+with_seccomp_check=1
 
 prefix=
 exec_prefix=
@@ -111,6 +112,7 @@ usage_args () {
 	echo "  Singularity options:"
 	echo "     --without-suid    do not install SUID binary (linux only)"
 	echo "     --without-network do not compile/install network plugins (linux only)"
+	echo "     --without-seccomp do not compile/install seccomp support even if available"
 	echo
 	echo "  Path modification options:"
 	echo "     --prefix         install project in \`prefix'"
@@ -361,6 +363,8 @@ while [ $# -ne 0 ]; do
    with_suid=0; shift;;
   --without-network)
    with_network=0; shift;;
+  --without-seccomp)
+   with_seccomp_check=0; shift;;
   -V)
    if ! echo "$2" | awk '/^-.*/ || /^$/ { exit 2 }'; then
      echo "error: option requires an argument: $1"
@@ -811,6 +815,11 @@ cat $makeit_interdir/all.mk >> $makeit_makefile
 drawline $makeit_fragsdir/build_cli.mk
 cat $makeit_fragsdir/build_cli.mk >> $makeit_makefile
 
+if [ "$with_network" = 1 ]; then
+    drawline $makeit_fragsdir/build_network.mk
+    cat $makeit_fragsdir/build_network.mk >> $makeit_makefile
+fi
+
 if [ "$build_runtime" = 1 ]; then
 	drawline $makeit_fragsdir/build_runtime.mk
 	cat $makeit_fragsdir/build_runtime.mk >> $makeit_makefile
@@ -819,11 +828,6 @@ fi
 if [ "$with_suid" = 1 ]; then
 	drawline $makeit_fragsdir/build_runtime_suid.mk
 	cat $makeit_fragsdir/build_runtime_suid.mk >> $makeit_makefile
-fi
-
-if [ "$with_network" = 1 ]; then
-	drawline $makeit_fragsdir/build_network.mk
-	cat $makeit_fragsdir/build_network.mk >> $makeit_makefile
 fi
 
 drawline $makeit_fragsdir/build_scripts.mk

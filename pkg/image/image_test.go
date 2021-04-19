@@ -144,7 +144,7 @@ func TestReader(t *testing.T) {
 			fn:       NewSectionReader,
 			fnCheck:  checkSection,
 			errCheck: ErrNoSection,
-			name:     "oci-config.json",
+			name:     SIFDescOCIConfigJSON,
 			index:    -1,
 		},
 	} {
@@ -165,7 +165,8 @@ func TestReader(t *testing.T) {
 		if img.Type != SIF {
 			t.Errorf("unexpected image format: %v", img.Type)
 		}
-		if !img.HasRootFs() {
+		_, err = img.GetRootFsPartition()
+		if err != nil {
 			t.Errorf("no root filesystem found")
 		}
 		// test without match criteria

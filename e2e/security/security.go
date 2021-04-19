@@ -6,12 +6,15 @@
 package security
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
+	"github.com/sylabs/singularity/pkg/util/capabilities"
 )
 
 type ctx struct {
@@ -107,6 +110,21 @@ func (c ctx) testSecurityUnpriv(t *testing.T) {
 
 // testSecurityPriv tests security flag fuctionality for singularity exec with elevated privileges
 func (c ctx) testSecurityPriv(t *testing.T) {
+	var caps uint64
+	var err error
+	// Get the capability set for root on this system
+	// e.g. "CapEff:	000001ffffffffff"
+	e2e.Privileged(func(t *testing.T) {
+		caps, err = capabilities.GetProcessEffective()
+	})(t)
+	if err != nil {
+		t.Fatalf("Could not get CapEff: %v", err)
+	}
+	fullCap := fmt.Sprintf("CapEff:\t%0.16x", caps)
+	// We are going to drop CAP_NET_RAW which should result in the CapEff
+	// string ending dfff
+	dropCap := fmt.Sprintf("CapEff:\t%0.16x", caps-uint64(1<<capabilities.Map["CAP_NET_RAW"].Value))
+
 	tests := []struct {
 		name       string
 		argv       []string
@@ -147,30 +165,16 @@ func (c ctx) testSecurityPriv(t *testing.T) {
 		},
 		// capabilities
 		{
-			// this might break if new capabilities are
-			// added
-			//
-			// TODO(mem): what we really want to test is
-			// that the set outside the container is the
-			// same set inside the container.
 			name:     "capabilities_keep",
 			argv:     []string{"grep", "^CapEff:", "/proc/self/status"},
 			opts:     []string{"--keep-privs"},
-			expectOp: e2e.ExpectOutput(e2e.RegexMatch, `CapEff:\s+0000003fffffffff\n`),
+			expectOp: e2e.ExpectOutput(e2e.ContainMatch, fullCap),
 		},
 		{
-			// this might break if new capabilities are
-			// added; cap_net_raw corresponds to the missing
-			// bit in CapEff.
-			//
-			// TODO(mem): what we really want to test is
-			// that the set outside the container is the
-			// same set inside the container, modulo
-			// cap_net_raw.
 			name:     "capabilities_drop",
 			argv:     []string{"grep", "^CapEff:", "/proc/self/status"},
 			opts:     []string{"--drop-caps", "CAP_NET_RAW"},
-			expectOp: e2e.ExpectOutput(e2e.RegexMatch, `CapEff:\s+0000003fffffdfff\n`),
+			expectOp: e2e.ExpectOutput(e2e.ContainMatch, dropCap),
 		},
 	}
 
@@ -230,14 +234,16 @@ func (c ctx) testSecurityConfOwnership(t *testing.T) {
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env: env,
 	}
 
-	return func(t *testing.T) {
-		t.Run("singularitySecurityUnpriv", c.testSecurityUnpriv)
-		t.Run("singularitySecurityPriv", c.testSecurityPriv)
-		t.Run("testSecurityConfOwnership", c.testSecurityConfOwnership)
+	np := testhelper.NoParallel
+
+	return testhelper.Tests{
+		"singularitySecurityUnpriv": c.testSecurityUnpriv,
+		"singularitySecurityPriv":   c.testSecurityPriv,
+		"testSecurityConfOwnership": np(c.testSecurityConfOwnership),
 	}
 }

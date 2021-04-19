@@ -13,6 +13,14 @@ import (
 	"syscall"
 
 	"github.com/sylabs/sif/pkg/sif"
+	"github.com/sylabs/singularity/internal/pkg/util/machine"
+)
+
+const (
+	//SIFDescOCIConfigJSON is the name of the SIF descriptor holding the OCI configuration.
+	SIFDescOCIConfigJSON = "oci-config.json"
+	// SIFDescInspectMetadataJSON is the name of the SIF descriptor holding the container metadata.
+	SIFDescInspectMetadataJSON = "inspect-metadata.json"
 )
 
 type sifFormat struct{}
@@ -37,6 +45,8 @@ func checkPartitionType(img *Image, fstype sif.Fstype, offset int64) (uint32, er
 		return EXT3, nil
 	case sif.FsEncryptedSquashfs:
 		return ENCRYPTSQUASHFS, nil
+	case sif.FsRaw:
+		return RAW, nil
 	}
 
 	return 0, fmt.Errorf("unknown filesystem type %v", fstype)
@@ -58,24 +68,6 @@ func (f *sifFormat) initializer(img *Image, fi os.FileInfo) error {
 	fimg, err := sif.LoadContainerFp(img.File, !img.Writable)
 	if err != nil {
 		return err
-	}
-
-	// Check the compatibility of the image's target architecture
-	// TODO: we should check if we need to deal with compatible architectures:
-	// For example, i386 can run on amd64 and maybe some ARM processor can run <= armv6 instructions
-	// on asasrch64 (someone should double check).
-	// TODO: The typically workflow is:
-	// 1. pull image from docker/library/shub (pull/build commands)
-	// 2. extract image file system to temp folder (build commands)
-	// 3. if definition file contains a 'executable' section, the architecture check should
-	// occur (or delegate to runtime which would fail during execution).
-	// The current code will be called by the starter which will cover most of the
-	// workflow described above. However, SIF is currently build upon the assumption
-	// that the architecture is assigned based on the architecture defined by a Go
-	// runtime, which is not 100% compliant with the intended workflow.
-	sifArch := string(fimg.Header.Arch[:sif.HdrArchLen-1])
-	if sifArch != sif.HdrArchUnknown && sifArch != sif.GetSIFArch(runtime.GOARCH) {
-		return fmt.Errorf("the image's architecture (%s) is incompatible with the host's (%s)", sif.GetGoArch(sifArch), runtime.GOARCH)
 	}
 
 	groupID := -1
@@ -108,12 +100,24 @@ func (f *sifFormat) initializer(img *Image, fi os.FileInfo) error {
 			return fmt.Errorf("while checking system partition header: %s", err)
 		}
 
+		// Check the compatibility of the image's target architecture, the
+		// CompatibleWith call will also check that the current machine
+		// has persistent emulation enabled in /proc/sys/fs/binfmt_misc to
+		// be able to execute container process correctly
+		sifArch := string(fimg.Header.Arch[:sif.HdrArchLen-1])
+		goArch := sif.GetGoArch(sifArch)
+		if sifArch != sif.HdrArchUnknown && !machine.CompatibleWith(goArch) {
+			return fmt.Errorf("the image's architecture (%s) could not run on the host's (%s)", goArch, runtime.GOARCH)
+		}
+
 		img.Partitions = []Section{
 			{
-				Offset: uint64(desc.Fileoff),
-				Size:   uint64(desc.Filelen),
-				Name:   RootFs,
-				Type:   htype,
+				Offset:       uint64(desc.Fileoff),
+				Size:         uint64(desc.Filelen),
+				ID:           desc.ID,
+				Name:         RootFs,
+				Type:         htype,
+				AllowedUsage: RootFsUsage,
 			},
 		}
 
@@ -130,9 +134,8 @@ func (f *sifFormat) initializer(img *Image, fi os.FileInfo) error {
 			if ptype != sif.PartData && ptype != sif.PartOverlay {
 				continue
 			}
-			// ignore overlay partitions not associated to root
-			// filesystem group ID
-			if ptype == sif.PartOverlay && groupID != int(desc.Groupid) {
+			// ignore overlay partitions not associated to root filesystem group ID if any
+			if ptype == sif.PartOverlay && groupID > 0 && groupID != int(desc.Groupid) {
 				continue
 			}
 			fstype, err := desc.GetFsType()
@@ -149,19 +152,32 @@ func (f *sifFormat) initializer(img *Image, fi os.FileInfo) error {
 				return fmt.Errorf("while checking data partition header: %s", err)
 			}
 
+			var usage Usage
+
+			if ptype == sif.PartOverlay {
+				usage = OverlayUsage
+			} else {
+				usage = DataUsage
+			}
+
 			partition := Section{
-				Offset: uint64(desc.Fileoff),
-				Size:   uint64(desc.Filelen),
-				Name:   desc.GetName(),
-				Type:   htype,
+				Offset:       uint64(desc.Fileoff),
+				Size:         uint64(desc.Filelen),
+				ID:           desc.ID,
+				Name:         desc.GetName(),
+				Type:         htype,
+				AllowedUsage: usage,
 			}
 			img.Partitions = append(img.Partitions, partition)
+			img.Usage |= usage
 		} else if desc.Datatype != 0 {
 			data := Section{
-				Offset: uint64(desc.Fileoff),
-				Size:   uint64(desc.Filelen),
-				Type:   uint32(desc.Datatype),
-				Name:   desc.GetName(),
+				Offset:       uint64(desc.Fileoff),
+				Size:         uint64(desc.Filelen),
+				ID:           desc.ID,
+				Type:         uint32(desc.Datatype),
+				Name:         desc.GetName(),
+				AllowedUsage: DataUsage,
 			}
 			img.Sections = append(img.Sections, data)
 		}
@@ -185,4 +201,16 @@ func (f *sifFormat) openMode(writable bool) int {
 		return os.O_RDWR
 	}
 	return os.O_RDONLY
+}
+
+func (f *sifFormat) lock(img *Image) error {
+	for _, part := range img.Partitions {
+		if part.Type != EXT3 {
+			continue
+		}
+		if err := lockSection(img, part); err != nil {
+			return fmt.Errorf("while locking ext3 partition from %s: %s", img.Path, err)
+		}
+	}
+	return nil
 }

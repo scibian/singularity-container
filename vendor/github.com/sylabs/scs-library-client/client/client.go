@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-log/log"
 )
@@ -58,6 +59,14 @@ func NewClient(cfg *Config) (*Client, error) {
 	if cfg.BaseURL != "" {
 		bu = cfg.BaseURL
 	}
+
+	// If baseURL has a path component, ensure it is terminated with a separator, to prevent
+	// url.ResolveReference from stripping the final component of the path when constructing
+	// request URL.
+	if !strings.HasSuffix(bu, "/") {
+		bu += "/"
+	}
+
 	baseURL, err := url.Parse(bu)
 	if err != nil {
 		return nil, err
@@ -88,7 +97,8 @@ func NewClient(cfg *Config) (*Client, error) {
 	return c, nil
 }
 
-// newRequest initializes HTTP request and sets up headers based on configuration
+// newRequest returns a new Request given a method, path (relative or
+// absolute), rawQuery, and (optional) body.
 func (c *Client) newRequest(method, path, rawQuery string, body io.Reader) (*http.Request, error) {
 	u := c.BaseURL.ResolveReference(&url.URL{
 		Path:     path,

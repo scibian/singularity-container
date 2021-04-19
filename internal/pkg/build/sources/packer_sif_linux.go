@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/image"
 	"github.com/sylabs/singularity/pkg/image/unpacker"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 // Pack puts relevant objects in a Bundle.
@@ -31,11 +31,12 @@ func (p *SIFPacker) Pack(context.Context) (*types.Bundle, error) {
 // in the sandbox. First pass just assumes a single system partition,
 // later passes will handle more complex sif files.
 func unpackSIF(b *types.Bundle, img *image.Image) (err error) {
-	if !img.HasRootFs() {
-		return fmt.Errorf("no root filesystem found in %s", img.Name)
+	part, err := img.GetRootFsPartition()
+	if err != nil {
+		return fmt.Errorf("while getting root filesystem in %s: %s", img.Name, err)
 	}
 
-	switch img.Partitions[0].Type {
+	switch part.Type {
 	case image.SQUASHFS:
 		// create a reader for rootfs partition
 		reader, err := image.NewPartitionReader(img, "", 0)
@@ -60,9 +61,9 @@ func unpackSIF(b *types.Bundle, img *image.Image) (err error) {
 		return fmt.Errorf("unrecognized partition format")
 	}
 
-	ociReader, err := image.NewSectionReader(img, "oci-config.json", -1)
+	ociReader, err := image.NewSectionReader(img, image.SIFDescOCIConfigJSON, -1)
 	if err == image.ErrNoSection {
-		sylog.Debugf("No oci-config.json section found")
+		sylog.Debugf("No %s section found", image.SIFDescOCIConfigJSON)
 	} else if err != nil {
 		return fmt.Errorf("could not get OCI config section reader: %v", err)
 	} else {
@@ -70,7 +71,7 @@ func unpackSIF(b *types.Bundle, img *image.Image) (err error) {
 		if err != nil {
 			return fmt.Errorf("could not read OCI config: %v", err)
 		}
-		b.JSONObjects[types.OCIConfigJSON] = ociConfig
+		b.JSONObjects[image.SIFDescOCIConfigJSON] = ociConfig
 	}
 	return nil
 }

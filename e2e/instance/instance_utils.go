@@ -12,6 +12,7 @@ import (
 	"net"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 )
@@ -63,6 +64,8 @@ func (c *ctx) stopInstance(t *testing.T, instance string, stopArgs ...string) (s
 		e2e.ExpectExit(0, e2e.GetStreams(&stdout, &stderr)),
 	)
 
+	c.expectInstance(t, instance, 0)
+
 	return
 }
 
@@ -84,29 +87,24 @@ func (c *ctx) execInstance(t *testing.T, instance string, execArgs ...string) (s
 	return
 }
 
-// Return the number of currently running instances.
-func (c *ctx) expectedNumberOfInstances(t *testing.T, n int) {
-	nbInstances := -1
-
+// Check if there is the number of expected instances with the provided name.
+func (c *ctx) expectInstance(t *testing.T, name string, nb int) {
 	listInstancesFn := func(t *testing.T, r *e2e.SingularityCmdResult) {
 		var instances instanceList
 
 		if err := json.Unmarshal([]byte(r.Stdout), &instances); err != nil {
 			t.Errorf("Error while decoding JSON from 'instance list': %v", err)
 		}
-		nbInstances = len(instances.Instances)
+		if nb != len(instances.Instances) {
+			t.Errorf("%d instance %q found, expected %d", len(instances.Instances), name, nb)
+		}
 	}
 
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(c.profile),
 		e2e.WithCommand("instance list"),
-		e2e.WithArgs([]string{"--json"}...),
-		e2e.PostRun(func(t *testing.T) {
-			if !t.Failed() && n != nbInstances {
-				t.Errorf("%d instance(s) are running, was expecting %d", nbInstances, n)
-			}
-		}),
+		e2e.WithArgs([]string{"--json", name}...),
 		e2e.ExpectExit(0, listInstancesFn),
 	)
 }
@@ -116,16 +114,24 @@ func (c *ctx) expectedNumberOfInstances(t *testing.T, n int) {
 func echo(t *testing.T, port int) {
 	const message = "b40cbeaaea293f7e8bd40fb61f389cfca9823467\n"
 
-	sock, sockErr := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
-	if sockErr != nil {
-		t.Errorf("Failed to dial echo server: %v", sockErr)
-		return
-	}
+	// give it some time for responding, attempt 10 times by
+	// waiting 100 millisecond between each try
+	for retries := 0; ; retries++ {
+		sock, sockErr := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if sockErr != nil && retries < 10 {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		} else if sockErr != nil {
+			t.Errorf("Failed to dial echo server: %v", sockErr)
+			return
+		}
 
-	fmt.Fprintf(sock, message)
+		fmt.Fprintf(sock, message)
 
-	response, responseErr := bufio.NewReader(sock).ReadString('\n')
-	if responseErr != nil || response != message {
-		t.Errorf("Bad response: err = %v, response = %v", responseErr, response)
+		response, responseErr := bufio.NewReader(sock).ReadString('\n')
+		if responseErr != nil || response != message {
+			t.Errorf("Bad response: err = %v, response = %v", responseErr, response)
+		}
+		break
 	}
 }

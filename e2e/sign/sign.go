@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
 )
 
 type ctx struct {
@@ -33,7 +34,7 @@ func (c ctx) singularitySignHelpOption(t *testing.T) {
 		e2e.WithArgs("--help"),
 		e2e.ExpectExit(
 			0,
-			e2e.ExpectOutput(e2e.ContainMatch, "Attach a cryptographic signature to an image"),
+			e2e.ExpectOutput(e2e.ContainMatch, "Attach digital signature(s) to an image"),
 		),
 	)
 }
@@ -45,7 +46,8 @@ func (c *ctx) prepareImage(t *testing.T) (string, func(*testing.T)) {
 		t.Fatalf("failed to create temporary directory: %s", err)
 	}
 	imgPath := filepath.Join(tempDir, imgName)
-	e2e.PullImage(t, c.env, imgURL, imgPath)
+	// We should be able to pull an image and sign it on other archs
+	e2e.PullImage(t, c.env, imgURL, "amd64", imgPath)
 
 	return filepath.Join(tempDir, "testImage.sif"), func(t *testing.T) {
 		err := os.RemoveAll(tempDir)
@@ -74,7 +76,7 @@ func (c ctx) singularitySignIDOption(t *testing.T) {
 		{
 			name:       "sign non-exsistent ID",
 			args:       []string{"--sif-id", "5", imgPath},
-			expectOp:   e2e.ExpectError(e2e.ContainMatch, "no descriptor found for id 5"),
+			expectOp:   e2e.ExpectError(e2e.ContainMatch, "integrity: object not found"),
 			expectExit: 255,
 		},
 	}
@@ -147,14 +149,14 @@ func (c ctx) singularitySignGroupIDOption(t *testing.T) {
 	}{
 		{
 			name:       "groupID 0",
-			args:       []string{"--groupid", "1", imgPath},
+			args:       []string{"--group-id", "1", imgPath},
 			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, "Signature created and applied to "+imgPath),
 			expectExit: 0,
 		},
 		{
 			name:       "groupID 5",
-			args:       []string{"--groupid", "5", imgPath},
-			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, "no descriptors found for groupid 5"),
+			args:       []string{"--group-id", "5", imgPath},
+			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, "integrity: group not found"),
 			expectExit: 255,
 		},
 	}
@@ -217,45 +219,47 @@ func (c *ctx) generateKeypair(t *testing.T) {
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env: env,
 	}
 
-	return func(t *testing.T) {
-		var err error
-		// To speed up the tests, we use a common image cache (we pull the same image several times)
-		c.imgCache, err = ioutil.TempDir("", "e2e-sign-imgcache-")
-		if err != nil {
-			t.Fatalf("failed to create temporary directory: %s", err)
-		}
-		defer func() {
-			err := os.RemoveAll(c.imgCache)
+	return testhelper.Tests{
+		"ordered": func(t *testing.T) {
+			var err error
+			// To speed up the tests, we use a common image cache (we pull the same image several times)
+			c.imgCache, err = ioutil.TempDir("", "e2e-sign-imgcache-")
 			if err != nil {
-				t.Fatalf("failed to delete temporary cache: %s", err)
+				t.Fatalf("failed to create temporary directory: %s", err)
 			}
-		}()
+			defer func() {
+				err := os.RemoveAll(c.imgCache)
+				if err != nil {
+					t.Fatalf("failed to delete temporary cache: %s", err)
+				}
+			}()
 
-		// We need one single key pair in a single keyring for all the tests
-		c.keyringDir, err = ioutil.TempDir("", "e2e-sign-keyring-")
-		if err != nil {
-			t.Fatalf("failed to create temporary directory: %s", err)
-		}
-		defer func() {
-			err := os.RemoveAll(c.keyringDir)
+			// We need one single key pair in a single keyring for all the tests
+			c.keyringDir, err = ioutil.TempDir("", "e2e-sign-keyring-")
 			if err != nil {
-				t.Fatalf("failed to delete temporary directory: %s", err)
+				t.Fatalf("failed to create temporary directory: %s", err)
 			}
-		}()
-		c.generateKeypair(t)
+			defer func() {
+				err := os.RemoveAll(c.keyringDir)
+				if err != nil {
+					t.Fatalf("failed to delete temporary directory: %s", err)
+				}
+			}()
+			c.generateKeypair(t)
 
-		c.passphraseInput = []e2e.SingularityConsoleOp{
-			e2e.ConsoleSendLine("passphrase"),
-		}
-		t.Run("singularitySignAllOption", c.singularitySignAllOption)
-		t.Run("singularitySignHelpOption", c.singularitySignHelpOption)
-		t.Run("singularitySignIDOption", c.singularitySignIDOption)
-		t.Run("singularitySignGroupIDOption", c.singularitySignGroupIDOption)
-		t.Run("singularitySignKeyidxOption", c.singularitySignKeyidxOption)
+			c.passphraseInput = []e2e.SingularityConsoleOp{
+				e2e.ConsoleSendLine("passphrase"),
+			}
+			t.Run("singularitySignAllOption", c.singularitySignAllOption)
+			t.Run("singularitySignHelpOption", c.singularitySignHelpOption)
+			t.Run("singularitySignIDOption", c.singularitySignIDOption)
+			t.Run("singularitySignGroupIDOption", c.singularitySignGroupIDOption)
+			t.Run("singularitySignKeyidxOption", c.singularitySignKeyidxOption)
+		},
 	}
 }

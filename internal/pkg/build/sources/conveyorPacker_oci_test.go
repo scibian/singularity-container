@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
-	"github.com/sylabs/singularity/internal/pkg/client/cache"
+	"github.com/sylabs/singularity/internal/pkg/cache"
 	testCache "github.com/sylabs/singularity/internal/pkg/test/tool/cache"
 	"github.com/sylabs/singularity/pkg/build/types"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 
 func setupCache(t *testing.T) (*cache.Handle, func()) {
 	dir := testCache.MakeDir(t, "")
-	h, err := cache.NewHandle(cache.Config{BaseDir: dir})
+	h, err := cache.New(cache.Config{ParentDir: dir})
 	if err != nil {
 		testCache.DeleteDir(t, dir)
 		t.Fatalf("failed to create an image cache handle: %s", err)
@@ -120,6 +120,10 @@ func TestOCIConveyorDockerArchive(t *testing.T) {
 // TestOCIConveyerDockerDaemon tests if we can use an oci laytout dir
 // as a source
 func TestOCIConveyorDockerDaemon(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	cmd := exec.Command("docker", "ps")
 	err := cmd.Run()
 	if err != nil {
@@ -245,6 +249,10 @@ func TestOCIConveyorOCILayout(t *testing.T) {
 
 // TestOCIPacker checks if we can create a Kitchen
 func TestOCIPacker(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	b, err := types.NewBundle(filepath.Join(os.TempDir(), "sbuild-oci"), os.TempDir())
 	if err != nil {
 		return

@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -23,21 +23,22 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sylabs/singularity/internal/pkg/client/cache"
+	"github.com/sylabs/singularity/internal/pkg/cache"
 	"github.com/sylabs/singularity/internal/pkg/test"
 	testCache "github.com/sylabs/singularity/internal/pkg/test/tool/cache"
+	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
 )
 
 var testFileContent = "Test file content\n"
 
-func setupCache(t *testing.T) (*cache.Handle, func()) {
+func setupCache(t *testing.T) (string, func()) {
 	dir := testCache.MakeDir(t, "")
-	h, err := cache.NewHandle(cache.Config{BaseDir: dir})
+	_, err := cache.New(cache.Config{ParentDir: dir})
 	if err != nil {
 		testCache.DeleteDir(t, dir)
 		t.Fatalf("failed to create an image cache handle: %s", err)
 	}
-	return h, func() {
+	return dir, func() {
 		testCache.DeleteDir(t, dir)
 	}
 }
@@ -129,7 +130,7 @@ type buildOpts struct {
 	env     []string
 }
 
-func imageBuild(imgCache *cache.Handle, opts buildOpts, imagePath, buildSpec string) ([]byte, error) {
+func imageBuild(cacheDir string, opts buildOpts, imagePath, buildSpec string) ([]byte, error) {
 	var argv []string
 	argv = append(argv, "build")
 	if opts.force {
@@ -140,7 +141,7 @@ func imageBuild(imgCache *cache.Handle, opts buildOpts, imagePath, buildSpec str
 	}
 	argv = append(argv, imagePath, buildSpec)
 
-	cacheEnvStr := cache.DirEnv + "=" + imgCache.GetBasedir()
+	cacheEnvStr := cache.DirEnv + "=" + cacheDir
 
 	cmd := exec.Command(cmdPath, argv...)
 	cmd.Env = append(opts.env, cacheEnvStr)
@@ -151,19 +152,24 @@ func imageBuild(imgCache *cache.Handle, opts buildOpts, imagePath, buildSpec str
 
 func TestBuild(t *testing.T) {
 	tests := []struct {
-		name       string
-		dependency string
-		buildSpec  string
-		sandbox    bool
+		name        string
+		dependency  string
+		buildSpec   string
+		sandbox     bool
+		requireArch string
 	}{
 		{
 			name:      "BusyBox",
 			buildSpec: "../../examples/busybox/Singularity",
+			// TODO: example has arch hard coded in download URL
+			requireArch: "amd64",
 		},
 		{
 			name:      "BusyBoxSandbox",
 			buildSpec: "../../examples/busybox/Singularity",
 			sandbox:   true,
+			// TODO: example has arch hard coded in download URL
+			requireArch: "amd64",
 		},
 		{
 			name:       "Debootstrap",
@@ -191,6 +197,8 @@ func TestBuild(t *testing.T) {
 			dependency: "yum",
 			buildSpec:  "../../examples/centos/Singularity",
 			sandbox:    true,
+			// TODO: CentOS non-amd64 ports are on a different mirror location
+			requireArch: "amd64",
 		},
 		{
 			name:       "Zypper",
@@ -205,6 +213,8 @@ func TestBuild(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, test.WithPrivilege(func(t *testing.T) {
+			require.Arch(t, tt.requireArch)
+
 			if tt.dependency != "" {
 				if _, err := exec.LookPath(tt.dependency); err != nil {
 					t.Skipf("%v not found in path", tt.dependency)
@@ -212,7 +222,7 @@ func TestBuild(t *testing.T) {
 			}
 
 			// Set a clean image cache for every test
-			imgCache, cleanup := setupCache(t)
+			cacheDir, cleanup := setupCache(t)
 			defer cleanup()
 
 			opts := buildOpts{
@@ -222,7 +232,7 @@ func TestBuild(t *testing.T) {
 			imagePath := path.Join(testDir, "container")
 			defer os.RemoveAll(imagePath)
 
-			if b, err := imageBuild(imgCache, opts, imagePath, tt.buildSpec); err != nil {
+			if b, err := imageBuild(cacheDir, opts, imagePath, tt.buildSpec); err != nil {
 				t.Log(string(b))
 				t.Fatalf("unexpected failure: %v", err)
 			}
@@ -265,20 +275,20 @@ func TestMultipleBuilds(t *testing.T) {
 		steps []testSpec
 	}{
 		{"SIFToSIF", []testSpec{
-			{"BusyBox", imagePath1, "../../examples/busybox/Singularity", false, false, false},
+			{"BusyBox", imagePath1, "library://busybox:1.31.1", false, false, false},
 			{"SIF", imagePath2, imagePath1, false, false, false},
 		}},
 		{"SandboxToSIF", []testSpec{
-			{"BusyBoxSandbox", imagePath1, "../../examples/busybox/Singularity", false, true, false},
+			{"BusyBoxSandbox", imagePath1, "library://busybox:1.31.1", false, true, false},
 			{"SIF", imagePath2, imagePath1, false, false, false},
 		}},
 		{"LocalImage", []testSpec{
-			{"BusyBox", imagePath1, "../../examples/busybox/Singularity", false, false, false},
+			{"BusyBox", imagePath1, "library://busybox:1.31.1", false, false, false},
 			{"LocalImage", imagePath2, liDefFile, false, false, false},
 			{"LocalImageLabel", imagePath3, liLabelDefFile, false, false, true},
 		}},
 		{"LocalImageSandbox", []testSpec{
-			{"BusyBoxSandbox", imagePath2, "../../examples/busybox/Singularity", true, true, false},
+			{"BusyBoxSandbox", imagePath2, "library://busybox:1.31.1", true, true, false},
 			{"LocalImageLabel", imagePath3, liLabelDefFile, false, false, true},
 		}},
 	}
@@ -297,10 +307,10 @@ func TestMultipleBuilds(t *testing.T) {
 					}
 
 					// Set a clean image cache for every tests
-					imgCache, cleanup := setupCache(t)
+					cacheDir, cleanup := setupCache(t)
 					defer cleanup()
 
-					if b, err := imageBuild(imgCache, opts, ts.imagePath, ts.buildSpec); err != nil {
+					if b, err := imageBuild(cacheDir, opts, ts.imagePath, ts.buildSpec); err != nil {
 						t.Log(string(b))
 						t.Fatalf("unexpected failure: %v", err)
 					}
@@ -315,13 +325,13 @@ func TestBadPath(t *testing.T) {
 	test.EnsurePrivilege(t)
 
 	// Set a clean image cache
-	imgCache, cleanup := setupCache(t)
+	cacheDir, cleanup := setupCache(t)
 	defer cleanup()
 
 	imagePath := path.Join(testDir, "container")
 	defer os.RemoveAll(imagePath)
 
-	if b, err := imageBuild(imgCache, buildOpts{}, imagePath, "/some/dumb/path"); err == nil {
+	if b, err := imageBuild(cacheDir, buildOpts{}, imagePath, "/some/dumb/path"); err == nil {
 		t.Log(string(b))
 		t.Fatal("unexpected success")
 	}
@@ -534,10 +544,10 @@ func TestMultiStageDefinition(t *testing.T) {
 			defer os.RemoveAll(imagePath)
 
 			// Set a clean image cache for every test
-			imgCache, cleanup := setupCache(t)
+			cacheDir, cleanup := setupCache(t)
 			defer cleanup()
 
-			if b, err := imageBuild(imgCache, opts, imagePath, defFile); err != nil {
+			if b, err := imageBuild(cacheDir, opts, imagePath, defFile); err != nil {
 				t.Log(string(b))
 				t.Fatalf("unexpected failure: %v", err)
 			}
@@ -828,7 +838,7 @@ func TestBuildDefinition(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, test.WithPrivilege(func(t *testing.T) {
 			// Set a clean image cache for every test
-			imgCache, cleanup := setupCache(t)
+			cacheDir, cleanup := setupCache(t)
 			defer cleanup()
 
 			defFile := prepareDefFile(tt.dfd)
@@ -841,7 +851,7 @@ func TestBuildDefinition(t *testing.T) {
 			imagePath := path.Join(testDir, "container")
 			defer os.RemoveAll(imagePath)
 
-			if b, err := imageBuild(imgCache, opts, imagePath, defFile); err != nil {
+			if b, err := imageBuild(cacheDir, opts, imagePath, defFile); err != nil {
 				t.Log(string(b))
 				t.Fatalf("unexpected failure: %v", err)
 			}

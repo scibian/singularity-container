@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -16,8 +16,8 @@ import (
 	"syscall"
 
 	uuid "github.com/satori/go.uuid"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/bin"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/fs/lock"
 	"github.com/sylabs/singularity/pkg/util/loop"
 )
@@ -29,7 +29,7 @@ type Device struct{}
 var (
 	// ErrUnsupportedCryptsetupVersion is the error raised when the available version
 	// of cryptsetup is not compatible with the Singularity encryption mechanism.
-	ErrUnsupportedCryptsetupVersion = errors.New("available cryptsetup is not supported")
+	ErrUnsupportedCryptsetupVersion = errors.New("installed version of cryptsetup is not supported, >=2.0.0 required")
 
 	// ErrInvalidPassphrase raised when the passed key is not valid to open requested
 	// encrypted device.
@@ -40,7 +40,7 @@ var (
 // device and sets the sizelimit on it
 func createLoop(path string, offset, size uint64) (string, error) {
 	loopDev := &loop.Device{
-		MaxLoopDevices: 256,
+		MaxLoopDevices: loop.GetMaxLoopDevices(),
 		Shared:         true,
 		Info: &loop.Info64{
 			SizeLimit: size,

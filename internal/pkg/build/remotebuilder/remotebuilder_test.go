@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -39,7 +39,7 @@ func TestBuild(t *testing.T) {
 	// Loop over test cases
 	for _, tt := range tests {
 		t.Run(tt.description, test.WithoutPrivilege(func(t *testing.T) {
-			_, err := New("", "", types.Definition{}, false, false, tt.builderAddr, "", runtime.GOARCH)
+			_, err := New("", "", types.Definition{}, false, false, tt.builderAddr, "", runtime.GOARCH, "")
 			if tt.expectSuccess {
 				// Ensure the handler returned no error, and the response is as expected
 				if err != nil {

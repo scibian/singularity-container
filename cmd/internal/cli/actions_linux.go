@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -16,56 +16,67 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/instance"
 	"github.com/sylabs/singularity/internal/pkg/plugin"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci/generate"
 	"github.com/sylabs/singularity/internal/pkg/security"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/env"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
+	"github.com/sylabs/singularity/internal/pkg/util/shell/interpreter"
 	"github.com/sylabs/singularity/internal/pkg/util/starter"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
 	imgutil "github.com/sylabs/singularity/pkg/image"
 	"github.com/sylabs/singularity/pkg/image/unpacker"
+	clicallback "github.com/sylabs/singularity/pkg/plugin/callback/cli"
+	singularitycallback "github.com/sylabs/singularity/pkg/plugin/callback/runtime/engine/singularity"
 	"github.com/sylabs/singularity/pkg/runtime/engine/config"
 	singularityConfig "github.com/sylabs/singularity/pkg/runtime/engine/singularity/config"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/capabilities"
 	"github.com/sylabs/singularity/pkg/util/crypt"
+	"github.com/sylabs/singularity/pkg/util/fs/proc"
 	"github.com/sylabs/singularity/pkg/util/gpu"
 	"github.com/sylabs/singularity/pkg/util/namespaces"
+	"github.com/sylabs/singularity/pkg/util/rlimit"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 	"golang.org/x/sys/unix"
 )
 
-// EnsureRootPriv ensures that a command is executed with root privileges.
-func EnsureRootPriv(cmd *cobra.Command, args []string) {
-	if os.Geteuid() != 0 {
-		sylog.Fatalf("%q command requires root privileges", cmd.CommandPath())
-	}
-}
-
-func convertImage(filename string, unsquashfsPath string) (string, error) {
+// convertImage extracts the image found at filename to directory dir within a temporary directory
+// tempDir. If the unsquashfs binary is not located, the binary at unsquashfsPath is used. It is
+// the caller's responsibility to remove tempDir when no longer needed.
+func convertImage(filename string, unsquashfsPath string) (tempDir, imageDir string, err error) {
 	img, err := imgutil.Init(filename, false)
 	if err != nil {
-		return "", fmt.Errorf("could not open image %s: %s", filename, err)
+		return "", "", fmt.Errorf("could not open image %s: %s", filename, err)
 	}
 	defer img.File.Close()
 
-	if !img.HasRootFs() {
-		return "", fmt.Errorf("no root filesystem found in %s", filename)
+	part, err := img.GetRootFsPartition()
+	if err != nil {
+		return "", "", fmt.Errorf("while getting root filesystem in %s: %s", filename, err)
 	}
 
-	// squashfs only
-	if img.Partitions[0].Type != imgutil.SQUASHFS {
-		return "", fmt.Errorf("not a squashfs root filesystem")
+	// Nice message if we have been given an older ext3 image, which cannot be extracted due to lack of privilege
+	// to loopback mount.
+	if part.Type == imgutil.EXT3 {
+		sylog.Errorf("File %q is an ext3 format continer image.", filename)
+		sylog.Errorf("Only SIF and squashfs images can be extracted in unprivileged mode.")
+		sylog.Errorf("Use `singularity build` to convert this image to a SIF file using a setuid install of Singularity.")
+	}
+
+	// Only squashfs can be extracted
+	if part.Type != imgutil.SQUASHFS {
+		return "", "", fmt.Errorf("not a squashfs root filesystem")
 	}
 
 	// create a reader for rootfs partition
 	reader, err := imgutil.NewPartitionReader(img, "", 0)
 	if err != nil {
-		return "", fmt.Errorf("could not extract root filesystem: %s", err)
+		return "", "", fmt.Errorf("could not extract root filesystem: %s", err)
 	}
 	s := unpacker.NewSquashfs()
 	if !s.HasUnsquashfs() && unsquashfsPath != "" {
@@ -82,18 +93,76 @@ func convertImage(filename string, unsquashfsPath string) (string, error) {
 	}
 
 	// create temporary sandbox
-	dir, err := ioutil.TempDir(tmpdir, "rootfs-")
+	tempDir, err = ioutil.TempDir(tmpdir, "rootfs-")
 	if err != nil {
-		return "", fmt.Errorf("could not create temporary sandbox: %s", err)
+		return "", "", fmt.Errorf("could not create temporary sandbox: %s", err)
+	}
+	defer func() {
+		if err != nil {
+			os.RemoveAll(tempDir)
+		}
+	}()
+
+	// create an inner dir to extract to, so we don't clobber the secure permissions on the tmpDir.
+	imageDir = filepath.Join(tempDir, "root")
+	if err := os.Mkdir(imageDir, 0755); err != nil {
+		return "", "", fmt.Errorf("could not create root directory: %s", err)
 	}
 
 	// extract root filesystem
-	if err := s.ExtractAll(reader, dir); err != nil {
-		os.RemoveAll(dir)
-		return "", fmt.Errorf("root filesystem extraction failed: %s", err)
+	if err := s.ExtractAll(reader, imageDir); err != nil {
+		return "", "", fmt.Errorf("root filesystem extraction failed: %s", err)
 	}
 
-	return dir, err
+	return tempDir, imageDir, err
+}
+
+// checkHidepid checks if hidepid is set on /proc mount point, when this
+// option is an instance started with setuid workflow could not even be
+// joined later or stopped correctly.
+func hidepidProc() bool {
+	entries, err := proc.GetMountInfoEntry("/proc/self/mountinfo")
+	if err != nil {
+		sylog.Warningf("while reading /proc/self/mountinfo: %s", err)
+		return false
+	}
+	for _, e := range entries {
+		if e.Point == "/proc" {
+			for _, o := range e.SuperOptions {
+				if strings.HasPrefix(o, "hidepid=") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// Set engine flags to disable mounts, to allow overriding them if they are set true
+// in the singularity.conf
+func setNoMountFlags(c *singularityConfig.EngineConfig) {
+	for _, v := range NoMount {
+		switch v {
+		case "proc":
+			c.SetNoProc(true)
+		case "sys":
+			c.SetNoSys(true)
+		case "dev":
+			c.SetNoDev(true)
+		case "devpts":
+			c.SetNoDevPts(true)
+		case "home":
+			c.SetNoHome(true)
+		case "tmp":
+			c.SetNoTmp(true)
+		case "hostfs":
+			c.SetNoHostfs(true)
+		case "cwd":
+			c.SetNoCwd(true)
+		default:
+			sylog.Warningf("Ignoring unknown mount type '%s'", v)
+		}
+	}
 }
 
 // TODO: Let's stick this in another file so that that CLI is just CLI
@@ -123,21 +192,28 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		fn()
 	}
 
-	syscall.Umask(0022)
-
 	engineConfig := singularityConfig.NewConfig()
 
-	engineConfig.File, err = config.ParseFile(buildcfg.SINGULARITY_CONF_FILE)
-	if err != nil {
-		sylog.Fatalf("Unable to parse singularity.conf file: %s", err)
+	engineConfig.File = singularityconf.GetCurrentConfig()
+	if engineConfig.File == nil {
+		sylog.Fatalf("Unable to get singularity configuration")
 	}
 
 	ociConfig := &oci.Config{}
-	generator := generate.Generator{Config: &ociConfig.Spec}
+	generator := generate.New(&ociConfig.Spec)
 
 	engineConfig.OciConfig = ociConfig
 
 	generator.SetProcessArgs(args)
+
+	currMask := syscall.Umask(0022)
+	if !NoUmask {
+		// Save the current umask, to be set for the process run in the container
+		// https://github.com/hpcng/singularity/issues/5214
+		sylog.Debugf("Saving umask %04o for propagation into container", currMask)
+		engineConfig.SetUmask(currMask)
+		engineConfig.SetRestoreUmask(true)
+	}
 
 	uidParam := security.GetParam(Security, "uid")
 	gidParam := security.GetParam(Security, "gid")
@@ -303,22 +379,24 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 			sylog.Fatalf("could not open image %s: %s", engineConfig.GetImage(), err)
 		}
 
-		if !img.HasRootFs() {
-			sylog.Fatalf("no root filesystem found in %s", engineConfig.GetImage())
+		part, err := img.GetRootFsPartition()
+		if err != nil {
+			sylog.Fatalf("while getting root filesystem in %s: %s", engineConfig.GetImage(), err)
 		}
 
 		// ensure we have decryption material
-		if img.Partitions[0].Type == imgutil.ENCRYPTSQUASHFS {
+		if part.Type == imgutil.ENCRYPTSQUASHFS {
 			sylog.Debugf("Encrypted container filesystem detected")
 
 			keyInfo, err := getEncryptionMaterial(cobraCmd)
 			if err != nil {
-				sylog.Fatalf("While handling encryption material: %v", err)
+				sylog.Fatalf("Cannot load key for decryption: %v", err)
 			}
 
 			plaintextKey, err := crypt.PlaintextKey(keyInfo, engineConfig.GetImage())
 			if err != nil {
-				sylog.Fatalf("Cannot retrieve key from image %s: %+v", engineConfig.GetImage(), err)
+				sylog.Errorf("Cannot decrypt %s: %v", engineConfig.GetImage(), err)
+				sylog.Fatalf("Please check you are providing the correct key for decryption")
 			}
 
 			engineConfig.SetEncryptionKey(plaintextKey)
@@ -330,11 +408,19 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		img.File.Close()
 	}
 
-	engineConfig.SetBindPath(BindPaths)
+	binds, err := singularityConfig.ParseBindPath(strings.Join(BindPaths, ","))
+	if err != nil {
+		sylog.Fatalf("while parsing bind path: %s", err)
+	}
+	engineConfig.SetBindPath(binds)
+	generator.AddProcessEnv("SINGULARITY_BIND", strings.Join(BindPaths, ","))
+
 	if len(FuseMount) > 0 {
 		/* If --fusemount is given, imply --pid */
 		PidNamespace = true
-		engineConfig.SetFuseMount(FuseMount)
+		if err := engineConfig.SetFuseMount(FuseMount); err != nil {
+			sylog.Fatalf("while setting fuse mount: %s", err)
+		}
 	}
 	engineConfig.SetNetwork(Network)
 	engineConfig.SetDNS(DNS)
@@ -342,10 +428,12 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 	engineConfig.SetOverlayImage(OverlayPath)
 	engineConfig.SetWritableImage(IsWritable)
 	engineConfig.SetNoHome(NoHome)
+	setNoMountFlags(engineConfig)
 	engineConfig.SetNv(Nvidia)
 	engineConfig.SetRocm(Rocm)
 	engineConfig.SetAddCaps(AddCaps)
 	engineConfig.SetDropCaps(DropCaps)
+	engineConfig.SetConfigurationFile(configurationFile)
 
 	checkPrivileges(AllowSUID, "--allow-setuid", func() {
 		engineConfig.SetAllowSUID(AllowSUID)
@@ -379,8 +467,13 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 	homeFlag := cobraCmd.Flag("home")
 	engineConfig.SetCustomHome(homeFlag.Changed)
 
+	// If we have fakeroot & the home flag has not been used then we have the standard
+	// /root location for the root user $HOME in the container.
+	// This doesn't count as a SetCustomHome(true), as we are mounting from the real
+	// user's standard $HOME -> /root and we want to respect --contain not mounting
+	// the $HOME in this case.
+	// See https://github.com/sylabs/singularity/pull/5227
 	if !homeFlag.Changed && IsFakeroot {
-		engineConfig.SetCustomHome(true)
 		HomePath = fmt.Sprintf("%s:/root", HomePath)
 	}
 
@@ -447,6 +540,10 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		engineConfig.SetInstance(true)
 		engineConfig.SetBootInstance(IsBoot)
 
+		if useSuid && !UserNamespace && hidepidProc() {
+			sylog.Fatalf("hidepid option set on /proc mount, require 'hidepid=0' to start instance with setuid workflow")
+		}
+
 		_, err := instance.Get(name, instance.SingSubDir)
 		if err == nil {
 			sylog.Fatalf("instance %s already exists", name)
@@ -512,11 +609,45 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		}
 	}
 
+	if SingularityEnvFile != "" {
+		currentEnv := append(
+			os.Environ(),
+			"SINGULARITY_IMAGE="+engineConfig.GetImage(),
+			"PATH="+os.Getenv("USER_PATH"),
+		)
+
+		content, err := ioutil.ReadFile(SingularityEnvFile)
+		if err != nil {
+			sylog.Fatalf("Could not read %q environment file: %s", SingularityEnvFile, err)
+		}
+
+		env, err := interpreter.EvaluateEnv(content, args, currentEnv)
+		if err != nil {
+			sylog.Fatalf("While processing %s: %s", SingularityEnvFile, err)
+		}
+		// --env variables will take precedence over variables
+		// defined by the environment file
+		sylog.Debugf("Setting environment variables from file %s", SingularityEnvFile)
+		SingularityEnv = append(env, SingularityEnv...)
+	}
+
+	// process --env and --env-file variables for injection
+	// into the environment by prefixing them with SINGULARITYENV_
+	for _, env := range SingularityEnv {
+		e := strings.SplitN(env, "=", 2)
+		if len(e) != 2 {
+			sylog.Warningf("Ignore environment variable %q: '=' is missing", env)
+			continue
+		}
+		os.Setenv("SINGULARITYENV_"+e[0], e[1])
+	}
+
 	// Copy and cache environment
 	environment := os.Environ()
 
 	// Clean environment
-	env.SetContainerEnv(&generator, environment, IsCleanEnv, engineConfig.GetHomeDest())
+	singularityEnv := env.SetContainerEnv(generator, environment, IsCleanEnv, engineConfig.GetHomeDest())
+	engineConfig.SetSingularityEnv(singularityEnv)
 
 	if pwd, err := os.Getwd(); err == nil {
 		engineConfig.SetCwd(pwd)
@@ -545,29 +676,65 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 	// namespace or if we are currently running inside a
 	// user namespace
 	if (UserNamespace || insideUserNs) && fs.IsFile(image) {
-		unsquashfsPath := ""
-		if engineConfig.File.MksquashfsPath != "" {
-			d := filepath.Dir(engineConfig.File.MksquashfsPath)
-			unsquashfsPath = filepath.Join(d, "unsquashfs")
-		}
-		sylog.Verbosef("User namespace requested, convert image %s to sandbox", image)
-		sylog.Infof("Convert SIF file to sandbox...")
-		dir, err := convertImage(image, unsquashfsPath)
-		if err != nil {
-			sylog.Fatalf("while extracting %s: %s", image, err)
-		}
-		engineConfig.SetImage(dir)
-		engineConfig.SetDeleteImage(true)
-		generator.AddProcessEnv("SINGULARITY_CONTAINER", dir)
+		convert := true
 
-		// if '--disable-cache' flag, then remove original SIF after converting to sandbox
-		if disableCache {
-			sylog.Debugf("Removing tmp image: %s", image)
-			err := os.Remove(image)
+		if engineConfig.File.ImageDriver != "" {
+			// load image driver plugins
+			callbackType := (singularitycallback.RegisterImageDriver)(nil)
+			callbacks, err := plugin.LoadCallbacks(callbackType)
 			if err != nil {
-				sylog.Errorf("unable to remove tmp image: %s: %v", image, err)
+				sylog.Debugf("Loading plugins callbacks '%T' failed: %s", callbackType, err)
+			} else {
+				for _, callback := range callbacks {
+					if err := callback.(singularitycallback.RegisterImageDriver)(true); err != nil {
+						sylog.Debugf("While registering image driver: %s", err)
+					}
+				}
+			}
+			driver := imgutil.GetDriver(engineConfig.File.ImageDriver)
+			if driver != nil && driver.Features()&imgutil.ImageFeature != 0 {
+				// the image driver indicates support for image so let's
+				// proceed with the image driver without conversion
+				convert = false
 			}
 		}
+
+		if convert {
+			unsquashfsPath := ""
+			if engineConfig.File.MksquashfsPath != "" {
+				d := filepath.Dir(engineConfig.File.MksquashfsPath)
+				unsquashfsPath = filepath.Join(d, "unsquashfs")
+			}
+			sylog.Verbosef("User namespace requested, convert image %s to sandbox", image)
+			sylog.Infof("Converting SIF file to temporary sandbox...")
+			tempDir, imageDir, err := convertImage(image, unsquashfsPath)
+			if err != nil {
+				sylog.Fatalf("while extracting %s: %s", image, err)
+			}
+			engineConfig.SetImage(imageDir)
+			engineConfig.SetDeleteTempDir(tempDir)
+			generator.AddProcessEnv("SINGULARITY_CONTAINER", imageDir)
+
+			// if '--disable-cache' flag, then remove original SIF after converting to sandbox
+			if disableCache {
+				sylog.Debugf("Removing tmp image: %s", image)
+				err := os.Remove(image)
+				if err != nil {
+					sylog.Errorf("unable to remove tmp image: %s: %v", image, err)
+				}
+			}
+		}
+	}
+
+	// setuid workflow set RLIMIT_STACK to its default value,
+	// get the original value to restore it before executing
+	// container process
+	if useSuid {
+		soft, hard, err := rlimit.Get("RLIMIT_STACK")
+		if err != nil {
+			sylog.Warningf("can't retrieve stack size limit: %s", err)
+		}
+		generator.AddProcessRlimits("RLIMIT_STACK", hard, soft)
 	}
 
 	cfg := &config.Common{
@@ -576,9 +743,13 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		EngineConfig: engineConfig,
 	}
 
-	for _, m := range plugin.EngineConfigMutators() {
-		sylog.Debugf("Running runtime mutator from plugin %s", m.PluginName)
-		m.Mutate(cfg)
+	callbackType := (clicallback.SingularityEngineConfig)(nil)
+	callbacks, err := plugin.LoadCallbacks(callbackType)
+	if err != nil {
+		sylog.Fatalf("While loading plugins callbacks '%T': %s", callbackType, err)
+	}
+	for _, c := range callbacks {
+		c.(clicallback.SingularityEngineConfig)(cfg)
 	}
 
 	if engineConfig.GetInstance() {

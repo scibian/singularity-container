@@ -43,13 +43,19 @@ const (
 	sysBusPCI = "/sys/bus/pci/devices"
 )
 
+// Array of different linux drivers bound to network device needed for DPDK
+var userspaceDrivers = []string{"vfio-pci", "uio_pci_generic", "igb_uio"}
+
 //NetConf for host-device config, look the README to learn how to use those parameters
 type NetConf struct {
 	types.NetConf
-	Device     string `json:"device"`     // Device-Name, something like eth0 or can0 etc.
-	HWAddr     string `json:"hwaddr"`     // MAC Address of target network interface
-	KernelPath string `json:"kernelpath"` // Kernelpath of the device
-	PCIAddr    string `json:"pciBusID"`   // PCI Address of target network device
+	Device        string `json:"device"`     // Device-Name, something like eth0 or can0 etc.
+	HWAddr        string `json:"hwaddr"`     // MAC Address of target network interface
+	KernelPath    string `json:"kernelpath"` // Kernelpath of the device
+	PCIAddr       string `json:"pciBusID"`   // PCI Address of target network device
+	RuntimeConfig struct {
+		DeviceID string `json:"deviceID,omitempty"`
+	} `json:"runtimeConfig,omitempty"`
 }
 
 func init() {
@@ -64,9 +70,16 @@ func loadConf(bytes []byte) (*NetConf, error) {
 	if err := json.Unmarshal(bytes, n); err != nil {
 		return nil, fmt.Errorf("failed to load netconf: %v", err)
 	}
+
+	if n.RuntimeConfig.DeviceID != "" {
+		// Override PCI device with the standardized DeviceID provided in Runtime Config.
+		n.PCIAddr = n.RuntimeConfig.DeviceID
+	}
+
 	if n.Device == "" && n.HWAddr == "" && n.KernelPath == "" && n.PCIAddr == "" {
 		return nil, fmt.Errorf(`specify either "device", "hwaddr", "kernelpath" or "pciBusID"`)
 	}
+
 	return n, nil
 }
 
@@ -80,6 +93,16 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to open netns %q: %v", args.Netns, err)
 	}
 	defer containerNs.Close()
+
+	if len(cfg.PCIAddr) > 0 {
+		isDpdkMode, err := hasDpdkDriver(cfg.PCIAddr)
+		if err != nil {
+			return fmt.Errorf("error with host device: %v", err)
+		}
+		if isDpdkMode {
+			return types.PrintResult(&current.Result{}, cfg.CNIVersion)
+		}
+	}
 
 	hostDev, err := getLink(cfg.Device, cfg.HWAddr, cfg.KernelPath, cfg.PCIAddr)
 	if err != nil {
@@ -158,6 +181,16 @@ func cmdDel(args *skel.CmdArgs) error {
 	}
 	defer containerNs.Close()
 
+	if len(cfg.PCIAddr) > 0 {
+		isDpdkMode, err := hasDpdkDriver(cfg.PCIAddr)
+		if err != nil {
+			return fmt.Errorf("error with host device: %v", err)
+		}
+		if isDpdkMode {
+			return nil
+		}
+	}
+
 	if err := moveLinkOut(containerNs, args.IfName); err != nil {
 		return err
 	}
@@ -182,6 +215,10 @@ func moveLinkIn(hostDev netlink.Link, containerNs ns.NetNS, ifName string) (netl
 		contDev, err = netlink.LinkByName(hostDev.Attrs().Name)
 		if err != nil {
 			return fmt.Errorf("failed to find %q: %v", hostDev.Attrs().Name, err)
+		}
+		// Devices can be renamed only when down
+		if err = netlink.LinkSetDown(contDev); err != nil {
+			return fmt.Errorf("failed to set %q down: %v", hostDev.Attrs().Name, err)
 		}
 		// Save host device name into the container device's alias property
 		if err := netlink.LinkSetAlias(contDev, hostDev.Attrs().Name); err != nil {
@@ -241,6 +278,25 @@ func moveLinkOut(containerNs ns.NetNS, ifName string) error {
 	})
 }
 
+func hasDpdkDriver(pciaddr string) (bool, error) {
+	driverLink := filepath.Join(sysBusPCI, pciaddr, "driver")
+	driverPath, err := filepath.EvalSymlinks(driverLink)
+	if err != nil {
+		return false, err
+	}
+	driverStat, err := os.Stat(driverPath)
+	if err != nil {
+		return false, err
+	}
+	driverName := driverStat.Name()
+	for _, drv := range userspaceDrivers {
+		if driverName == drv {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func printLink(dev netlink.Link, cniVersion string, containerNs ns.NetNS) error {
 	result := current.Result{
 		CNIVersion: current.ImplementedSpecVersion,
@@ -296,7 +352,12 @@ func getLink(devname, hwaddr, kernelpath, pciaddr string) (netlink.Link, error) 
 	} else if len(pciaddr) > 0 {
 		netDir := filepath.Join(sysBusPCI, pciaddr, "net")
 		if _, err := os.Lstat(netDir); err != nil {
-			return nil, fmt.Errorf("no net directory under pci device %s: %q", pciaddr, err)
+			virtioNetDir := filepath.Join(sysBusPCI, pciaddr, "virtio*", "net")
+			matches, err := filepath.Glob(virtioNetDir)
+			if matches == nil || err != nil {
+				return nil, fmt.Errorf("no net directory under pci device %s", pciaddr)
+			}
+			netDir = matches[0]
 		}
 		fInfo, err := ioutil.ReadDir(netDir)
 		if err != nil {

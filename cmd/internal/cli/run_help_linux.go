@@ -1,4 +1,5 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020, Control Command Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,17 +9,14 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/pkg/cmdline"
-)
-
-const (
-	standardHelpPath = "/.singularity.d/runscript.help"
-	appHelpPath      = "/scif/apps/%s/scif/runscript.help"
-	runHelpCommand   = "if [ ! -f \"%s\" ]\nthen\n    echo \"No help sections were defined for this image\"\nelse\n    /bin/cat %s\nfi"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 // --app
@@ -28,19 +26,19 @@ var runHelpAppNameFlag = cmdline.Flag{
 	DefaultValue: "",
 	Name:         "app",
 	Usage:        "show the help for an app",
-	EnvKeys:      []string{"APP"},
 }
 
 func init() {
-	cmdManager.RegisterCmd(RunHelpCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterCmd(RunHelpCmd)
 
-	cmdManager.RegisterFlagForCmd(&runHelpAppNameFlag, RunHelpCmd)
+		cmdManager.RegisterFlagForCmd(&runHelpAppNameFlag, RunHelpCmd)
+	})
 }
 
 // RunHelpCmd singularity run-help <image>
 var RunHelpCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
-	PreRun:                sylabsToken,
 	Args:                  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		// Sanity check
@@ -48,30 +46,30 @@ var RunHelpCmd = &cobra.Command{
 			sylog.Fatalf("container not found: %s", err)
 		}
 
-		a := []string{"/bin/sh", "-c", getCommand(getHelpPath(cmd))}
+		cmdArgs := []string{"inspect", "--helpfile"}
+		if AppName != "" {
+			sylog.Debugf("App specified. Looking for help section of %s", AppName)
+			cmdArgs = append(cmdArgs, "--app", AppName)
+		}
+		cmdArgs = append(cmdArgs, args[0])
 
-		stdout, err := singularityExec(args[0], a)
+		execCmd := exec.Command(filepath.Join(buildcfg.BINDIR, "singularity"), cmdArgs...)
+		execCmd.Stderr = os.Stderr
+		execCmd.Env = []string{}
+
+		out, err := execCmd.Output()
 		if err != nil {
 			sylog.Fatalf("While getting run-help: %s", err)
 		}
-		fmt.Printf("%s", stdout)
+		if len(out) == 0 {
+			fmt.Println("No help sections were defined for this image")
+		} else {
+			fmt.Printf("%s", string(out))
+		}
 	},
 
 	Use:     docs.RunHelpUse,
 	Short:   docs.RunHelpShort,
 	Long:    docs.RunHelpLong,
 	Example: docs.RunHelpExample,
-}
-
-func getCommand(helpFile string) string {
-	return fmt.Sprintf(runHelpCommand, helpFile, helpFile)
-}
-
-func getHelpPath(cmd *cobra.Command) string {
-	if cmd.Flags().Changed("app") {
-		sylog.Debugf("App specified. Looking for help section of %s", AppName)
-		return fmt.Sprintf(appHelpPath, AppName)
-	}
-
-	return standardHelpPath
 }

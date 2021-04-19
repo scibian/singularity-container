@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -20,9 +20,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/docker/docker/pkg/system"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/build/types"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 const (
@@ -324,7 +323,7 @@ func (cp *ZypperConveyorPacker) Get(ctx context.Context, b *types.Bundle) (err e
 
 	// run zypper
 	if err = cmd.Run(); err != nil {
-		if ret, _ := system.GetExitCode(err); ret == 107 {
+		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 107 {
 			sylog.Warningf("Bootstrap succeeded, some RPM scripts failed")
 		} else {
 			return fmt.Errorf("while bootstrapping from zypper: %v", err)

@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2017-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -10,9 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/app/singularity"
 	"github.com/sylabs/singularity/pkg/cmdline"
-	"github.com/sylabs/singularity/pkg/signing"
+	"github.com/sylabs/singularity/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/sypgp"
 )
 
 var (
@@ -20,25 +21,24 @@ var (
 	signAll bool
 )
 
-// -u|--url
-var signServerURIFlag = cmdline.Flag{
-	ID:           "signServerURIFlag",
-	Value:        &keyServerURI,
-	DefaultValue: defaultKeyServer,
-	Name:         "url",
-	ShortHand:    "u",
-	Usage:        "key server URL",
-	EnvKeys:      []string{"URL"},
-}
-
-// -g|--groupid
+// -g|--group-id
 var signSifGroupIDFlag = cmdline.Flag{
 	ID:           "signSifGroupIDFlag",
 	Value:        &sifGroupID,
 	DefaultValue: uint32(0),
-	Name:         "groupid",
+	Name:         "group-id",
 	ShortHand:    "g",
-	Usage:        "group ID to be signed",
+	Usage:        "sign objects with the specified group ID",
+}
+
+// --groupid (deprecated)
+var signOldSifGroupIDFlag = cmdline.Flag{
+	ID:           "signOldSifGroupIDFlag",
+	Value:        &sifGroupID,
+	DefaultValue: uint32(0),
+	Name:         "groupid",
+	Usage:        "sign objects with the specified group ID",
+	Deprecated:   "use '--group-id'",
 }
 
 // -i| --sif-id
@@ -48,7 +48,7 @@ var signSifDescSifIDFlag = cmdline.Flag{
 	DefaultValue: uint32(0),
 	Name:         "sif-id",
 	ShortHand:    "i",
-	Usage:        "descriptor ID to be signed (default system-partition)",
+	Usage:        "sign object with the specified ID",
 }
 
 // --id (deprecated)
@@ -57,7 +57,7 @@ var signSifDescIDFlag = cmdline.Flag{
 	Value:        &sifDescID,
 	DefaultValue: uint32(0),
 	Name:         "id",
-	Usage:        "descriptor ID to be signed",
+	Usage:        "sign object with the specified ID",
 	Deprecated:   "use '--sif-id'",
 }
 
@@ -65,31 +65,34 @@ var signSifDescIDFlag = cmdline.Flag{
 var signKeyIdxFlag = cmdline.Flag{
 	ID:           "signKeyIdxFlag",
 	Value:        &privKey,
-	DefaultValue: -1,
+	DefaultValue: 0,
 	Name:         "keyidx",
 	ShortHand:    "k",
-	Usage:        "private key to use (index from 'keys list')",
+	Usage:        "private key to use (index from 'key list')",
 }
 
-// -a|--all
+// -a|--all (deprecated)
 var signAllFlag = cmdline.Flag{
 	ID:           "signAllFlag",
 	Value:        &signAll,
 	DefaultValue: false,
 	Name:         "all",
 	ShortHand:    "a",
-	Usage:        "sign all non-signature partitions in a SIF",
+	Usage:        "sign all objects",
+	Deprecated:   "now the default behavior",
 }
 
 func init() {
-	cmdManager.RegisterCmd(SignCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterCmd(SignCmd)
 
-	cmdManager.RegisterFlagForCmd(&signServerURIFlag, SignCmd)
-	cmdManager.RegisterFlagForCmd(&signSifGroupIDFlag, SignCmd)
-	cmdManager.RegisterFlagForCmd(&signSifDescSifIDFlag, SignCmd)
-	cmdManager.RegisterFlagForCmd(&signSifDescIDFlag, SignCmd)
-	cmdManager.RegisterFlagForCmd(&signKeyIdxFlag, SignCmd)
-	cmdManager.RegisterFlagForCmd(&signAllFlag, SignCmd)
+		cmdManager.RegisterFlagForCmd(&signSifGroupIDFlag, SignCmd)
+		cmdManager.RegisterFlagForCmd(&signOldSifGroupIDFlag, SignCmd)
+		cmdManager.RegisterFlagForCmd(&signSifDescSifIDFlag, SignCmd)
+		cmdManager.RegisterFlagForCmd(&signSifDescIDFlag, SignCmd)
+		cmdManager.RegisterFlagForCmd(&signKeyIdxFlag, SignCmd)
+		cmdManager.RegisterFlagForCmd(&signAllFlag, SignCmd)
+	})
 }
 
 // SignCmd singularity sign
@@ -99,7 +102,6 @@ var SignCmd = &cobra.Command{
 
 	Run: func(cmd *cobra.Command, args []string) {
 		// args[0] contains image path
-		fmt.Printf("Signing image: %s\n", args[0])
 		doSignCmd(cmd, args[0])
 	},
 
@@ -110,37 +112,31 @@ var SignCmd = &cobra.Command{
 }
 
 func doSignCmd(cmd *cobra.Command, cpath string) {
-	// Group id should start at 1.
-	if cmd.Flag(verifySifGroupIDFlag.Name).Changed && sifGroupID == 0 {
-		sylog.Fatalf("invalid group id")
-	}
+	var opts []singularity.SignOpt
 
-	// Descriptor id should start at 1.
-	if cmd.Flag(verifySifDescSifIDFlag.Name).Changed && sifDescID == 0 {
-		sylog.Fatalf("invalid descriptor id")
-	}
-	if cmd.Flag(verifySifDescIDFlag.Name).Changed && sifDescID == 0 {
-		sylog.Fatalf("invalid descriptor id")
-	}
-
-	if sifGroupID != 0 && sifDescID != 0 {
-		sylog.Fatalf("only one of -i or -g may be set")
-	}
-
-	var isGroup bool
-	var id uint32
-	if sifGroupID != 0 {
-		isGroup = true
-		id = sifGroupID
+	// Set entity selector option, and ensure the entity is decrypted.
+	var f sypgp.EntitySelector
+	if cmd.Flag(signKeyIdxFlag.Name).Changed {
+		f = selectEntityAtIndex(privKey)
 	} else {
-		id = sifDescID
+		f = selectEntityInteractive()
+	}
+	f = decryptSelectedEntityInteractive(f)
+	opts = append(opts, singularity.OptSignEntitySelector(f))
+
+	// Set group option, if applicable.
+	if cmd.Flag(signSifGroupIDFlag.Name).Changed || cmd.Flag(signOldSifGroupIDFlag.Name).Changed {
+		opts = append(opts, singularity.OptSignGroup(sifGroupID))
 	}
 
-	if (id != 0 || isGroup) && signAll {
-		sylog.Fatalf("'--all' not compatible with '--sif-id' or '--groupid'")
+	// Set object option, if applicable.
+	if cmd.Flag(signSifDescSifIDFlag.Name).Changed || cmd.Flag(signSifDescIDFlag.Name).Changed {
+		opts = append(opts, singularity.OptSignObjects(sifDescID))
 	}
 
-	if err := signing.Sign(cpath, id, isGroup, signAll, privKey); err != nil {
+	// Sign the image.
+	fmt.Printf("Signing image: %s\n", cpath)
+	if err := singularity.Sign(cpath, opts...); err != nil {
 		sylog.Fatalf("Failed to sign container: %s", err)
 	}
 	fmt.Printf("Signature created and applied to %s\n", cpath)

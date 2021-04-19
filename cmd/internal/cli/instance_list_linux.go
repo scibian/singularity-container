@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,13 +11,16 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/cmdline"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 func init() {
-	cmdManager.RegisterFlagForCmd(&instanceListUserFlag, instanceListCmd)
-	cmdManager.RegisterFlagForCmd(&instanceListJSONFlag, instanceListCmd)
+	addCmdInit(func(cmdManager *cmdline.CommandManager) {
+		cmdManager.RegisterFlagForCmd(&instanceListUserFlag, instanceListCmd)
+		cmdManager.RegisterFlagForCmd(&instanceListJSONFlag, instanceListCmd)
+		cmdManager.RegisterFlagForCmd(&instanceListLogsFlag, instanceListCmd)
+	})
 }
 
 // -u|--user
@@ -45,6 +48,18 @@ var instanceListJSONFlag = cmdline.Flag{
 	EnvKeys:      []string{"JSON"},
 }
 
+// -l|--logs
+var instanceListLogs bool
+var instanceListLogsFlag = cmdline.Flag{
+	ID:           "instanceListLogsFlag",
+	Value:        &instanceListLogs,
+	DefaultValue: false,
+	Name:         "logs",
+	ShortHand:    "l",
+	Usage:        "display location of stdout and sterr log files for instances",
+	EnvKeys:      []string{"LOGS"},
+}
+
 // singularity instance list
 var instanceListCmd = &cobra.Command{
 	Args: cobra.RangeArgs(0, 1),
@@ -59,7 +74,7 @@ var instanceListCmd = &cobra.Command{
 			sylog.Fatalf("Only root user can list user's instances")
 		}
 
-		err := singularity.PrintInstanceList(os.Stdout, name, instanceListUser, instanceListJSON)
+		err := singularity.PrintInstanceList(os.Stdout, name, instanceListUser, instanceListJSON, instanceListLogs)
 		if err != nil {
 			sylog.Fatalf("Could not list instances: %v", err)
 		}

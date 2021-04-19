@@ -61,10 +61,7 @@ func (o overlayWhiteoutConverter) ConvertWrite(hdr *tar.Header, path string, fi 
 				}
 				if statErr == nil {
 					if stat.Mode()&os.ModeCharDevice != 0 {
-						// It's a whiteout for this directory, so it can't have been
-						// both deleted and recreated in the layer we're diffing.
-						s := stat.Sys().(*syscall.Stat_t)
-						if major(s.Rdev) == 0 && minor(s.Rdev) == 0 {
+						if isWhiteOut(stat) {
 							return nil, nil
 						}
 					}
@@ -98,8 +95,7 @@ func (o overlayWhiteoutConverter) ConvertWrite(hdr *tar.Header, path string, fi 
 							// If it's whiteout for a parent directory, then the
 							// original directory wasn't inherited into this layer,
 							// so we don't need to emit whiteout for it.
-							s := stat.Sys().(*syscall.Stat_t)
-							if major(s.Rdev) == 0 && minor(s.Rdev) == 0 {
+							if isWhiteOut(stat) {
 								return nil, nil
 							}
 						}
@@ -140,4 +136,21 @@ func (overlayWhiteoutConverter) ConvertRead(hdr *tar.Header, path string) (bool,
 	}
 
 	return true, nil
+}
+
+func isWhiteOut(stat os.FileInfo) bool {
+	s := stat.Sys().(*syscall.Stat_t)
+	return major(uint64(s.Rdev)) == 0 && minor(uint64(s.Rdev)) == 0
+}
+
+func getFileOwner(path string) (uint32, uint32, uint32, error) {
+	f, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	s, ok := f.Sys().(*syscall.Stat_t)
+	if ok {
+		return s.Uid, s.Gid, s.Mode & 07777, nil
+	}
+	return 0, 0, uint32(f.Mode()), nil
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,7 +6,14 @@
 package singularity
 
 import (
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
+
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
 	"github.com/sylabs/singularity/pkg/image"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 )
 
 // Name is the name of the runtime.
@@ -21,53 +28,138 @@ const (
 	UnderlayLayer = "underlay"
 )
 
+// EngineConfig stores the JSONConfig, the OciConfig and the File configuration.
+type EngineConfig struct {
+	JSON      *JSONConfig `json:"jsonConfig"`
+	OciConfig *oci.Config `json:"ociConfig"`
+
+	// File is not passed across stage but stay here for
+	// convenient use by runtime code and plugins.
+	File *singularityconf.File `json:"-"`
+}
+
+// NewConfig returns singularity.EngineConfig.
+func NewConfig() *EngineConfig {
+	ret := &EngineConfig{
+		JSON:      new(JSONConfig),
+		OciConfig: new(oci.Config),
+		File:      new(singularityconf.File),
+	}
+	return ret
+}
+
+// FuseMount stores the FUSE-related information required or provided by
+// plugins implementing options to add FUSE filesystems in the
+// container.
+type FuseMount struct {
+	Program       []string  `json:"program,omitempty"`       // the FUSE driver program and all required arguments
+	MountPoint    string    `json:"mountPoint,omitempty"`    // the mount point for the FUSE filesystem
+	Fd            int       `json:"fd,omitempty"`            // /dev/fuse file descriptor
+	FromContainer bool      `json:"fromContainer,omitempty"` // is FUSE driver program is run from container or from host
+	Daemon        bool      `json:"daemon,omitempty"`        // is FUSE driver program is run in daemon/background mode
+	Cmd           *exec.Cmd `json:"-"`                       // holds the process exec command when FUSE driver run in foreground mode
+}
+
+// BindOption represents a bind option with its associated
+// value if any.
+type BindOption struct {
+	Value string `json:"value,omitempty"`
+}
+
+// BindPath stores bind path.
+type BindPath struct {
+	Source      string                 `json:"source"`
+	Destination string                 `json:"destination"`
+	Options     map[string]*BindOption `json:"options"`
+}
+
+// ImageSrc returns the value of option image-src or an empty
+// string if the option wasn't set.
+func (b *BindPath) ImageSrc() string {
+	if b.Options != nil && b.Options["image-src"] != nil {
+		src := b.Options["image-src"].Value
+		if src == "" {
+			return "/"
+		}
+		return src
+	}
+	return ""
+}
+
+// ImageSrc returns the value of option id or an empty
+// string if the option wasn't set.
+func (b *BindPath) ID() string {
+	if b.Options != nil && b.Options["id"] != nil {
+		return b.Options["id"].Value
+	}
+	return ""
+}
+
+// Readonly returns the option ro was set or not.
+func (b *BindPath) Readonly() bool {
+	return b.Options != nil && b.Options["ro"] != nil
+}
+
 // JSONConfig stores engine specific confguration that is allowed to be set by the user.
 type JSONConfig struct {
-	ScratchDir        []string      `json:"scratchdir,omitempty"`
-	OverlayImage      []string      `json:"overlayImage,omitempty"`
-	BindPath          []string      `json:"bindpath,omitempty"`
-	NetworkArgs       []string      `json:"networkArgs,omitempty"`
-	Security          []string      `json:"security,omitempty"`
-	FilesPath         []string      `json:"filesPath,omitempty"`
-	LibrariesPath     []string      `json:"librariesPath,omitempty"`
-	ImageList         []image.Image `json:"imageList,omitempty"`
-	OpenFd            []int         `json:"openFd,omitempty"`
-	TargetGID         []int         `json:"targetGID,omitempty"`
-	Image             string        `json:"image"`
-	Workdir           string        `json:"workdir,omitempty"`
-	CgroupsPath       string        `json:"cgroupsPath,omitempty"`
-	HomeSource        string        `json:"homedir,omitempty"`
-	HomeDest          string        `json:"homeDest,omitempty"`
-	Command           string        `json:"command,omitempty"`
-	Shell             string        `json:"shell,omitempty"`
-	TmpDir            string        `json:"tmpdir,omitempty"`
-	AddCaps           string        `json:"addCaps,omitempty"`
-	DropCaps          string        `json:"dropCaps,omitempty"`
-	Hostname          string        `json:"hostname,omitempty"`
-	Network           string        `json:"network,omitempty"`
-	DNS               string        `json:"dns,omitempty"`
-	Cwd               string        `json:"cwd,omitempty"`
-	SessionLayer      string        `json:"sessionLayer,omitempty"`
-	EncryptionKey     []byte        `json:"encryptionKey,omitempty"`
-	TargetUID         int           `json:"targetUID,omitempty"`
-	WritableImage     bool          `json:"writableImage,omitempty"`
-	WritableTmpfs     bool          `json:"writableTmpfs,omitempty"`
-	Contain           bool          `json:"container,omitempty"`
-	Nv                bool          `json:"nv,omitempty"`
-	Rocm              bool          `json:"rocm,omitempty"`
-	CustomHome        bool          `json:"customHome,omitempty"`
-	Instance          bool          `json:"instance,omitempty"`
-	InstanceJoin      bool          `json:"instanceJoin,omitempty"`
-	BootInstance      bool          `json:"bootInstance,omitempty"`
-	RunPrivileged     bool          `json:"runPrivileged,omitempty"`
-	AllowSUID         bool          `json:"allowSUID,omitempty"`
-	KeepPrivs         bool          `json:"keepPrivs,omitempty"`
-	NoPrivs           bool          `json:"noPrivs,omitempty"`
-	NoHome            bool          `json:"noHome,omitempty"`
-	NoInit            bool          `json:"noInit,omitempty"`
-	DeleteImage       bool          `json:"deleteImage,omitempty"`
-	Fakeroot          bool          `json:"fakeroot,omitempty"`
-	SignalPropagation bool          `json:"signalPropagation,omitempty"`
+	ScratchDir        []string          `json:"scratchdir,omitempty"`
+	OverlayImage      []string          `json:"overlayImage,omitempty"`
+	NetworkArgs       []string          `json:"networkArgs,omitempty"`
+	Security          []string          `json:"security,omitempty"`
+	FilesPath         []string          `json:"filesPath,omitempty"`
+	LibrariesPath     []string          `json:"librariesPath,omitempty"`
+	FuseMount         []FuseMount       `json:"fuseMount,omitempty"`
+	ImageList         []image.Image     `json:"imageList,omitempty"`
+	BindPath          []BindPath        `json:"bindpath,omitempty"`
+	SingularityEnv    map[string]string `json:"singularityEnv,omitempty"`
+	UnixSocketPair    [2]int            `json:"unixSocketPair,omitempty"`
+	OpenFd            []int             `json:"openFd,omitempty"`
+	TargetGID         []int             `json:"targetGID,omitempty"`
+	Image             string            `json:"image"`
+	Workdir           string            `json:"workdir,omitempty"`
+	CgroupsPath       string            `json:"cgroupsPath,omitempty"`
+	HomeSource        string            `json:"homedir,omitempty"`
+	HomeDest          string            `json:"homeDest,omitempty"`
+	Command           string            `json:"command,omitempty"`
+	Shell             string            `json:"shell,omitempty"`
+	TmpDir            string            `json:"tmpdir,omitempty"`
+	AddCaps           string            `json:"addCaps,omitempty"`
+	DropCaps          string            `json:"dropCaps,omitempty"`
+	Hostname          string            `json:"hostname,omitempty"`
+	Network           string            `json:"network,omitempty"`
+	DNS               string            `json:"dns,omitempty"`
+	Cwd               string            `json:"cwd,omitempty"`
+	SessionLayer      string            `json:"sessionLayer,omitempty"`
+	ConfigurationFile string            `json:"configurationFile,omitempty"`
+	EncryptionKey     []byte            `json:"encryptionKey,omitempty"`
+	TargetUID         int               `json:"targetUID,omitempty"`
+	WritableImage     bool              `json:"writableImage,omitempty"`
+	WritableTmpfs     bool              `json:"writableTmpfs,omitempty"`
+	Contain           bool              `json:"container,omitempty"`
+	Nv                bool              `json:"nv,omitempty"`
+	Rocm              bool              `json:"rocm,omitempty"`
+	CustomHome        bool              `json:"customHome,omitempty"`
+	Instance          bool              `json:"instance,omitempty"`
+	InstanceJoin      bool              `json:"instanceJoin,omitempty"`
+	BootInstance      bool              `json:"bootInstance,omitempty"`
+	RunPrivileged     bool              `json:"runPrivileged,omitempty"`
+	AllowSUID         bool              `json:"allowSUID,omitempty"`
+	KeepPrivs         bool              `json:"keepPrivs,omitempty"`
+	NoPrivs           bool              `json:"noPrivs,omitempty"`
+	NoProc            bool              `json:"noProc,omitempty"`
+	NoSys             bool              `json:"noSys,omitempty"`
+	NoDev             bool              `json:"noDev,omitempty"`
+	NoDevPts          bool              `json:"noDevPts,omitempty"`
+	NoHome            bool              `json:"noHome,omitempty"`
+	NoTmp             bool              `json:"noTmp,omitempty"`
+	NoHostfs          bool              `json:"noHostfs,omitempty"`
+	NoCwd             bool              `json:"noCwd,omitempty"`
+	NoInit            bool              `json:"noInit,omitempty"`
+	Fakeroot          bool              `json:"fakeroot,omitempty"`
+	SignalPropagation bool              `json:"signalPropagation,omitempty"`
+	RestoreUmask      bool              `json:"restoreUmask,omitempty"`
+	DeleteTempDir     string            `json:"deleteTempDir,omitempty"`
+	Umask             int               `json:"umask,omitempty"`
 }
 
 // SetImage sets the container image path to be used by EngineConfig.JSON.
@@ -190,13 +282,148 @@ func (e *EngineConfig) GetCustomHome() bool {
 	return e.JSON.CustomHome
 }
 
-// SetBindPath sets paths to bind into containee.JSON.
-func (e *EngineConfig) SetBindPath(bindpath []string) {
+// ParseBindPath parses a string and returns all encountered
+// bind paths as array.
+func ParseBindPath(bindpaths string) ([]BindPath, error) {
+	var bind string
+	var binds []BindPath
+	var elem int
+
+	var validOptions = map[string]bool{
+		"ro":        true,
+		"rw":        true,
+		"image-src": false,
+		"id":        false,
+	}
+
+	// there is a better regular expression to handle
+	// that directly without all the logic below ...
+	// we need to parse various syntax:
+	// source1
+	// source1:destination1
+	// source1:destination1:option1
+	// source1:destination1:option1,option2
+	// source1,source2
+	// source1:destination1:option1,source2
+	re := regexp.MustCompile(`([^,^:]+:?)`)
+
+	// with the regex above we get string array:
+	// - source1 -> [source1]
+	// - source1:destination1 -> [source1:, destination1]
+	// - source1:destination1:option1 -> [source1:, destination1:, option1]
+	// - source1:destination1:option1,option2 -> [source1:, destination1:, option1, option2]
+	for _, m := range re.FindAllString(bindpaths, -1) {
+		s := strings.TrimSpace(m)
+		isColon := bind != "" && bind[len(bind)-1] == ':'
+
+		// options are taken only if the bind has a source
+		// and a destination
+		if elem == 2 {
+			isOption := false
+
+			for option, flag := range validOptions {
+				if flag {
+					if s == option {
+						isOption = true
+						break
+					}
+				} else {
+					if strings.HasPrefix(s, option+"=") {
+						isOption = true
+						break
+					}
+				}
+			}
+			if isOption {
+				if !isColon {
+					bind += ","
+				}
+				bind += s
+				continue
+			}
+		} else if elem > 2 {
+			return nil, fmt.Errorf("wrong bind syntax: %s", bind)
+		}
+
+		elem++
+
+		if bind != "" {
+			if isColon {
+				bind += s
+				continue
+			}
+			bp, err := newBindPath(bind, validOptions)
+			if err != nil {
+				return nil, fmt.Errorf("while getting bind path: %s", err)
+			}
+			binds = append(binds, bp)
+			elem = 1
+		}
+		// new bind path
+		bind = s
+	}
+
+	if bind != "" {
+		bp, err := newBindPath(bind, validOptions)
+		if err != nil {
+			return nil, fmt.Errorf("while getting bind path: %s", err)
+		}
+		binds = append(binds, bp)
+	}
+
+	return binds, nil
+}
+
+// newBindPath returns BindPath record based on the provided bind
+// string argument and ensures that the options are valid.
+func newBindPath(bind string, validOptions map[string]bool) (BindPath, error) {
+	var bp BindPath
+
+	splitted := strings.SplitN(bind, ":", 3)
+
+	bp.Source = splitted[0]
+	if bp.Source == "" {
+		return bp, fmt.Errorf("empty bind source for bind path %q", bind)
+	}
+
+	bp.Destination = bp.Source
+
+	if len(splitted) > 1 {
+		bp.Destination = splitted[1]
+	}
+
+	if len(splitted) > 2 {
+		bp.Options = make(map[string]*BindOption)
+
+		for _, value := range strings.Split(splitted[2], ",") {
+			valid := false
+			for optName, optFlag := range validOptions {
+				if optFlag && optName == value {
+					bp.Options[optName] = &BindOption{}
+					valid = true
+					break
+				} else if strings.HasPrefix(value, optName+"=") {
+					bp.Options[optName] = &BindOption{Value: value[len(optName+"="):]}
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return bp, fmt.Errorf("%s is not a valid bind option", value)
+			}
+		}
+	}
+
+	return bp, nil
+}
+
+// SetBindPath sets the paths to bind into container.
+func (e *EngineConfig) SetBindPath(bindpath []BindPath) {
 	e.JSON.BindPath = bindpath
 }
 
-// GetBindPath retrieves bind paths.
-func (e *EngineConfig) GetBindPath() []string {
+// GetBindPath retrieves the bind paths.
+func (e *EngineConfig) GetBindPath() []BindPath {
 	return e.JSON.BindPath
 }
 
@@ -320,7 +547,47 @@ func (e *EngineConfig) GetNoPrivs() bool {
 	return e.JSON.NoPrivs
 }
 
-// SetNoHome set no-home flag to not mount home user home directory.
+// SetNoProc set flag to not mount proc directory.
+func (e *EngineConfig) SetNoProc(val bool) {
+	e.JSON.NoProc = val
+}
+
+// GetNoProc returns if no-proc flag is set or not.
+func (e *EngineConfig) GetNoProc() bool {
+	return e.JSON.NoProc
+}
+
+// SetNoSys set flag to not mount sys directory.
+func (e *EngineConfig) SetNoSys(val bool) {
+	e.JSON.NoSys = val
+}
+
+// GetNoSys returns if no-sys flag is set or not.
+func (e *EngineConfig) GetNoSys() bool {
+	return e.JSON.NoSys
+}
+
+// SetNoDev set flag to not mount dev directory.
+func (e *EngineConfig) SetNoDev(val bool) {
+	e.JSON.NoDev = val
+}
+
+// GetNoDev returns if no-dev flag is set or not.
+func (e *EngineConfig) GetNoDev() bool {
+	return e.JSON.NoDev
+}
+
+// SetNoDevPts set flag to not mount dev directory.
+func (e *EngineConfig) SetNoDevPts(val bool) {
+	e.JSON.NoDevPts = val
+}
+
+// GetNoDevPts returns if no-devpts flag is set or not.
+func (e *EngineConfig) GetNoDevPts() bool {
+	return e.JSON.NoDevPts
+}
+
+// SetNoHome set flag to not mount user home directory.
 func (e *EngineConfig) SetNoHome(val bool) {
 	e.JSON.NoHome = val
 }
@@ -328,6 +595,36 @@ func (e *EngineConfig) SetNoHome(val bool) {
 // GetNoHome returns if no-home flag is set or not.
 func (e *EngineConfig) GetNoHome() bool {
 	return e.JSON.NoHome
+}
+
+// SetNoTmp set flag to not mount tmp directories
+func (e *EngineConfig) SetNoTmp(val bool) {
+	e.JSON.NoTmp = val
+}
+
+// GetNoTmp returns if no-tmo flag is set or not.
+func (e *EngineConfig) GetNoTmp() bool {
+	return e.JSON.NoTmp
+}
+
+// SetNoHostFs set flag to not mount all host mounts.
+func (e *EngineConfig) SetNoHostfs(val bool) {
+	e.JSON.NoHostfs = val
+}
+
+// SetNoHostfs returns if no-hostfs flag is set or not.
+func (e *EngineConfig) GetNoHostfs() bool {
+	return e.JSON.NoHostfs
+}
+
+// SetNoCwd set flag to not mount CWD
+func (e *EngineConfig) SetNoCwd(val bool) {
+	e.JSON.NoCwd = val
+}
+
+// SetNoCwd returns if no-cwd flag is set or not.
+func (e *EngineConfig) GetNoCwd() bool {
+	return e.JSON.NoCwd
 }
 
 // SetNoInit set noinit flag to not start shim init process.
@@ -493,14 +790,16 @@ func (e *EngineConfig) GetFakeroot() bool {
 	return e.JSON.Fakeroot
 }
 
-// GetDeleteImage returns if container image must be deleted after use.
-func (e *EngineConfig) GetDeleteImage() bool {
-	return e.JSON.DeleteImage
+// GetDeleteTempDir returns the path of the temporary directory containing the root filesystem
+// which must be deleted after use. If no deletion is required, the empty string is returned.
+func (e *EngineConfig) GetDeleteTempDir() string {
+	return e.JSON.DeleteTempDir
 }
 
-// SetDeleteImage sets if container image must be deleted after use.
-func (e *EngineConfig) SetDeleteImage(delete bool) {
-	e.JSON.DeleteImage = delete
+// SetDeleteTempDir sets dir as the path of the temporary directory containing the root filesystem,
+// which must be deleted after use.
+func (e *EngineConfig) SetDeleteTempDir(dir string) {
+	e.JSON.DeleteTempDir = dir
 }
 
 // SetSignalPropagation sets if engine must propagate signals from
@@ -527,4 +826,107 @@ func (e *EngineConfig) GetSessionLayer() string {
 // container mount points.
 func (e *EngineConfig) SetSessionLayer(sessionLayer string) {
 	e.JSON.SessionLayer = sessionLayer
+}
+
+// SetFuseMount takes a list of fuse mount options and sets
+// fuse mount configuration accordingly.
+func (e *EngineConfig) SetFuseMount(mount []string) error {
+	e.JSON.FuseMount = make([]FuseMount, len(mount))
+
+	for i, mountspec := range mount {
+		words := strings.Fields(mountspec)
+
+		if len(words) == 0 {
+			continue
+		} else if len(words) == 1 {
+			return fmt.Errorf("no whitespace separators found in command %q", words[0])
+		}
+
+		prefix := strings.SplitN(words[0], ":", 2)[0]
+
+		words[0] = strings.Replace(words[0], prefix+":", "", 1)
+
+		e.JSON.FuseMount[i].Fd = -1
+		e.JSON.FuseMount[i].MountPoint = words[len(words)-1]
+		e.JSON.FuseMount[i].Program = words[0 : len(words)-1]
+
+		switch prefix {
+		case "container":
+			e.JSON.FuseMount[i].FromContainer = true
+		case "container-daemon":
+			e.JSON.FuseMount[i].FromContainer = true
+			e.JSON.FuseMount[i].Daemon = true
+		case "host":
+			e.JSON.FuseMount[i].FromContainer = false
+		case "host-daemon":
+			e.JSON.FuseMount[i].FromContainer = false
+			e.JSON.FuseMount[i].Daemon = true
+		default:
+			return fmt.Errorf("fusemount spec begin with an unknown prefix %s", prefix)
+		}
+	}
+
+	return nil
+}
+
+// GetFuseMount returns the list of fuse mount after processing
+// by SetFuseMount.
+func (e *EngineConfig) GetFuseMount() []FuseMount {
+	return e.JSON.FuseMount
+}
+
+// SetUnixSocketPair sets a unix socketpair used to pass file
+// descriptors between RPC and master process, actually used
+// to pass /dev/fuse file descriptors.
+func (e *EngineConfig) SetUnixSocketPair(fds [2]int) {
+	e.JSON.UnixSocketPair = fds
+}
+
+// GetUnixSocketPair returns the unix socketpair previously set
+// in stage one by the engine.
+func (e *EngineConfig) GetUnixSocketPair() [2]int {
+	return e.JSON.UnixSocketPair
+}
+
+// SetSingularityEnv sets singularity environment variables
+// as a key/value string map.
+func (e *EngineConfig) SetSingularityEnv(senv map[string]string) {
+	e.JSON.SingularityEnv = senv
+}
+
+// GetSingularityEnv returns singularity environment variables
+// as a key/value string map.
+func (e *EngineConfig) GetSingularityEnv() map[string]string {
+	return e.JSON.SingularityEnv
+}
+
+// SetConfigurationFile sets the singularity configuration file to
+// use instead of the default one.
+func (e *EngineConfig) SetConfigurationFile(filename string) {
+	e.JSON.ConfigurationFile = filename
+}
+
+// GetConfigurationFile returns the singularity configuration file to use.
+func (e *EngineConfig) GetConfigurationFile() string {
+	return e.JSON.ConfigurationFile
+}
+
+// SetRestoreUmask returns whether to restore Umask for the container launched process.
+func (e *EngineConfig) SetRestoreUmask(restoreUmask bool) {
+	e.JSON.RestoreUmask = restoreUmask
+}
+
+// GetRestoreUmask returns the umask to be used in the container launched process.
+func (e *EngineConfig) GetRestoreUmask() bool {
+	return e.JSON.RestoreUmask
+}
+
+// SetUmask sets the umask to be used in the container launched process.
+func (e *EngineConfig) SetUmask(umask int) {
+	e.JSON.Umask = umask
+}
+
+// SetUmask returns the umask to be used in the container launched process.
+func (e *EngineConfig) GetUmask() int {
+	return e.JSON.Umask
 }

@@ -23,16 +23,12 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
 )
 
 type ctx struct {
 	env     e2e.TestEnv
 	profile e2e.Profile
-}
-
-// Test that no instances are running.
-func (c *ctx) testNoInstances(t *testing.T) {
-	c.expectedNumberOfInstances(t, 0)
 }
 
 // Test that a basic echo server instance can be started, communicated with,
@@ -79,10 +75,9 @@ func (c *ctx) testCreateManyInstances(t *testing.T) {
 			}),
 			e2e.ExpectExit(0),
 		)
-	}
 
-	// Verify all instances started.
-	c.expectedNumberOfInstances(t, n)
+		c.expectInstance(t, instanceName, 1)
+	}
 }
 
 // Test stopping all running instances.
@@ -207,7 +202,7 @@ func (c *ctx) testInstanceFromURI(t *testing.T) {
 		},
 		{
 			name: "test_from_library",
-			uri:  "library://busybox",
+			uri:  "library://busybox:1.31.1",
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
@@ -330,55 +325,61 @@ func (c *ctx) applyCgroupsInstance(t *testing.T) {
 		e2e.WithProfile(c.profile),
 		e2e.WithCommand("exec"),
 		e2e.WithArgs(joinName, "cat", "/dev/null"),
+		e2e.PostRun(func(t *testing.T) {
+			if t.Failed() {
+				return
+			}
+			c.stopInstance(t, instanceName)
+		}),
 		e2e.ExpectExit(1),
 	)
-
-	c.stopInstance(t, instanceName)
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := &ctx{
-		env:     env,
-		profile: e2e.UserProfile,
+		env: env,
 	}
 
-	return func(t *testing.T) {
-		e2e.EnsureImage(t, c.env)
+	return testhelper.Tests{
+		"ordered": func(t *testing.T) {
+			c := &ctx{
+				env:     env,
+				profile: e2e.UserProfile,
+			}
 
-		// Define and loop through tests.
-		tests := []struct {
-			name     string
-			function func(*testing.T)
-		}{
-			{"InitialNoInstances", c.testNoInstances},
-			{"BasicEchoServer", c.testBasicEchoServer},
-			{"BasicOptions", c.testBasicOptions},
-			{"Contain", c.testContain},
-			{"InstanceFromURI", c.testInstanceFromURI},
-			{"CreateManyInstances", c.testCreateManyInstances},
-			{"StopAll", c.testStopAll},
-			{"FinalNoInstances", c.testNoInstances},
-			{"GhostInstance", c.testGhostInstance},
-			{"ApplyCgroupsInstance", c.applyCgroupsInstance},
-		}
+			e2e.EnsureImage(t, c.env)
 
-		profiles := []e2e.Profile{
-			e2e.UserProfile,
-			e2e.RootProfile,
-		}
+			// Define and loop through tests.
+			tests := []struct {
+				name     string
+				function func(*testing.T)
+			}{
+				{"BasicEchoServer", c.testBasicEchoServer},
+				{"BasicOptions", c.testBasicOptions},
+				{"Contain", c.testContain},
+				{"InstanceFromURI", c.testInstanceFromURI},
+				{"CreateManyInstances", c.testCreateManyInstances},
+				{"StopAll", c.testStopAll},
+				{"GhostInstance", c.testGhostInstance},
+				{"ApplyCgroupsInstance", c.applyCgroupsInstance},
+			}
 
-		for _, profile := range profiles {
-			profile := profile
-			t.Run(profile.String(), func(t *testing.T) {
-				c.profile = profile
-				for _, tt := range tests {
-					t.Run(tt.name, tt.function)
-				}
-			})
-		}
+			profiles := []e2e.Profile{
+				e2e.UserProfile,
+				e2e.RootProfile,
+			}
 
-		t.Run("issue5033", c.issue5033)
-
+			for _, profile := range profiles {
+				profile := profile
+				t.Run(profile.String(), func(t *testing.T) {
+					c.profile = profile
+					for _, tt := range tests {
+						t.Run(tt.name, tt.function)
+					}
+				})
+			}
+		},
+		"issue 5033": c.issue5033, // https://github.com/sylabs/singularity/issues/4836
 	}
 }

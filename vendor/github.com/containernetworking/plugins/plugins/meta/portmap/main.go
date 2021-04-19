@@ -28,12 +28,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
+	"golang.org/x/sys/unix"
 
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
 )
@@ -60,9 +62,9 @@ type PortMapConf struct {
 
 	// These are fields parsed out of the config or the environment;
 	// included here for convenience
-	ContainerID string `json:"-"`
-	ContIPv4    net.IP `json:"-"`
-	ContIPv6    net.IP `json:"-"`
+	ContainerID string    `json:"-"`
+	ContIPv4    net.IPNet `json:"-"`
+	ContIPv6    net.IPNet `json:"-"`
 }
 
 // The default mark bit to signal that masquerading is required
@@ -85,15 +87,27 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	netConf.ContainerID = args.ContainerID
 
-	if netConf.ContIPv4 != nil {
+	if netConf.ContIPv4.IP != nil {
 		if err := forwardPorts(netConf, netConf.ContIPv4); err != nil {
 			return err
 		}
+		// Delete conntrack entries for UDP to avoid conntrack blackholing traffic
+		// due to stale connections. We do that after the iptables rules are set, so
+		// the new traffic uses them. Failures are informative only.
+		if err := deletePortmapStaleConnections(netConf.RuntimeConfig.PortMaps, unix.AF_INET); err != nil {
+			log.Printf("failed to delete stale UDP conntrack entries for %s: %v", netConf.ContIPv4.IP, err)
+		}
 	}
 
-	if netConf.ContIPv6 != nil {
+	if netConf.ContIPv6.IP != nil {
 		if err := forwardPorts(netConf, netConf.ContIPv6); err != nil {
 			return err
+		}
+		// Delete conntrack entries for UDP to avoid conntrack blackholing traffic
+		// due to stale connections. We do that after the iptables rules are set, so
+		// the new traffic uses them. Failures are informative only.
+		if err := deletePortmapStaleConnections(netConf.RuntimeConfig.PortMaps, unix.AF_INET6); err != nil {
+			log.Printf("failed to delete stale UDP conntrack entries for %s: %v", netConf.ContIPv6.IP, err)
 		}
 	}
 
@@ -105,6 +119,10 @@ func cmdDel(args *skel.CmdArgs) error {
 	netConf, _, err := parseConfig(args.StdinData, args.IfName)
 	if err != nil {
 		return fmt.Errorf("failed to parse config: %v", err)
+	}
+
+	if len(netConf.RuntimeConfig.PortMaps) == 0 {
+		return nil
 	}
 
 	netConf.ContainerID = args.ContainerID
@@ -138,13 +156,13 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 	conf.ContainerID = args.ContainerID
 
-	if conf.ContIPv4 != nil {
+	if conf.ContIPv4.IP != nil {
 		if err := checkPorts(conf, conf.ContIPv4); err != nil {
 			return err
 		}
 	}
 
-	if conf.ContIPv6 != nil {
+	if conf.ContIPv6.IP != nil {
 		if err := checkPorts(conf, conf.ContIPv6); err != nil {
 			return err
 		}
@@ -205,9 +223,9 @@ func parseConfig(stdin []byte, ifName string) (*PortMapConf, *current.Result, er
 
 	if conf.PrevResult != nil {
 		for _, ip := range result.IPs {
-			if ip.Version == "6" && conf.ContIPv6 != nil {
+			if ip.Version == "6" && conf.ContIPv6.IP != nil {
 				continue
-			} else if ip.Version == "4" && conf.ContIPv4 != nil {
+			} else if ip.Version == "4" && conf.ContIPv4.IP != nil {
 				continue
 			}
 
@@ -223,9 +241,9 @@ func parseConfig(stdin []byte, ifName string) (*PortMapConf, *current.Result, er
 			}
 			switch ip.Version {
 			case "6":
-				conf.ContIPv6 = ip.Address.IP
+				conf.ContIPv6 = ip.Address
 			case "4":
-				conf.ContIPv4 = ip.Address.IP
+				conf.ContIPv4 = ip.Address
 			}
 		}
 	}

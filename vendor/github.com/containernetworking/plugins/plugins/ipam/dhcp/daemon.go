@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
@@ -34,7 +35,6 @@ import (
 )
 
 const listenFdsStart = 3
-const resendCount = 3
 
 var errNoMoreTries = errors.New("no more tries")
 
@@ -42,11 +42,14 @@ type DHCP struct {
 	mux             sync.Mutex
 	leases          map[string]*DHCPLease
 	hostNetnsPrefix string
+	clientTimeout   time.Duration
+	broadcast       bool
 }
 
-func newDHCP() *DHCP {
+func newDHCP(clientTimeout time.Duration) *DHCP {
 	return &DHCP{
-		leases: make(map[string]*DHCPLease),
+		leases:        make(map[string]*DHCPLease),
+		clientTimeout: clientTimeout,
 	}
 }
 
@@ -64,7 +67,7 @@ func (d *DHCP) Allocate(args *skel.CmdArgs, result *current.Result) error {
 
 	clientID := generateClientID(args.ContainerID, conf.Name, args.IfName)
 	hostNetns := d.hostNetnsPrefix + args.Netns
-	l, err := AcquireLease(clientID, hostNetns, args.IfName)
+	l, err := AcquireLease(clientID, hostNetns, args.IfName, d.clientTimeout, d.broadcast)
 	if err != nil {
 		return err
 	}
@@ -157,7 +160,10 @@ func getListener(socketPath string) (net.Listener, error) {
 	}
 }
 
-func runDaemon(pidfilePath string, hostPrefix string, socketPath string) error {
+func runDaemon(
+	pidfilePath, hostPrefix, socketPath string,
+	dhcpClientTimeout time.Duration, broadcast bool,
+) error {
 	// since other goroutines (on separate threads) will change namespaces,
 	// ensure the RPC server does not get scheduled onto those
 	runtime.LockOSThread()
@@ -177,8 +183,9 @@ func runDaemon(pidfilePath string, hostPrefix string, socketPath string) error {
 		return fmt.Errorf("Error getting listener: %v", err)
 	}
 
-	dhcp := newDHCP()
+	dhcp := newDHCP(dhcpClientTimeout)
 	dhcp.hostNetnsPrefix = hostPrefix
+	dhcp.broadcast = broadcast
 	rpc.Register(dhcp)
 	rpc.HandleHTTP()
 	http.Serve(l, nil)

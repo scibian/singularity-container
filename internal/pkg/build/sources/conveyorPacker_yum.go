@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -19,8 +19,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/build/types"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 const (
@@ -36,7 +36,6 @@ type YumConveyor struct {
 	osversion string
 	include   string
 	gpg       string
-	httpProxy string
 }
 
 // YumConveyorPacker only needs to hold the conveyor to have the needed data to pack
@@ -163,7 +162,6 @@ func (c *YumConveyor) getBootstrapOptions() (err error) {
 
 	// look for http_proxy and gpg environment vars
 	c.gpg = os.Getenv("GPG")
-	c.httpProxy = os.Getenv("http_proxy")
 
 	// get mirrorURL, updateURL, OSVerison, and Includes components to definition
 	c.mirrorurl, ok = c.b.Recipe.Header["mirrorurl"]
@@ -202,10 +200,6 @@ func (c *YumConveyor) getBootstrapOptions() (err error) {
 
 func (c *YumConveyor) genYumConfig() (err error) {
 	fileContent := "[main]\n"
-	// http proxy
-	if c.httpProxy != "" {
-		fileContent += "proxy=" + c.httpProxy + "\n"
-	}
 	fileContent += "cachedir=/var/cache/yum-bootstrap\n"
 	fileContent += "keepcache=0\n"
 	fileContent += "debuglevel=2\n"

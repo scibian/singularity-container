@@ -53,12 +53,30 @@ func loadConf(bytes []byte) (*NetConf, string, error) {
 		return nil, "", fmt.Errorf("failed to load netconf: %v", err)
 	}
 	if n.Master == "" {
-		return nil, "", fmt.Errorf(`"master" field is required. It specifies the host interface name to create the VLAN for.`)
+		return nil, "", fmt.Errorf("\"master\" field is required. It specifies the host interface name to create the VLAN for.")
 	}
 	if n.VlanId < 0 || n.VlanId > 4094 {
-		return nil, "", fmt.Errorf(`invalid VLAN ID %d (must be between 0 and 4095 inclusive)`, n.VlanId)
+		return nil, "", fmt.Errorf("invalid VLAN ID %d (must be between 0 and 4095 inclusive)", n.VlanId)
 	}
+
+	// check existing and MTU of master interface
+	masterMTU, err := getMTUByName(n.Master)
+	if err != nil {
+		return nil, "", err
+	}
+	if n.MTU < 0 || n.MTU > masterMTU {
+		return nil, "", fmt.Errorf("invalid MTU %d, must be [0, master MTU(%d)]", n.MTU, masterMTU)
+	}
+
 	return n, n.CNIVersion, nil
+}
+
+func getMTUByName(ifName string) (int, error) {
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return 0, err
+	}
+	return link.Attrs().MTU, nil
 }
 
 func createVlan(conf *NetConf, ifName string, netns ns.NetNS) (*current.Interface, error) {
@@ -74,10 +92,6 @@ func createVlan(conf *NetConf, ifName string, netns ns.NetNS) (*current.Interfac
 	tmpName, err := ip.RandomVethName()
 	if err != nil {
 		return nil, err
-	}
-
-	if conf.MTU <= 0 {
-		conf.MTU = m.Attrs().MTU
 	}
 
 	v := &netlink.Vlan{
@@ -138,7 +152,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	// run the IPAM plugin and get back the config to apply
 	r, err := ipam.ExecAdd(n.IPAM.Type, args.StdinData)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute IPAM delegate: %v", err)
 	}
 
 	// Invoke ipam del if err to avoid ip leak
@@ -193,7 +207,7 @@ func cmdDel(args *skel.CmdArgs) error {
 
 	err = ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
 		err = ip.DelLinkByName(args.IfName)
-		if err != nil && err != ip.ErrLinkNotFound {
+		if err != nil && err == ip.ErrLinkNotFound {
 			return nil
 		}
 		return err
@@ -224,7 +238,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 		return err
 	}
 	if conf.NetConf.RawPrevResult == nil {
-		return fmt.Errorf("ptp: Required prevResult missing")
+		return fmt.Errorf("vlan: Required prevResult missing")
 	}
 	if err := version.ParsePrevResult(&conf.NetConf); err != nil {
 		return err
@@ -294,10 +308,10 @@ func validateCniContainerInterface(intf current.Interface, masterIndex int, vlan
 	}
 	link, err = netlink.LinkByName(intf.Name)
 	if err != nil {
-		return fmt.Errorf("ptp: Container Interface name in prevResult: %s not found", intf.Name)
+		return fmt.Errorf("vlan: Container Interface name in prevResult: %s not found", intf.Name)
 	}
 	if intf.Sandbox == "" {
-		return fmt.Errorf("ptp: Error: Container interface %s should not be in host namespace", link.Attrs().Name)
+		return fmt.Errorf("vlan: Error: Container interface %s should not be in host namespace", link.Attrs().Name)
 	}
 
 	vlan, isVlan := link.(*netlink.Vlan)

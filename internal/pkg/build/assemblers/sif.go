@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -12,21 +12,25 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"syscall"
 
 	uuid "github.com/satori/go.uuid"
 	"github.com/sylabs/sif/pkg/sif"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/pkg/util/machine"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/image/packer"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/crypt"
 )
 
 // SIFAssembler doesn't store anything.
 type SIFAssembler struct {
-	GzipFlag       bool
-	MksquashfsPath string
+	GzipFlag        bool
+	MksquashfsProcs uint
+	MksquashfsMem   string
+	MksquashfsPath  string
 }
 
 type encryptionOptions struct {
@@ -34,7 +38,9 @@ type encryptionOptions struct {
 	plaintext []byte
 }
 
-func createSIF(path string, definition, ociConf []byte, squashfile string, encOpts *encryptionOptions) (err error) {
+func createSIF(path string, b *types.Bundle, squashfile string, encOpts *encryptionOptions, arch string) (err error) {
+	definition := b.Recipe.Raw
+
 	// general info for the new SIF file creation
 	cinfo := sif.CreateInfo{
 		Pathname:   path,
@@ -55,19 +61,28 @@ func createSIF(path string, definition, ociConf []byte, squashfile string, encOp
 	// add this descriptor input element to creation descriptor slice
 	cinfo.InputDescr = append(cinfo.InputDescr, definput)
 
-	if len(ociConf) > 0 {
-		// data we need to create a definition file descriptor
-		ociInput := sif.DescriptorInput{
-			Datatype: sif.DataGenericJSON,
-			Groupid:  sif.DescrDefaultGroup,
-			Link:     sif.DescrUnusedLink,
-			Data:     ociConf,
-			Fname:    "oci-config.json",
-		}
-		ociInput.Size = int64(binary.Size(ociInput.Data))
+	// add all JSON data object within SIF by alphabetical order
+	sorted := make([]string, 0, len(b.JSONObjects))
+	for name := range b.JSONObjects {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
 
-		// add this descriptor input element to creation descriptor slice
-		cinfo.InputDescr = append(cinfo.InputDescr, ociInput)
+	for _, name := range sorted {
+		if len(b.JSONObjects[name]) > 0 {
+			// data we need to create a definition file descriptor
+			in := sif.DescriptorInput{
+				Datatype: sif.DataGenericJSON,
+				Groupid:  sif.DescrDefaultGroup,
+				Link:     sif.DescrUnusedLink,
+				Data:     b.JSONObjects[name],
+				Fname:    name,
+			}
+			in.Size = int64(binary.Size(in.Data))
+
+			// add this descriptor input element to creation descriptor slice
+			cinfo.InputDescr = append(cinfo.InputDescr, in)
+		}
 	}
 
 	// data we need to create a system partition descriptor
@@ -99,7 +114,7 @@ func createSIF(path string, definition, ociConf []byte, squashfile string, encOp
 		sifType = sif.FsEncryptedSquashfs
 	}
 
-	err = parinput.SetPartExtra(sifType, sif.PartPrimSys, sif.GetSIFArch(runtime.GOARCH))
+	err = parinput.SetPartExtra(sifType, sif.PartPrimSys, sif.GetSIFArch(arch))
 	if err != nil {
 		return
 	}
@@ -176,6 +191,18 @@ func (a *SIFAssembler) Assemble(b *types.Bundle, path string) error {
 	if a.GzipFlag {
 		flags = append(flags, "-comp", "gzip")
 	}
+	if a.MksquashfsMem != "" {
+		flags = append(flags, "-mem", a.MksquashfsMem)
+	}
+	if a.MksquashfsProcs != 0 {
+		flags = append(flags, "-processors", fmt.Sprint(a.MksquashfsProcs))
+	}
+	arch := machine.ArchFromContainer(b.RootfsPath)
+	if arch == "" {
+		sylog.Infof("Architecture not recognized, use native")
+		arch = runtime.GOARCH
+	}
+	sylog.Verbosef("Set SIF container architecture to %s", arch)
 
 	if err := s.Create([]string{b.RootfsPath}, fsPath, flags); err != nil {
 		return fmt.Errorf("while creating squashfs: %v", err)
@@ -211,7 +238,7 @@ func (a *SIFAssembler) Assemble(b *types.Bundle, path string) error {
 
 	}
 
-	err = createSIF(path, b.Recipe.Raw, b.JSONObjects[types.OCIConfigJSON], fsPath, encOpts)
+	err = createSIF(path, b, fsPath, encOpts, arch)
 	if err != nil {
 		return fmt.Errorf("while creating SIF: %v", err)
 	}

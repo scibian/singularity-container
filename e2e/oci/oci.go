@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -12,11 +12,12 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/opencontainers/runtime-tools/generate"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	uuid "github.com/satori/go.uuid"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
 	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
 	"github.com/sylabs/singularity/pkg/ociruntime"
 )
@@ -33,7 +34,7 @@ func (c *ctx) checkOciState(t *testing.T, containerID, state string) {
 			t.Errorf("can't unmarshal oci state output: %+v", err)
 			return
 		}
-		if s.Status != state {
+		if s.Status != specs.ContainerState(state) {
 			t.Errorf("bad container state returned, got %s instead of %s", s.Status, state)
 		}
 	}
@@ -48,6 +49,9 @@ func (c *ctx) checkOciState(t *testing.T, containerID, state string) {
 }
 
 func genericOciMount(t *testing.T, c *ctx) (string, func()) {
+	require.Seccomp(t)
+	require.Filesystem(t, "overlay")
+
 	bundleDir, err := ioutil.TempDir(c.env.TestDir, "bundle-")
 	if err != nil {
 		err = errors.Wrapf(err, "creating temporary bundle directory at %q", c.env.TestDir)
@@ -65,17 +69,14 @@ func genericOciMount(t *testing.T, c *ctx) (string, func()) {
 				t.Fatalf("failed to mount OCI bundle image")
 			}
 
-			g, err := generate.New(runtime.GOOS)
+			g, err := oci.DefaultConfig()
 			if err != nil {
 				err = errors.Wrapf(err, "generating default OCI config for %q", runtime.GOOS)
 				t.Fatalf("failed to generate default OCI config: %+v", err)
 			}
 			g.SetProcessTerminal(true)
-			// NEED FIX: disable seccomp for circleci, ubuntu trusty
-			// doesn't support syscalls _llseek and _newselect
-			// g.Config.Linux.Seccomp = nil
 
-			err = g.SaveToFile(ociConfig, generate.ExportOptions{})
+			err = g.SaveToFile(ociConfig)
 			if err != nil {
 				err = errors.Wrapf(err, "saving OCI config at %q", ociConfig)
 				t.Fatalf("failed to save OCI config: %+v", err)
@@ -406,15 +407,15 @@ func (c ctx) testOciHelp(t *testing.T) {
 }
 
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env: env,
 	}
 
-	return testhelper.TestRunner(map[string]func(*testing.T){
+	return testhelper.Tests{
 		"basic":  c.testOciBasic,
 		"attach": c.testOciAttach,
 		"run":    c.testOciRun,
 		"help":   c.testOciHelp,
-	})
+	}
 }

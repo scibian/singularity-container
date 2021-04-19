@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -15,9 +15,26 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"golang.org/x/sys/unix"
 )
+
+const (
+	KiB = 1024
+	MiB = KiB * 1024
+	GiB = MiB * 1024
+	TiB = GiB * 1024
+)
+
+// Abs resolves a path to an absolute path.
+// The supplied path can not be an empty string.
+func Abs(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+
+	return filepath.Abs(path)
+}
 
 // EnsureFileWithPermission takes a file path, and 1. Creates it with
 // the specified permission, or 2. ensures a file is the specified
@@ -335,6 +352,52 @@ func CopyFile(from, to string, mode os.FileMode) (err error) {
 	return nil
 }
 
+// CopyFileAtomic copies file to a temporary file in the same destination directory
+// and the renames to the final name. This is useful to avoid races where concurrent copies
+// could happen to the same destination. It makes sure the resulting
+// file has permission bits set to the mode prior to umask. To honor umask
+// correctly the resulting file must not exist.
+func CopyFileAtomic(from, to string, mode os.FileMode) (err error) {
+
+	// MakeTmpFile forces mode with chmod, so manually apply umask to mode so we
+	// act like other file copy functions that respect umask
+	oldmask := syscall.Umask(0)
+	syscall.Umask(oldmask)
+	mode = mode &^ os.FileMode(oldmask)
+
+	parentDir := filepath.Dir(to)
+
+	tmpFile, err := MakeTmpFile(parentDir, "tmp-copy-", mode)
+	if err != nil {
+		return fmt.Errorf("could not open temporary file for copy: %v", err)
+	}
+
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+	}()
+
+	srcFile, err := os.Open(from)
+	if err != nil {
+		return fmt.Errorf("could not open file to copy: %v", err)
+	}
+	defer srcFile.Close()
+
+	_, err = io.Copy(tmpFile, srcFile)
+	if err != nil {
+		return fmt.Errorf("could not copy file: %v", err)
+	}
+	srcFile.Close()
+	tmpFile.Close()
+
+	err = os.Rename(tmpFile.Name(), to)
+	if err != nil {
+		return fmt.Errorf("could not rename temporary file in copy: %v", err)
+	}
+
+	return nil
+}
+
 // IsWritable returns true of the file that is passed in
 // is writable by the user (note: uid is checked, not euid).
 func IsWritable(path string) bool {
@@ -517,4 +580,26 @@ func readDirNames(dirname string) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// FindSize takes a size in bytes and converts it to a human-readable string representation
+// expressing kB, MB, GB or TB (whatever is smaller, but still larger than one).
+func FindSize(size int64) string {
+	var factor float64
+	var unit string
+	switch {
+	case size < MiB:
+		factor = KiB
+		unit = "KiB"
+	case size < GiB:
+		factor = MiB
+		unit = "MiB"
+	case size < TiB:
+		factor = GiB
+		unit = "GiB"
+	default:
+		factor = TiB
+		unit = "TiB"
+	}
+	return fmt.Sprintf("%.2f %s", float64(size)/factor, unit)
 }

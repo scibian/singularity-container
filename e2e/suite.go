@@ -1,4 +1,5 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020, Control Command Inc. All rights reserved.
+// Copyright (c) 2019,2020 Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -25,16 +26,18 @@ import (
 	"github.com/sylabs/singularity/e2e/config"
 	"github.com/sylabs/singularity/e2e/delete"
 	"github.com/sylabs/singularity/e2e/docker"
+	"github.com/sylabs/singularity/e2e/ecl"
 	singularityenv "github.com/sylabs/singularity/e2e/env"
+	"github.com/sylabs/singularity/e2e/gpu"
 	"github.com/sylabs/singularity/e2e/help"
 	"github.com/sylabs/singularity/e2e/imgbuild"
 	"github.com/sylabs/singularity/e2e/inspect"
 	"github.com/sylabs/singularity/e2e/instance"
 	"github.com/sylabs/singularity/e2e/key"
 	"github.com/sylabs/singularity/e2e/oci"
+	"github.com/sylabs/singularity/e2e/plugin"
 	"github.com/sylabs/singularity/e2e/pull"
 	"github.com/sylabs/singularity/e2e/push"
-	"github.com/sylabs/singularity/e2e/regressions"
 	"github.com/sylabs/singularity/e2e/remote"
 	"github.com/sylabs/singularity/e2e/run"
 	"github.com/sylabs/singularity/e2e/runhelp"
@@ -44,6 +47,7 @@ import (
 	"github.com/sylabs/singularity/e2e/version"
 
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
 )
@@ -103,6 +107,17 @@ func Run(t *testing.T) {
 	// generate singularity.conf with default values
 	e2e.SetupDefaultConfig(t, filepath.Join(testenv.TestDir, "singularity.conf"))
 
+	// create an empty plugin directory
+	e2e.SetupPluginDir(t, testenv.TestDir)
+
+	// duplicate system remote.yaml and create a temporary one on top of original
+	e2e.SetupSystemRemoteFile(t, testenv.TestDir)
+
+	// create an empty ECL configuration and empty global keyring
+	e2e.SetupSystemECLAndGlobalKeyRing(t, testenv.TestDir)
+
+	e2e.SetupDockerHubCredentials(t)
+
 	// Ensure config files are installed
 	configFiles := []string{
 		sysconfdir("singularity.conf"),
@@ -134,45 +149,46 @@ func Run(t *testing.T) {
 	testenv.TestRegistry = "localhost:5000"
 	testenv.OrasTestImage = fmt.Sprintf("oras://%s/oras_test_sif:latest", testenv.TestRegistry)
 
-	// WARNING(Sylabs-team): Please DO NOT add a call to
-	// e2e.PrepRegistry here. If you need to access the local
-	// registry, add the call at the top of your own test.
-	//
+	// Because tests are parallelized, and PrepRegistry temporarily masks
+	// the Singularity instance directory we *must* now call it before we
+	// start running tests which could use instance and oci functionality.
+	// See: https://github.com/hpcng/singularity/issues/5744
+	e2e.PrepRegistry(t, testenv)
 	// e2e.KillRegistry is called here to ensure that the registry
 	// is stopped after tests run.
 	defer e2e.KillRegistry(t, testenv)
 
+	suite := testhelper.NewSuite(t, testenv)
+
 	// RunE2ETests by functionality.
 	//
 	// Please keep this list sorted.
-	suites := map[string]func(*testing.T){
-		"ACTIONS":     actions.E2ETests(testenv),
-		"BUILDCFG":    e2ebuildcfg.E2ETests(testenv),
-		"BUILD":       imgbuild.E2ETests(testenv),
-		"CACHE":       cache.E2ETests(testenv),
-		"CMDENVVARS":  cmdenvvars.E2ETests(testenv),
-		"CONFIG":      config.E2ETests(testenv),
-		"DELETE":      delete.E2ETests(testenv),
-		"DOCKER":      docker.E2ETests(testenv),
-		"ENV":         singularityenv.E2ETests(testenv),
-		"HELP":        help.E2ETests(testenv),
-		"INSPECT":     inspect.E2ETests(testenv),
-		"INSTANCE":    instance.E2ETests(testenv),
-		"KEY":         key.E2ETests(testenv),
-		"OCI":         oci.E2ETests(testenv),
-		"PULL":        pull.E2ETests(testenv),
-		"PUSH":        push.E2ETests(testenv),
-		"REGRESSIONS": regressions.E2ETests(testenv),
-		"REMOTE":      remote.E2ETests(testenv),
-		"RUN":         run.E2ETests(testenv),
-		"RUNHELP":     runhelp.E2ETests(testenv),
-		"SECURITY":    security.E2ETests(testenv),
-		"SIGN":        sign.E2ETests(testenv),
-		"VERIFY":      verify.E2ETests(testenv),
-		"VERSION":     version.E2ETests(testenv),
-	}
+	suite.AddGroup("ACTIONS", actions.E2ETests)
+	suite.AddGroup("BUILDCFG", e2ebuildcfg.E2ETests)
+	suite.AddGroup("BUILD", imgbuild.E2ETests)
+	suite.AddGroup("CACHE", cache.E2ETests)
+	suite.AddGroup("CMDENVVARS", cmdenvvars.E2ETests)
+	suite.AddGroup("CONFIG", config.E2ETests)
+	suite.AddGroup("DELETE", delete.E2ETests)
+	suite.AddGroup("DOCKER", docker.E2ETests)
+	suite.AddGroup("ECL", ecl.E2ETests)
+	suite.AddGroup("ENV", singularityenv.E2ETests)
+	suite.AddGroup("GPU", gpu.E2ETests)
+	suite.AddGroup("HELP", help.E2ETests)
+	suite.AddGroup("INSPECT", inspect.E2ETests)
+	suite.AddGroup("INSTANCE", instance.E2ETests)
+	suite.AddGroup("KEY", key.E2ETests)
+	suite.AddGroup("OCI", oci.E2ETests)
+	suite.AddGroup("PLUGIN", plugin.E2ETests)
+	suite.AddGroup("PULL", pull.E2ETests)
+	suite.AddGroup("PUSH", push.E2ETests)
+	suite.AddGroup("REMOTE", remote.E2ETests)
+	suite.AddGroup("RUN", run.E2ETests)
+	suite.AddGroup("RUNHELP", runhelp.E2ETests)
+	suite.AddGroup("SECURITY", security.E2ETests)
+	suite.AddGroup("SIGN", sign.E2ETests)
+	suite.AddGroup("VERIFY", verify.E2ETests)
+	suite.AddGroup("VERSION", version.E2ETests)
 
-	for name, fn := range suites {
-		t.Run(name, fn)
-	}
+	suite.Run()
 }

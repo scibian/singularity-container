@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,62 +7,70 @@ package plugin
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 
-	"github.com/sylabs/sif/pkg/sif"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/image"
 	pluginapi "github.com/sylabs/singularity/pkg/plugin"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
-// InstallFromSIF installs a plugin under libexecDir. It will:
+// Install installs a plugin from a SIF image under rootDir. It will:
 //     1. Check that the SIF is a valid plugin
-//     2. Use name (or retrieve one from Manifest) and calculate the installation path
+//     2. Use name from Manifest and calculate the installation path
 //     3. Copy the SIF into the plugin path
 //     4. Extract the binary object into the path
 //     5. Generate a default config file in the path
 //     6. Write the Meta struct onto disk in dirRoot
-func InstallFromSIF(fimg *sif.FileImage, name, libexecDir string) error {
-	sylog.Debugf("Installing plugin from SIF to %q", libexecDir)
+func Install(sifPath string) error {
+	sylog.Debugf("Installing plugin from SIF to %q", rootDir)
 
-	if name == "" {
-		sr := newSifFileImageReader(fimg)
-		if !isPluginFile(sr) {
-			return fmt.Errorf("not a valid plugin")
-		}
-		manifest := getManifest(sr)
-		name = manifest.Name
+	img, err := image.Init(sifPath, false)
+	if err != nil {
+		return fmt.Errorf("could not load plugin: %w", err)
+	} else if !isPluginFile(img) {
+		return fmt.Errorf("%s is not a valid plugin", sifPath)
 	}
 
-	pluginDir := filepath.Join(libexecDir, dirRoot)
-	dstDir, err := filepath.Abs(filepath.Join(pluginDir, pathFromName(name)))
+	manifest, err := getManifest(img)
 	if err != nil {
-		return fmt.Errorf("could not get plugin installation path: %w", err)
+		return fmt.Errorf("could not get manifest: %s", err)
+	} else if manifest.Name == "" {
+		return fmt.Errorf("empty plugin in manifest")
+	}
+
+	// as the name determine the path inside the plugin root
+	// directory, we first ensure that the name doesn't trick us
+	// with a path traversal
+	cleanName := filepath.Join("/", filepath.Clean(manifest.Name))
+	if manifest.Name[0] != '/' {
+		cleanName = cleanName[1:]
+	}
+	if cleanName != manifest.Name {
+		return fmt.Errorf("plugin manifest name %q contains path traversal", manifest.Name)
 	}
 
 	m := &Meta{
-		Name:    name,
-		Path:    dstDir,
+		Name:    manifest.Name,
 		Enabled: true,
-
-		fimg: fimg,
 	}
 
-	err = m.install(pluginDir)
+	err = m.install(img)
 	if err != nil {
 		return fmt.Errorf("could not install plugin: %w", err)
 	}
 	return nil
 }
 
-// Uninstall removes the plugin matching "name" from the specified
-// singularity installation directory.
-func Uninstall(name, libexecdir string) error {
-	pluginDir := filepath.Join(libexecdir, dirRoot)
-	sylog.Debugf("Uninstalling plugin %q from %q", name, pluginDir)
+// Uninstall removes the plugin matching "name" from the singularity
+// plugin installation directory.
+func Uninstall(name string) error {
+	sylog.Debugf("Uninstalling plugin %q from %q", name, rootDir)
 
-	meta, err := loadMetaByName(name, pluginDir)
+	meta, err := loadMetaByName(name)
 	if err != nil {
 		return err
 	}
@@ -73,13 +81,12 @@ func Uninstall(name, libexecdir string) error {
 }
 
 // List returns all the singularity plugins installed in
-// libexecdir in the form of a list of Meta information.
-func List(libexecdir string) ([]*Meta, error) {
-	pluginDir := filepath.Join(libexecdir, dirRoot)
-	pattern := filepath.Join(pluginDir, "*.meta")
+// rootDir in the form of a list of Meta information.
+func List() ([]*Meta, error) {
+	pattern := filepath.Join(rootDir, "*.meta")
 	entries, err := filepath.Glob(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("cannot list plugins in directory %q", pluginDir)
+		return nil, fmt.Errorf("cannot list plugins in directory %q", rootDir)
 	}
 
 	var metas []*Meta
@@ -106,12 +113,11 @@ func List(libexecdir string) ([]*Meta, error) {
 	return metas, nil
 }
 
-// Enable enables the plugin named "name" found under "libexecdir".
-func Enable(name, libexecdir string) error {
-	pluginDir := filepath.Join(libexecdir, dirRoot)
-	sylog.Debugf("Enabling plugin %q in %q", name, pluginDir)
+// Enable enables the plugin named "name" found under rootDir.
+func Enable(name string) error {
+	sylog.Debugf("Enabling plugin %q in %q", name, rootDir)
 
-	meta, err := loadMetaByName(name, pluginDir)
+	meta, err := loadMetaByName(name)
 	if err != nil {
 		return err
 	}
@@ -126,12 +132,11 @@ func Enable(name, libexecdir string) error {
 	return meta.enable()
 }
 
-// Disable disables the plugin named "name" found under "libexecdir"
-func Disable(name, libexecdir string) error {
-	pluginDir := filepath.Join(libexecdir, dirRoot)
-	sylog.Debugf("Disabling plugin %q in %q", name, pluginDir)
+// Disable disables the plugin named "name" found under rootDir.
+func Disable(name string) error {
+	sylog.Debugf("Disabling plugin %q in %q", name, rootDir)
 
-	meta, err := loadMetaByName(name, pluginDir)
+	meta, err := loadMetaByName(name)
 	if err != nil {
 		return err
 	}
@@ -148,53 +153,52 @@ func Disable(name, libexecdir string) error {
 
 // Inspect obtains information about the plugin "name".
 //
-// "name" can be either the name of plugin installed under "libexecdir"
+// "name" can be either the name of plugin installed under rootDir
 // or the name of an image file corresponding to a plugin.
-func Inspect(name, libexecdir string) (pluginapi.Manifest, error) {
+func Inspect(name string) (pluginapi.Manifest, error) {
 	var manifest pluginapi.Manifest
 
 	// LoadContainer returns a decorated error, no it's not possible
 	// to ask whether the error happens because the file does not
 	// exist or something else. Check for the file _before_ trying
 	// to load it as a container.
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			// no file, try to find the installed plugin
-			pluginDir := filepath.Join(libexecdir, dirRoot)
-			meta, err := loadMetaByName(name, pluginDir)
-			if err != nil {
-				// Metafile not found, or we cannot read
-				// it. There's nothing we can do.
-				return manifest, err
-			}
-
-			// Replace the original name, which seems to be
-			// the name of a plugin, by the path to the
-			// installed SIF file for that plugin.
-			name = meta.imageName()
-		} else {
+	_, err := os.Stat(name)
+	if err != nil {
+		if !os.IsNotExist(err) {
 			// There seems to be a file here, but we cannot
 			// read it.
 			return manifest, err
 		}
+
+		// no file, try to find the installed plugin
+		meta, err := loadMetaByName(name)
+		if err != nil {
+			// Metafile not found, or we cannot read
+			// it. There's nothing we can do.
+			return manifest, err
+		}
+
+		// Replace the original name, which seems to be
+		// the name of a plugin, by the path to the
+		// installed manifest file for that plugin.
+		data, err := ioutil.ReadFile(meta.manifestName())
+		if err != nil {
+			return manifest, err
+		}
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return manifest, err
+		}
+	} else {
+		// at this point, either the file is there under the original
+		// name or we found one by looking at the metafile.
+		img, err := image.Init(name, false)
+		if err != nil {
+			return manifest, fmt.Errorf("could not load plugin: %w", err)
+		} else if !isPluginFile(img) {
+			return manifest, fmt.Errorf("%s is not a valid plugin", name)
+		}
+		return getManifest(img)
 	}
-
-	// at this point, either the file is there under the original
-	// name or we found one by looking at the metafile.
-	fimg, err := sif.LoadContainer(name, true)
-	if err != nil {
-		return manifest, err
-	}
-
-	defer fimg.UnloadContainer()
-
-	r := newSifFileImageReader(&fimg)
-
-	if !isPluginFile(r) {
-		return manifest, fmt.Errorf("not a valid plugin")
-	}
-
-	manifest = getManifest(r)
 
 	return manifest, nil
 }

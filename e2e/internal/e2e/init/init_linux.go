@@ -68,7 +68,7 @@ static int getUnprivIDs(pid_t pid, uid_t *uid, gid_t *gid) {
 		return -1;
 	}
 	pid_t ppid = getProcInfo(pid, uid, gid);
-	if ( *uid == 0 ) {
+	if ( *uid == 0 || *gid == 0 ) {
 		return getUnprivIDs(ppid, uid, gid);
 	}
 	return 0;
@@ -139,6 +139,7 @@ __attribute__((constructor)) static void init(void) {
 
 	if ( getuid() != 0 ) {
 		fprintf(stderr, "tests must be executed as root user\n");
+		fprintf(stderr, "%d %d", uid, gid);
 		exit(1);
 	}
 	if ( getUnprivIDs(getppid(), &uid, &gid) < 0 ) {

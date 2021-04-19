@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,8 +14,8 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
-	"github.com/sylabs/singularity/pkg/runtime/engine/config"
+	"github.com/sylabs/singularity/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 )
 
 var (
@@ -54,12 +54,17 @@ func cryptsetup(cfgpath string) (string, error) {
 		return "", errCryptsetupNotFound
 	}
 
-	cfg, err := config.ParseFile(cfgpath)
-	if err != nil {
-		return "", errors.Wrap(err, "unable to parse singularity configuration file")
-	}
+	path := ""
 
-	path := cfg.CryptsetupPath
+	if cfg := singularityconf.GetCurrentConfig(); cfg != nil {
+		path = cfg.CryptsetupPath
+	} else {
+		cfg, err := singularityconf.Parse(cfgpath)
+		if err != nil {
+			return "", errors.Wrap(err, "unable to parse singularity configuration file")
+		}
+		path = cfg.CryptsetupPath
+	}
 
 	if path == "" {
 		if buildcfg.CRYPTSETUP_PATH == "" {

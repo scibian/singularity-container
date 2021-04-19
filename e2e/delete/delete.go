@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sylabs/singularity/e2e/internal/e2e"
+	"github.com/sylabs/singularity/e2e/internal/testhelper"
 )
 
 type ctx struct {
@@ -24,21 +25,46 @@ func (c ctx) testDeleteCmd(t *testing.T) {
 		expectExit int
 	}{
 		{
-			name:       "delete unauthorized",
+			name:       "delete unauthorized arch",
 			args:       []string{"--arch=amd64", "library://test/default/test:v0.0.3"},
 			agree:      "y",
 			expectExit: 255,
 		},
 		{
-			name:       "delete disagree",
+			name:       "delete unauthorized no arch",
+			args:       []string{"library://test/default/test:v0.0.3"},
+			agree:      "y",
+			expectExit: 255,
+		},
+		{
+			name:       "delete disagree arch",
 			args:       []string{"--arch=amd64", "library://test/default/test:v0.0.3"},
 			agree:      "n",
 			expectExit: 0,
 		},
 		{
-			name:       "delete without arch",
+			name:       "delete disagree noarch",
 			args:       []string{"library://test/default/test:v0.0.3"},
-			expectExit: 1,
+			agree:      "n",
+			expectExit: 0,
+		},
+		{
+			name:       "delete unauthorized force arch",
+			args:       []string{"--force", "--arch=amd64", "library://test/default/test:v0.0.3"},
+			agree:      "",
+			expectExit: 255,
+		},
+		{
+			name:       "delete unauthorized force noarch",
+			args:       []string{"--force", "library://test/default/test:v0.0.3"},
+			agree:      "",
+			expectExit: 255,
+		},
+		{
+			name:       "delete unauthorized custom library",
+			args:       []string{"--library=https://cloud.staging.sylabs.io", "library://test/default/test:v0.0.3"},
+			agree:      "y",
+			expectExit: 255,
 		},
 	}
 
@@ -56,12 +82,12 @@ func (c ctx) testDeleteCmd(t *testing.T) {
 }
 
 // E2ETests is the main func to trigger the test suite.
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
 		env: env,
 	}
 
-	return func(t *testing.T) {
-		t.Run("delete", c.testDeleteCmd)
+	return testhelper.Tests{
+		"delete": c.testDeleteCmd,
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -28,15 +28,14 @@ const (
 	PluginCompileLong  string = `
   The 'plugin compile' command allows a developer to compile a Singularity 
   plugin in the expected environment. The provided host directory is the 
-  location of the plugin's source code which must be located under a Singularity
-  source code directory. A compiled plugin is packed into a SIF file.`
+  location of the plugin's source code. A compiled plugin is packed into a SIF file.`
 	PluginCompileExample string = `
   $ singularity plugin compile $HOME/singularity/test-plugin`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// plugin install command
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	PluginInstallUse   string = `install [install options...] <plugin_path>`
+	PluginInstallUse   string = `install <plugin_path>`
 	PluginInstallShort string = `Install a compiled Singularity plugin`
 	PluginInstallLong  string = `
   The 'plugin install' command installs the compiled plugin found at plugin_path
@@ -102,4 +101,20 @@ const (
   Description: A test Singularity plugin.
   Author: Sylabs
   Version: 0.1.0`
+
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// plugin create command
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	PluginCreateUse   string = `create <host_path> <name>`
+	PluginCreateShort string = `Create a plugin skeleton directory`
+	PluginCreateLong  string = `
+  The 'plugin create' command allows a user to creates a plugin skeleton directory
+  structure to start development of a new plugin.`
+	PluginCreateExample string = `
+  $ singularity plugin create ~/myplugin github.com/username/myplugin
+  $ ls -1 ~/myplugin
+  go.mod
+  main.go
+  singularity_source
+  `
 )

@@ -8,11 +8,15 @@ package actions
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
@@ -355,14 +359,14 @@ func (c actionTests) STDPipe(t *testing.T) {
 		{
 			name:    "TrueLibrary",
 			command: "shell",
-			argv:    []string{"library://busybox"},
+			argv:    []string{"library://busybox:1.31.1"},
 			input:   "true",
 			exit:    0,
 		},
 		{
 			name:    "FalseLibrary",
 			command: "shell",
-			argv:    []string{"library://busybox"},
+			argv:    []string{"library://busybox:1.31.1"},
 			input:   "false",
 			exit:    1,
 		},
@@ -470,7 +474,7 @@ func (c actionTests) STDPipe(t *testing.T) {
 
 // RunFromURI tests min fuctionality for singularity run/exec URI://
 func (c actionTests) RunFromURI(t *testing.T) {
-	e2e.PrepRegistry(t, c.env)
+	e2e.EnsureRegistry(t)
 
 	runScript := "testdata/runscript.sh"
 	bind := fmt.Sprintf("%s:/.singularity.d/runscript", runScript)
@@ -486,6 +490,7 @@ func (c actionTests) RunFromURI(t *testing.T) {
 		command string
 		argv    []string
 		exit    int
+		profile e2e.Profile
 	}{
 		// Run from supported URI's and check the runscript call works
 		{
@@ -493,12 +498,21 @@ func (c actionTests) RunFromURI(t *testing.T) {
 			command: "run",
 			argv:    []string{"--bind", bind, "docker://busybox:latest", size},
 			exit:    0,
+			profile: e2e.UserProfile,
+		},
+		{
+			name:    "RunFromDockerWithoutShellOK",
+			command: "run",
+			argv:    []string{"docker://hello-world"},
+			exit:    0,
+			profile: e2e.UserProfile,
 		},
 		{
 			name:    "RunFromLibraryOK",
 			command: "run",
-			argv:    []string{"--bind", bind, "library://busybox:latest", size},
+			argv:    []string{"--bind", bind, "library://busybox:1.31.1", size},
 			exit:    0,
+			profile: e2e.UserProfile,
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
@@ -506,24 +520,28 @@ func (c actionTests) RunFromURI(t *testing.T) {
 		// 	command: "run",
 		// 	argv:    []string{"--bind", bind, "shub://singularityhub/busybox", size},
 		// 	exit:    0,
+		// 	profile: e2e.UserProfile,
 		// },
 		{
 			name:    "RunFromOrasOK",
 			command: "run",
 			argv:    []string{"--bind", bind, c.env.OrasTestImage, size},
 			exit:    0,
+			profile: e2e.UserProfile,
 		},
 		{
 			name:    "RunFromDockerKO",
 			command: "run",
 			argv:    []string{"--bind", bind, "docker://busybox:latest", "0"},
 			exit:    1,
+			profile: e2e.UserProfile,
 		},
 		{
 			name:    "RunFromLibraryKO",
 			command: "run",
-			argv:    []string{"--bind", bind, "library://busybox:latest", "0"},
+			argv:    []string{"--bind", bind, "library://busybox:1.31.1", "0"},
 			exit:    1,
+			profile: e2e.UserProfile,
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
@@ -531,12 +549,14 @@ func (c actionTests) RunFromURI(t *testing.T) {
 		// 	command: "run",
 		// 	argv:    []string{"--bind", bind, "shub://singularityhub/busybox", "0"},
 		// 	exit:    1,
+		// 	profile: e2e.UserProfile,
 		// },
 		{
 			name:    "RunFromOrasKO",
 			command: "run",
 			argv:    []string{"--bind", bind, c.env.OrasTestImage, "0"},
 			exit:    1,
+			profile: e2e.UserProfile,
 		},
 
 		// exec from a supported URI's and check the exit code
@@ -545,12 +565,14 @@ func (c actionTests) RunFromURI(t *testing.T) {
 			command: "exec",
 			argv:    []string{"docker://busybox:latest", "true"},
 			exit:    0,
+			profile: e2e.UserProfile,
 		},
 		{
 			name:    "ExecTrueLibrary",
 			command: "exec",
-			argv:    []string{"library://busybox:latest", "true"},
+			argv:    []string{"library://busybox:1.31.1", "true"},
 			exit:    0,
+			profile: e2e.UserProfile,
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
@@ -558,24 +580,28 @@ func (c actionTests) RunFromURI(t *testing.T) {
 		// 	command: "exec",
 		// 	argv:    []string{"shub://singularityhub/busybox", "true"},
 		// 	exit:    0,
+		// 	profile: e2e.UserProfile,
 		// },
 		{
 			name:    "ExecTrueOras",
 			command: "exec",
 			argv:    []string{c.env.OrasTestImage, "true"},
 			exit:    0,
+			profile: e2e.UserProfile,
 		},
 		{
 			name:    "ExecFalseDocker",
 			command: "exec",
 			argv:    []string{"docker://busybox:latest", "false"},
 			exit:    1,
+			profile: e2e.UserProfile,
 		},
 		{
 			name:    "ExecFalseLibrary",
 			command: "exec",
-			argv:    []string{"library://busybox:latest", "false"},
+			argv:    []string{"library://busybox:1.31.1", "false"},
 			exit:    1,
+			profile: e2e.UserProfile,
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
@@ -583,64 +609,74 @@ func (c actionTests) RunFromURI(t *testing.T) {
 		// 	command: "exec",
 		// 	argv:    []string{"shub://singularityhub/busybox", "false"},
 		// 	exit:    1,
+		// 	profile: e2e.UserProfile,
 		// },
 		{
 			name:    "ExecFalseOras",
 			command: "exec",
 			argv:    []string{c.env.OrasTestImage, "false"},
 			exit:    1,
+			profile: e2e.UserProfile,
 		},
 
 		// exec from URI with user namespace enabled
 		{
 			name:    "ExecTrueDockerUserns",
 			command: "exec",
-			argv:    []string{"--userns", "docker://busybox:latest", "true"},
+			argv:    []string{"docker://busybox:latest", "true"},
 			exit:    0,
+			profile: e2e.UserNamespaceProfile,
 		},
 		{
 			name:    "ExecTrueLibraryUserns",
 			command: "exec",
-			argv:    []string{"--userns", "library://busybox:latest", "true"},
+			argv:    []string{"library://busybox:1.31.1", "true"},
 			exit:    0,
+			profile: e2e.UserNamespaceProfile,
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
 		// 	name:    "ExecTrueShubUserns",
 		// 	command: "exec",
-		// 	argv:    []string{"--userns", "shub://singularityhub/busybox", "true"},
+		// 	argv:    []string{"shub://singularityhub/busybox", "true"},
 		// 	exit:    0,
+		// 	profile: e2e.UserNamespaceProfile,
 		// },
 		{
 			name:    "ExecTrueOrasUserns",
 			command: "exec",
-			argv:    []string{"--userns", c.env.OrasTestImage, "true"},
+			argv:    []string{c.env.OrasTestImage, "true"},
 			exit:    0,
+			profile: e2e.UserNamespaceProfile,
 		},
 		{
 			name:    "ExecFalseDockerUserns",
 			command: "exec",
-			argv:    []string{"--userns", "docker://busybox:latest", "false"},
+			argv:    []string{"docker://busybox:latest", "false"},
 			exit:    1,
+			profile: e2e.UserNamespaceProfile,
 		},
 		{
 			name:    "ExecFalseLibraryUserns",
 			command: "exec",
-			argv:    []string{"--userns", "library://busybox:latest", "false"},
+			argv:    []string{"library://busybox:1.31.1", "false"},
 			exit:    1,
+			profile: e2e.UserNamespaceProfile,
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
 		// 	name:    "ExecFalseShubUserns",
 		// 	command: "exec",
-		// 	argv:    []string{"--userns", "shub://singularityhub/busybox", "false"},
+		// 	argv:    []string{"shub://singularityhub/busybox", "false"},
 		// 	exit:    1,
+		// 	profile: e2e.UserNamespaceProfile,
 		// },
 		{
 			name:    "ExecFalseOrasUserns",
 			command: "exec",
-			argv:    []string{"--userns", c.env.OrasTestImage, "false"},
+			argv:    []string{c.env.OrasTestImage, "false"},
 			exit:    1,
+			profile: e2e.UserNamespaceProfile,
 		},
 	}
 
@@ -648,7 +684,7 @@ func (c actionTests) RunFromURI(t *testing.T) {
 		c.env.RunSingularity(
 			t,
 			e2e.AsSubtest(tt.name),
-			e2e.WithProfile(e2e.UserProfile),
+			e2e.WithProfile(tt.profile),
 			e2e.WithCommand(tt.command),
 			e2e.WithArgs(tt.argv...),
 			e2e.ExpectExit(tt.exit),
@@ -800,9 +836,9 @@ func (c actionTests) PersistentOverlay(t *testing.T) {
 			profile: e2e.RootProfile,
 		},
 		{
-			name:    "overlay_squashFS_find_fail_without_ro",
-			argv:    []string{"--overlay", squashfsImage, c.env.ImagePath, "true"},
-			exit:    255,
+			name:    "overlay_squashFS_find_without_ro",
+			argv:    []string{"--overlay", squashfsImage, c.env.ImagePath, "test", "-f", fmt.Sprintf("/%s", squashMarkerFile)},
+			exit:    0,
 			profile: e2e.RootProfile,
 		},
 		{
@@ -1500,13 +1536,669 @@ func (c actionTests) exitSignals(t *testing.T) {
 	}
 }
 
+func (c actionTests) fuseMount(t *testing.T) {
+	require.Filesystem(t, "fuse")
+
+	u := e2e.UserProfile.HostUser(t)
+
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "sshfs-", "")
+	defer e2e.Privileged(cleanup)
+
+	sshfsWrapper := filepath.Join(imageDir, "sshfs-wrapper")
+	rootPrivKey := filepath.Join(imageDir, "/etc/ssh/ssh_host_rsa_key")
+	userPrivKey := filepath.Join(imageDir, "user.key")
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.RootProfile),
+		e2e.WithCommand("build"),
+		e2e.WithArgs("--force", "--sandbox", imageDir, "testdata/sshfs.def"),
+		e2e.PostRun(func(t *testing.T) {
+			if t.Failed() {
+				return
+			}
+			content, err := ioutil.ReadFile(rootPrivKey)
+			if err != nil {
+				t.Errorf("could not read ssh private key: %s", err)
+				return
+			}
+			if err := ioutil.WriteFile(userPrivKey, content, 0600); err != nil {
+				t.Errorf("could not write ssh user private key: %s", err)
+				return
+			}
+			if err := os.Chown(userPrivKey, int(u.UID), int(u.GID)); err != nil {
+				t.Errorf("could not change ssh user private key owner: %s", err)
+				return
+			}
+		}),
+		e2e.ExpectExit(0),
+	)
+
+	stdinReader, stdinWriter := io.Pipe()
+
+	// we don't use an instance as it could conflict with
+	// instance tests running in parallel
+	go func() {
+		c.env.RunSingularity(
+			t,
+			e2e.WithProfile(e2e.RootProfile),
+			e2e.WithStdin(stdinReader),
+			e2e.WithCommand("run"),
+			e2e.WithArgs("--writable", "--no-home", imageDir),
+			e2e.PostRun(func(t *testing.T) {
+				stdinReader.Close()
+				stdinWriter.Close()
+			}),
+			e2e.ExpectExit(0),
+		)
+	}()
+
+	// terminate ssh server once done
+	defer stdinWriter.Write([]byte("bye"))
+
+	// wait until ssh server is up and running
+	retry := 0
+	for {
+		conn, err := net.Dial("tcp", "127.0.0.1:2022")
+		if err == nil {
+			conn.Close()
+			break
+		}
+		time.Sleep(1 * time.Second)
+		retry++
+		if retry == 5 {
+			t.Fatalf("ssh server unreachable after 5 seconds: %+v", err)
+		}
+	}
+
+	basicTests := []struct {
+		name    string
+		spec    string
+		key     string
+		profile e2e.Profile
+	}{
+		{
+			name:    "HostDaemonAsRoot",
+			spec:    "host-daemon",
+			key:     rootPrivKey,
+			profile: e2e.RootProfile,
+		},
+		{
+			name:    "HostAsRoot",
+			spec:    "host",
+			key:     rootPrivKey,
+			profile: e2e.RootProfile,
+		},
+		{
+			name:    "ContainerDaemonAsRoot",
+			spec:    "container-daemon",
+			key:     rootPrivKey,
+			profile: e2e.RootProfile,
+		},
+		{
+			name:    "ContainerAsRoot",
+			spec:    "container",
+			key:     rootPrivKey,
+			profile: e2e.RootProfile,
+		},
+		{
+			name:    "HostDaemonAsUser",
+			spec:    "host-daemon",
+			key:     userPrivKey,
+			profile: e2e.UserProfile,
+		},
+		{
+			name:    "HostAsUser",
+			spec:    "host",
+			key:     userPrivKey,
+			profile: e2e.UserProfile,
+		},
+		{
+			name:    "ContainerDaemonAsUser",
+			spec:    "container-daemon",
+			key:     userPrivKey,
+			profile: e2e.UserProfile,
+		},
+		{
+			name:    "ContainerAsUser",
+			spec:    "container",
+			key:     userPrivKey,
+			profile: e2e.UserProfile,
+		},
+		{
+			name:    "HostDaemonAsUserNamespace",
+			spec:    "host-daemon",
+			key:     userPrivKey,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "HostAsUserNamespace",
+			spec:    "host",
+			key:     userPrivKey,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "ContainerDaemonAsUserNamespace",
+			spec:    "container-daemon",
+			key:     userPrivKey,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "ContainerAsUserNamespace",
+			spec:    "container",
+			key:     userPrivKey,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "HostDaemonAsFakeroot",
+			spec:    "host-daemon",
+			key:     userPrivKey,
+			profile: e2e.FakerootProfile,
+		},
+		{
+			name:    "HostAsFakeroot",
+			spec:    "host",
+			key:     userPrivKey,
+			profile: e2e.FakerootProfile,
+		},
+		{
+			name:    "ContainerDaemonAsFakeroot",
+			spec:    "container-daemon",
+			key:     userPrivKey,
+			profile: e2e.FakerootProfile,
+		},
+		{
+			name:    "ContainerAsFakeroot",
+			spec:    "container",
+			key:     userPrivKey,
+			profile: e2e.FakerootProfile,
+		},
+	}
+
+	optionFmt := "%s:%s root@127.0.0.1:/ -p 2022 -F %s -o IdentityFile=%s -o StrictHostKeyChecking=no %s"
+	sshConfig := filepath.Join(imageDir, "etc", "ssh", "ssh_config")
+
+	for _, tt := range basicTests {
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(tt.profile),
+			e2e.WithCommand("exec"),
+			e2e.WithArgs([]string{
+				"--fusemount", fmt.Sprintf(optionFmt, tt.spec, sshfsWrapper, sshConfig, tt.key, "/mnt"),
+				imageDir,
+				"test", "-d", "/mnt/etc",
+			}...),
+			e2e.ExpectExit(0),
+		)
+	}
+}
+
+func (c actionTests) bindImage(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	require.Command(t, "mkfs.ext3")
+	require.Command(t, "mksquashfs")
+	require.Command(t, "dd")
+
+	testdir, err := ioutil.TempDir(c.env.TestDir, "bind-image-")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := func(t *testing.T) {
+		if t.Failed() {
+			t.Logf("Not removing directory %s for test %s", testdir, t.Name())
+			return
+		}
+		err := os.RemoveAll(testdir)
+		if err != nil {
+			t.Logf("Error while removing directory %s for test %s: %#v", testdir, t.Name(), err)
+		}
+	}
+	defer cleanup(t)
+
+	sifSquashImage := filepath.Join(testdir, "data_squash.sif")
+	sifExt3Image := filepath.Join(testdir, "data_ext3.sif")
+	squashfsImage := filepath.Join(testdir, "squashfs.simg")
+	ext3Img := filepath.Join(testdir, "ext3_fs.img")
+
+	// create root directory for squashfs image
+	squashDir, err := ioutil.TempDir(testdir, "root-squash-dir-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(squashDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	squashMarkerFile := "squash_marker"
+	if err := fs.Touch(filepath.Join(squashDir, squashMarkerFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	// create the squashfs overlay image
+	cmd := exec.Command("mksquashfs", squashDir, squashfsImage, "-noappend", "-all-root")
+	if res := cmd.Run(t); res.Error != nil {
+		t.Fatalf("Unexpected error while running command.\n%s", res)
+	}
+
+	// create the overlay ext3 image
+	cmd = exec.Command("dd", "if=/dev/zero", "of="+ext3Img, "bs=1M", "count=64", "status=none")
+	if res := cmd.Run(t); res.Error != nil {
+		t.Fatalf("Unexpected error while running command.\n%s", res)
+	}
+
+	cmd = exec.Command("mkfs.ext3", "-q", "-F", ext3Img)
+	if res := cmd.Run(t); res.Error != nil {
+		t.Fatalf("Unexpected error while running command.\n%s", res)
+	}
+
+	// create new SIF images
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("sif"),
+		e2e.WithArgs([]string{"new", sifSquashImage}...),
+		e2e.ExpectExit(0),
+	)
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("sif"),
+		e2e.WithArgs([]string{"new", sifExt3Image}...),
+		e2e.ExpectExit(0),
+	)
+
+	// arch partition doesn't matter for data partition so
+	// take amd64 by default
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("sif"),
+		e2e.WithArgs([]string{
+			"add",
+			"--datatype", "4", "--partarch", "2",
+			"--partfs", "1", "--parttype", "3",
+			sifSquashImage, squashfsImage,
+		}...),
+		e2e.ExpectExit(0),
+	)
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("sif"),
+		e2e.WithArgs([]string{
+			"add",
+			"--datatype", "4", "--partarch", "2",
+			"--partfs", "2", "--parttype", "3",
+			sifExt3Image, ext3Img,
+		}...),
+		e2e.ExpectExit(0),
+	)
+
+	tests := []struct {
+		name    string
+		profile e2e.Profile
+		args    []string
+		exit    int
+	}{
+		{
+			name:    "NoBindOption",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", squashfsImage + ":/bind",
+				c.env.ImagePath,
+				"test", "-f", filepath.Join("/bind", squashMarkerFile),
+			},
+			exit: 1,
+		},
+		{
+			name:    "BadIDValue",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", squashfsImage + ":/bind:id=0",
+				c.env.ImagePath,
+				"true",
+			},
+			exit: 255,
+		},
+		{
+			name:    "BadBindOption",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", squashfsImage + ":/bind:fake_option=fake",
+				c.env.ImagePath,
+				"true",
+			},
+			exit: 255,
+		},
+		{
+			name:    "SandboxKO",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", squashDir + ":/bind:image-src=/",
+				c.env.ImagePath,
+				"true",
+			},
+			exit: 255,
+		},
+		{
+			name:    "Squashfs",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", squashfsImage + ":/bind:image-src=/",
+				c.env.ImagePath,
+				"test", "-f", filepath.Join("/bind", squashMarkerFile),
+			},
+			exit: 0,
+		},
+		{
+			name:    "SquashfsDouble",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", squashfsImage + ":/bind1:image-src=/",
+				"--bind", squashfsImage + ":/bind2:image-src=/",
+				c.env.ImagePath,
+				"test", "-f", filepath.Join("/bind1", squashMarkerFile), "-a", "-f", filepath.Join("/bind2", squashMarkerFile),
+			},
+			exit: 0,
+		},
+		{
+			name:    "SquashfsBadSource",
+			profile: e2e.UserProfile,
+			args:    []string{"--bind", squashfsImage + ":/bind:image-src=/ko", c.env.ImagePath, "true"},
+			exit:    255,
+		},
+		{
+			name:    "SquashfsMixedBind",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", squashfsImage + ":/bind1:image-src=/",
+				"--bind", squashDir + ":/bind2",
+				c.env.ImagePath,
+				"test", "-f", filepath.Join("/bind1", squashMarkerFile), "-a", "-f", filepath.Join("/bind2", squashMarkerFile),
+			},
+			exit: 0,
+		},
+		{
+			name:    "Ext3Write",
+			profile: e2e.RootProfile,
+			args: []string{
+				"--bind", ext3Img + ":/bind:image-src=/",
+				c.env.ImagePath,
+				"touch", "/bind/ext3_marker",
+			},
+			exit: 0,
+		},
+		{
+			name:    "Ext3WriteKO",
+			profile: e2e.RootProfile,
+			args: []string{
+				"--bind", ext3Img + ":/bind:image-src=/,ro",
+				c.env.ImagePath,
+				"touch", "/bind/ext3_marker",
+			},
+			exit: 1,
+		},
+		{
+			name:    "Ext3Read",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", ext3Img + ":/bind:image-src=/",
+				c.env.ImagePath,
+				"test", "-f", "/bind/ext3_marker",
+			},
+			exit: 0,
+		},
+		{
+			name:    "Ext3Double",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", ext3Img + ":/bind1:image-src=/",
+				"--bind", ext3Img + ":/bind2:image-src=/",
+				c.env.ImagePath,
+				"true",
+			},
+			exit: 255,
+		},
+		{
+			name:    "SifDataSquash",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", sifSquashImage + ":/bind:image-src=/",
+				c.env.ImagePath,
+				"test", "-f", filepath.Join("/bind", squashMarkerFile),
+			},
+			exit: 0,
+		},
+		{
+			name:    "SifDataExt3Write",
+			profile: e2e.RootProfile,
+			args: []string{
+				"--bind", sifExt3Image + ":/bind:image-src=/",
+				c.env.ImagePath,
+				"touch", "/bind/ext3_marker",
+			},
+			exit: 0,
+		},
+		{
+			name:    "SifDataExt3Read",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", sifExt3Image + ":/bind:image-src=/",
+				c.env.ImagePath,
+				"test", "-f", "/bind/ext3_marker",
+			},
+			exit: 0,
+		},
+		{
+			name:    "SifDataExt3AndSquash",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", sifExt3Image + ":/ext3:image-src=/",
+				"--bind", sifSquashImage + ":/squash:image-src=/",
+				c.env.ImagePath,
+				"test", "-f", filepath.Join("/squash", squashMarkerFile), "-a", "-f", "/ext3/ext3_marker",
+			},
+			exit: 0,
+		},
+		{
+			name:    "SifDataExt3Double",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--bind", sifExt3Image + ":/bind1:image-src=/",
+				"--bind", sifExt3Image + ":/bind2:image-src=/",
+				c.env.ImagePath,
+				"true",
+			},
+			exit: 255,
+		},
+		{
+			name:    "SifWithID",
+			profile: e2e.UserProfile,
+			args: []string{
+				// rootfs ID is now '4'
+				"--bind", c.env.ImagePath + ":/rootfs:id=4",
+				c.env.ImagePath,
+				"test", "-d", "/rootfs/etc",
+			},
+			exit: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(tt.profile),
+			e2e.WithCommand("exec"),
+			e2e.WithArgs(tt.args...),
+			e2e.ExpectExit(tt.exit),
+		)
+	}
+}
+
+// actionUmask tests that the within-container umask is correct in action flows
+func (c actionTests) actionUmask(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	u := e2e.UserProfile.HostUser(t)
+
+	// Set umask for tests to 0000
+	oldUmask := syscall.Umask(0)
+	defer syscall.Umask(oldUmask)
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.FakerootProfile),
+		e2e.WithDir(u.Dir),
+		e2e.WithCommand("exec"),
+		e2e.WithArgs(c.env.ImagePath, "sh", "-c", "umask"),
+		e2e.ExpectExit(
+			0,
+			e2e.ExpectOutput(e2e.ExactMatch, "0000"),
+		),
+	)
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.FakerootProfile),
+		e2e.WithDir(u.Dir),
+		e2e.WithCommand("exec"),
+		e2e.WithArgs("--no-umask", c.env.ImagePath, "sh", "-c", "umask"),
+		e2e.ExpectExit(
+			0,
+			e2e.ExpectOutput(e2e.ExactMatch, "0022"),
+		),
+	)
+
+}
+
+func (c actionTests) actionNoMount(t *testing.T) {
+	// TODO - this does not test --no-mount hostfs as that is a little tricky
+	// We are in a mount namespace for e2e tests, so we can setup some mounts in there,
+	// create a custom config with `mount hostfs = yes` set, and then look for presence
+	// or absence of the mounts. I'd like to think about this a bit more though - work up
+	// some nice helpers & cleanup for the actions we need.
+	e2e.EnsureImage(t, c.env)
+
+	tests := []struct {
+		name string
+		// Which mount directive to override (disable)
+		noMount string
+		// Output of `mount` command to ensure we should not find
+		// e.g for `--no-mount home` "on /home" as mount command output is of the form:
+		//   tmpfs on /home/dave type tmpfs (rw,seclabel,nosuid,nodev,relatime,size=16384k,uid=1000,gid=1000)
+		noMatch string
+		// Whether to run the test in default and/or contained modes
+		// Needs to be specified as e.g. by default `/dev` mount is a full bind that will always include `/dev/pts`
+		// ... but in --contained mode disabling devpts stops it being bound in.
+		testDefault   bool
+		testContained bool
+		// To test --no-mount cwd we need to chdir for the execution
+		cwd  string
+		exit int
+	}{
+		{
+			name:          "proc",
+			noMount:       "proc",
+			noMatch:       "on /proc",
+			testDefault:   true,
+			testContained: true,
+			exit:          1, // mount fails with exit code 1 when there is no `/proc`
+		},
+		{
+			name:          "sys",
+			noMount:       "sys",
+			noMatch:       "on /sys",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
+		{
+			name:          "dev",
+			noMount:       "dev",
+			noMatch:       "on /dev",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
+		{
+			name:          "devpts",
+			noMount:       "devpts",
+			noMatch:       "on /dev/pts",
+			testDefault:   false,
+			testContained: true,
+			exit:          0,
+		},
+		{
+			name:          "tmp",
+			noMount:       "tmp",
+			noMatch:       "on /tmp",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
+		{
+			name:          "home",
+			noMount:       "home",
+			noMatch:       "on /home",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
+		{
+			// /srv is an LSB directory we should be able to rely on for our CWD test
+			name:        "cwd",
+			noMount:     "cwd",
+			noMatch:     "on /srv",
+			testDefault: true,
+			// CWD is never mounted with contain so --no-mount CWD doesn't have an effect,
+			// but let's verify it isn't mounted anyway.
+			testContained: true,
+			cwd:           "/srv",
+			exit:          0,
+		},
+	}
+
+	for _, tt := range tests {
+
+		if tt.testDefault {
+			c.env.RunSingularity(
+				t,
+				e2e.WithDir(tt.cwd),
+				e2e.AsSubtest(tt.name),
+				e2e.WithProfile(e2e.UserProfile),
+				e2e.WithCommand("exec"),
+				e2e.WithArgs("--no-mount", tt.noMount, c.env.ImagePath, "mount"),
+				e2e.ExpectExit(tt.exit,
+					e2e.ExpectOutput(e2e.UnwantedContainMatch, tt.noMatch)),
+			)
+		}
+		if tt.testContained {
+			c.env.RunSingularity(
+				t,
+				e2e.WithDir(tt.cwd),
+				e2e.AsSubtest(tt.name+"Contained"),
+				e2e.WithProfile(e2e.UserProfile),
+				e2e.WithCommand("exec"),
+				e2e.WithArgs("--contain", "--no-mount", tt.noMount, c.env.ImagePath, "mount"),
+				e2e.ExpectExit(tt.exit,
+					e2e.ExpectOutput(e2e.UnwantedContainMatch, tt.noMatch)),
+			)
+		}
+	}
+}
+
 // E2ETests is the main func to trigger the test suite
-func E2ETests(env e2e.TestEnv) func(*testing.T) {
+func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := actionTests{
 		env: env,
 	}
 
-	return testhelper.TestRunner(map[string]func(*testing.T){
+	return testhelper.Tests{
 		"action URI":            c.RunFromURI,          // action_URI
 		"exec":                  c.actionExec,          // singularity exec
 		"persistent overlay":    c.PersistentOverlay,   // Persistent Overlay
@@ -1521,8 +2213,22 @@ func E2ETests(env e2e.TestEnv) func(*testing.T) {
 		"issue 4797":            c.issue4797,           // https://github.com/sylabs/singularity/issues/4797
 		"issue 4823":            c.issue4823,           // https://github.com/sylabs/singularity/issues/4823
 		"issue 4836":            c.issue4836,           // https://github.com/sylabs/singularity/issues/4836
+		"issue 5211":            c.issue5211,           // https://github.com/sylabs/singularity/issues/5211
+		"issue 5228":            c.issue5228,           // https://github.com/sylabs/singularity/issues/5228
+		"issue 5271":            c.issue5271,           // https://github.com/sylabs/singularity/issues/5271
+		"issue 5307":            c.issue5307,           // https://github.com/sylabs/singularity/issues/5307
+		"issue 5399":            c.issue5399,           // https://github.com/sylabs/singularity/issues/5399
+		"issue 5455":            c.issue5455,           // https://github.com/sylabs/singularity/issues/5455
+		"issue 5465":            c.issue5465,           // https://github.com/sylabs/singularity/issues/5465
+		"issue 5599":            c.issue5599,           // https://github.com/sylabs/singularity/issues/5599
+		"issue 5631":            c.issue5631,           // https://github.com/sylabs/singularity/issues/5631
+		"issue 5690":            c.issue5690,           // https://github.com/sylabs/singularity/issues/5690
 		"network":               c.actionNetwork,       // test basic networking
 		"binds":                 c.actionBinds,         // test various binds
 		"exit and signals":      c.exitSignals,         // test exit and signals propagation
-	})
+		"fuse mount":            c.fuseMount,           // test fusemount option
+		"bind image":            c.bindImage,           // test bind image
+		"umask":                 c.actionUmask,         // test umask propagation
+		"no-mount":              c.actionNoMount,       // test --no-mount
+	}
 }

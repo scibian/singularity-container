@@ -22,6 +22,7 @@ import (
 	"net"
 
 	"github.com/containernetworking/cni/pkg/types/current"
+	"github.com/containernetworking/plugins/pkg/utils"
 	"github.com/coreos/go-iptables/iptables"
 )
 
@@ -30,20 +31,6 @@ func getPrivChainRules(ip string) [][]string {
 	rules = append(rules, []string{"-d", ip, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"})
 	rules = append(rules, []string{"-s", ip, "-j", "ACCEPT"})
 	return rules
-}
-
-func ensureChain(ipt *iptables.IPTables, table, chain string) error {
-	chains, err := ipt.ListChains(table)
-	if err != nil {
-		return fmt.Errorf("failed to list iptables chains: %v", err)
-	}
-	for _, ch := range chains {
-		if ch == chain {
-			return nil
-		}
-	}
-
-	return ipt.NewChain(table, chain)
 }
 
 func generateFilterRule(privChainName string) []string {
@@ -70,13 +57,13 @@ func ensureFirstChainRule(ipt *iptables.IPTables, chain string, rule []string) e
 
 func (ib *iptablesBackend) setupChains(ipt *iptables.IPTables) error {
 	privRule := generateFilterRule(ib.privChainName)
-	adminRule := generateFilterRule(ib.adminChainName)
+	adminRule := generateAdminRule(ib.adminChainName)
 
 	// Ensure our private chains exist
-	if err := ensureChain(ipt, "filter", ib.privChainName); err != nil {
+	if err := utils.EnsureChain(ipt, "filter", ib.privChainName); err != nil {
 		return err
 	}
-	if err := ensureChain(ipt, "filter", ib.adminChainName); err != nil {
+	if err := utils.EnsureChain(ipt, "filter", ib.adminChainName); err != nil {
 		return err
 	}
 
@@ -160,10 +147,10 @@ func (ib *iptablesBackend) checkRules(conf *FirewallNetConf, result *current.Res
 	}
 
 	// Ensure our private chains exist
-	if err := ensureChain(ipt, "filter", ib.privChainName); err != nil {
+	if err := utils.EnsureChain(ipt, "filter", ib.privChainName); err != nil {
 		return err
 	}
-	if err := ensureChain(ipt, "filter", ib.adminChainName); err != nil {
+	if err := utils.EnsureChain(ipt, "filter", ib.adminChainName); err != nil {
 		return err
 	}
 
@@ -178,7 +165,7 @@ func (ib *iptablesBackend) checkRules(conf *FirewallNetConf, result *current.Res
 	}
 
 	// Ensure our admin override chain rule exists in our private chain
-	adminRule := generateFilterRule(ib.adminChainName)
+	adminRule := generateAdminRule(ib.adminChainName)
 	adminExists, err := ipt.Exists("filter", ib.privChainName, adminRule...)
 	if err != nil {
 		return err

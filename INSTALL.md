@@ -1,10 +1,14 @@
 # Installing Singularity
 
 Since you are reading this from the Singularity source code, it will be assumed
-that you are building/compiling.
+that you are building/compiling from source.
 
-For full instructions on installation, check out our
-[installation guide](https://www.sylabs.io/guides/3.5/user-guide/installation.html).
+Singularity packages are available for various Linux distributions, but may not
+always be up-to-date with the latest source release version.
+
+For full instructions on installation, including building RPMs,
+installing pre-built EPEL packages etc. please check the
+[installation section of the admin guide](https://sylabs.io/guides/latest/admin-guide/).
 
 ## Install system dependencies
 
@@ -14,8 +18,7 @@ On Debian-based systems:
 ```
 $ sudo apt-get update && \
   sudo apt-get install -y build-essential \
-  libssl-dev uuid-dev libseccomp-dev \
-  pkg-config squashfs-tools cryptsetup
+  libseccomp-dev pkg-config squashfs-tools cryptsetup
 ```
 
 On CentOS/RHEL:
@@ -23,11 +26,9 @@ On CentOS/RHEL:
 ```
 $ sudo yum groupinstall -y 'Development Tools' && \
   sudo yum install -y epel-release && \
-  sudo yum install -y golang openssl-devel libuuid-devel \
-  libseccomp-devel squashfs-tools cryptsetup
+  sudo yum install -y golang libseccomp-devel \
+  squashfs-tools cryptsetup
 ```
-
-_NOTE:_ On CentOS/RHEL 6 or less, you may skip `libseccomp-devel`.
 
 ## Install Golang
 
@@ -40,7 +41,7 @@ _**NOTE:** if you are updating Go from a older version, make sure you remove `/u
 reinstalling it._
 
 ```
-$ export VERSION=1.13.7 OS=linux ARCH=amd64  # change this as you need
+$ export VERSION=1.15.8 OS=linux ARCH=amd64  # change this as you need
 
 $ wget -O /tmp/go${VERSION}.${OS}-${ARCH}.tar.gz https://dl.google.com/go/go${VERSION}.${OS}-${ARCH}.tar.gz && \
   sudo tar -C /usr/local -xzf /tmp/go${VERSION}.${OS}-${ARCH}.tar.gz
@@ -68,11 +69,11 @@ In order to install golangci-lint, you can run:
 
 ```
 $ curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh |
-  sh -s -- -b $(go env GOPATH)/bin v1.15.0
+  sh -s -- -b $(go env GOPATH)/bin v1.21.0
 ```
 
 This will download and install golangci-lint from its Github releases
-page (using version v1.15.0 at the moment).
+page (using version v1.21.0 at the moment).
 
 ## Clone the repo
 
@@ -89,7 +90,7 @@ $ mkdir -p ${GOPATH}/src/github.com/sylabs && \
 To build a stable version of Singularity, check out a [release tag](https://github.com/sylabs/singularity/tags) before compiling:
 
 ```
-$ git checkout v3.5.3
+$ git checkout v3.7.1
 ```
 
 ## Compiling Singularity
@@ -112,7 +113,7 @@ $ singularity version
 To build in a different folder and to set the install prefix to a different path:
 
 ```
-$ ./mconfig -p /usr/local -b ./buildtree
+$ ./mconfig -b ./buildtree -p /usr/local
 ```
 
 ## Install from the RPM
@@ -132,7 +133,7 @@ as shown above.  Then download the latest
 and use it to install the RPM like this: 
 
 ```
-$ export VERSION=3.5.3  # this is the singularity version, change as you need
+$ export VERSION=3.7.3  # this is the singularity version, change as you need
 
 $ wget https://github.com/sylabs/singularity/releases/download/v${VERSION}/singularity-${VERSION}.tar.gz && \
     rpmbuild -tb singularity-${VERSION}.tar.gz && \
@@ -148,7 +149,7 @@ tarball and use it to install Singularity:
 $ cd $GOPATH/src/github.com/sylabs/singularity && \
   ./mconfig && \
   make -C builddir rpm && \
-  sudo rpm -ivh ~/rpmbuild/RPMS/x86_64/singularity-3.5.3*.x86_64.rpm # or whatever version you built
+  sudo rpm -ivh ~/rpmbuild/RPMS/x86_64/singularity-3.7.3*.x86_64.rpm # or whatever version you built
 ```
 
 To build an rpm with an alternative install prefix set RPMPREFIX on the

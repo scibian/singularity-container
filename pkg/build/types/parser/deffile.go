@@ -24,6 +24,8 @@ import (
 var (
 	errInvalidSection  = errors.New("invalid section(s) specified")
 	errEmptyDefinition = errors.New("Empty definition file")
+	// Match space but not within double quotes
+	fileSplitter = regexp.MustCompile(`[^\s"']+|"([^"]*)"|'([^']*)`)
 )
 
 // InvalidSectionError records an error and the sections that caused it.
@@ -133,7 +135,7 @@ func getSectionName(line string) string {
 }
 
 // parseTokenSection into appropriate components to be placed into a types.Script struct
-func parseTokenSection(tok string, sections map[string]*types.Script, files *[]types.Files) error {
+func parseTokenSection(tok string, sections map[string]*types.Script, files *[]types.Files, appOrder *[]string) error {
 	split := strings.SplitN(tok, "\n", 2)
 	if len(split) != 2 {
 		return fmt.Errorf("section %v: could not be split into section name and body", split[0])
@@ -157,7 +159,8 @@ func parseTokenSection(tok string, sections map[string]*types.Script, files *[]t
 				continue
 			}
 			var src, dst string
-			lineSubs := strings.SplitN(line, " ", 2)
+			// Split at space, but not within double quotes
+			lineSubs := fileSplitter.FindAllString(line, -1)
 			if len(lineSubs) < 2 {
 				src = strings.TrimSpace(lineSubs[0])
 				dst = ""
@@ -165,6 +168,8 @@ func parseTokenSection(tok string, sections map[string]*types.Script, files *[]t
 				src = strings.TrimSpace(lineSubs[0])
 				dst = strings.TrimSpace(lineSubs[1])
 			}
+			src = strings.Trim(src, "\"")
+			dst = strings.Trim(dst, "\"")
 			f.Files = append(f.Files, types.FileTransport{Src: src, Dst: dst})
 		}
 
@@ -193,6 +198,20 @@ func parseTokenSection(tok string, sections map[string]*types.Script, files *[]t
 		if _, ok := sections[key]; !ok {
 			sections[key] = &types.Script{}
 		}
+		// Record the order in which we came across each app... since we have
+		// to process their appinstall sections in that order.
+		appName := sectionSplit[1]
+		appKnown := false
+		for _, a := range *appOrder {
+			if a == appName {
+				appKnown = true
+				break
+			}
+		}
+		if !appKnown {
+			*appOrder = append(*appOrder, appName)
+		}
+
 	} else {
 		// create section script object if its a non-standard section
 		if _, ok := sections[key]; !ok {
@@ -211,6 +230,7 @@ func parseTokenSection(tok string, sections map[string]*types.Script, files *[]t
 func doSections(s *bufio.Scanner, d *types.Definition) error {
 	sectionsMap := make(map[string]*types.Script)
 	files := []types.Files{}
+	appOrder := []string{}
 	tok := strings.TrimSpace(s.Text())
 
 	// skip initial token parsing if it is empty after trimming whitespace
@@ -222,7 +242,7 @@ func doSections(s *bufio.Scanner, d *types.Definition) error {
 			}
 		} else {
 			// this is a section
-			if err := parseTokenSection(tok, sectionsMap, &files); err != nil {
+			if err := parseTokenSection(tok, sectionsMap, &files, &appOrder); err != nil {
 				return err
 			}
 		}
@@ -237,7 +257,7 @@ func doSections(s *bufio.Scanner, d *types.Definition) error {
 		tok := s.Text()
 
 		// Parse each token -> section
-		if err := parseTokenSection(tok, sectionsMap, &files); err != nil {
+		if err := parseTokenSection(tok, sectionsMap, &files, &appOrder); err != nil {
 			return err
 		}
 	}
@@ -246,20 +266,12 @@ func doSections(s *bufio.Scanner, d *types.Definition) error {
 		return err
 	}
 
-	return populateDefinition(sectionsMap, &files, d)
+	return populateDefinition(sectionsMap, &files, &appOrder, d)
 }
 
-func populateDefinition(sections map[string]*types.Script, files *[]types.Files, d *types.Definition) (err error) {
-	// initialize standard sections if not already created
-	// this function relies on standard sections being initialized in the map
-	for section := range validSections {
-		if _, ok := sections[section]; !ok {
-			sections[section] = &types.Script{}
-		}
-	}
-
+func GetLabels(content string) map[string]string {
 	// labels are parsed as a map[string]string
-	labelsSections := strings.TrimSpace(sections["labels"].Script)
+	labelsSections := strings.TrimSpace(content)
 	subs := strings.Split(labelsSections, "\n")
 	labels := make(map[string]string)
 
@@ -280,6 +292,18 @@ func populateDefinition(sections map[string]*types.Script, files *[]types.Files,
 		labels[key] = val
 	}
 
+	return labels
+}
+
+func populateDefinition(sections map[string]*types.Script, files *[]types.Files, appOrder *[]string, d *types.Definition) (err error) {
+	// initialize standard sections if not already created
+	// this function relies on standard sections being initialized in the map
+	for section := range validSections {
+		if _, ok := sections[section]; !ok {
+			sections[section] = &types.Script{}
+		}
+	}
+
 	d.ImageData = types.ImageData{
 		ImageScripts: types.ImageScripts{
 			Help:        *sections["help"],
@@ -288,7 +312,7 @@ func populateDefinition(sections map[string]*types.Script, files *[]types.Files,
 			Test:        *sections["test"],
 			Startscript: *sections["startscript"],
 		},
-		Labels: labels,
+		Labels: GetLabels(sections["labels"].Script),
 	}
 	d.BuildData.Files = *files
 	d.BuildData.Scripts = types.Scripts{
@@ -321,6 +345,9 @@ func populateDefinition(sections map[string]*types.Script, files *[]types.Files,
 			return &InvalidSectionError{keys, errInvalidSection}
 		}
 	}
+
+	// record order of any SCIF apps
+	d.AppOrder = *appOrder
 
 	// return error if no useful information was parsed into the struct
 	if isEmpty(*d) {
@@ -508,6 +535,7 @@ func isEmpty(d types.Definition) bool {
 	emptyDef := types.Definition{}
 	emptyDef.Labels = make(map[string]string)
 	emptyDef.BuildData.Files = make([]types.Files, 0)
+	emptyDef.AppOrder = []string{}
 
 	return reflect.DeepEqual(d, emptyDef)
 }
@@ -540,22 +568,23 @@ var appSections = map[string]bool{
 // validHeaders just contains a list of all the valid headers a definition file
 // could contain. If any others are found, an error will generate
 var validHeaders = map[string]bool{
-	"bootstrap":   true,
-	"from":        true,
-	"includecmd":  true,
-	"mirrorurl":   true,
-	"updateurl":   true,
-	"osversion":   true,
-	"include":     true,
-	"library":     true,
-	"registry":    true,
-	"namespace":   true,
-	"stage":       true,
-	"product":     true,
-	"user":        true,
-	"regcode":     true,
-	"productpgp":  true,
-	"registerurl": true,
-	"modules":     true,
-	"otherurl&n":  true,
+	"bootstrap":    true,
+	"from":         true,
+	"includecmd":   true,
+	"mirrorurl":    true,
+	"updateurl":    true,
+	"osversion":    true,
+	"include":      true,
+	"library":      true,
+	"registry":     true,
+	"namespace":    true,
+	"stage":        true,
+	"product":      true,
+	"user":         true,
+	"regcode":      true,
+	"productpgp":   true,
+	"registerurl":  true,
+	"modules":      true,
+	"otherurl&n":   true,
+	"fingerprints": true,
 }

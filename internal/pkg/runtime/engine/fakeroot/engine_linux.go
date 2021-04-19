@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -13,18 +13,21 @@ import (
 	"syscall"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	fakerootutil "github.com/sylabs/singularity/internal/pkg/fakeroot"
+	"github.com/sylabs/singularity/internal/pkg/plugin"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine"
+	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci/generate"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/starter"
 	fakerootConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/fakeroot/config"
 	"github.com/sylabs/singularity/internal/pkg/security/seccomp"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
+	fakerootcallback "github.com/sylabs/singularity/pkg/plugin/callback/runtime/fakeroot"
 	"github.com/sylabs/singularity/pkg/runtime/engine/config"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/capabilities"
 	"github.com/sylabs/singularity/pkg/util/fs/proc"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 )
 
 // EngineOperations is a Singularity fakeroot runtime engine that implements engine.Operations.
@@ -60,7 +63,7 @@ func (e *EngineOperations) Config() config.EngineConfig {
 // No additional privileges can be gained as any of them are already
 // dropped by the time PrepareConfig is called.
 func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
-	g := generate.Generator{Config: &specs.Spec{}}
+	g := generate.New(nil)
 
 	configurationFile := buildcfg.SINGULARITY_CONF_FILE
 
@@ -69,7 +72,7 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 		return fmt.Errorf("%s must be owned by root", configurationFile)
 	}
 
-	fileConfig, err := config.ParseFile(configurationFile)
+	fileConfig, err := singularityconf.Parse(configurationFile)
 	if err != nil {
 		return fmt.Errorf("unable to parse singularity.conf file: %s", err)
 	}
@@ -92,13 +95,26 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 
 	g.AddOrReplaceLinuxNamespace(specs.UserNamespace, "")
 	g.AddOrReplaceLinuxNamespace(specs.MountNamespace, "")
-	g.AddOrReplaceLinuxNamespace(string(specs.PIDNamespace), "")
+	g.AddOrReplaceLinuxNamespace(specs.PIDNamespace, "")
 
 	uid := uint32(os.Getuid())
 	gid := uint32(os.Getgid())
 
+	getIDRange := fakerootutil.GetIDRange
+
+	callbackType := (fakerootcallback.UserMapping)(nil)
+	callbacks, err := plugin.LoadCallbacks(callbackType)
+	if err != nil {
+		return fmt.Errorf("while loading plugins callbacks '%T': %s", callbackType, err)
+	}
+	if len(callbacks) > 1 {
+		return fmt.Errorf("multiple plugins have registered hook callback for fakeroot")
+	} else if len(callbacks) == 1 {
+		getIDRange = callbacks[0].(fakerootcallback.UserMapping)
+	}
+
 	g.AddLinuxUIDMapping(uid, 0, 1)
-	idRange, err := fakerootutil.GetIDRange(fakerootutil.SubUIDFile, uid)
+	idRange, err := getIDRange(fakerootutil.SubUIDFile, uid)
 	if err != nil {
 		return fmt.Errorf("could not use fakeroot: %s", err)
 	}
@@ -106,7 +122,7 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 	starterConfig.AddUIDMappings(g.Config.Linux.UIDMappings)
 
 	g.AddLinuxGIDMapping(gid, 0, 1)
-	idRange, err = fakerootutil.GetIDRange(fakerootutil.SubGIDFile, uid)
+	idRange, err = getIDRange(fakerootutil.SubGIDFile, uid)
 	if err != nil {
 		return fmt.Errorf("could not use fakeroot: %s", err)
 	}
@@ -203,11 +219,15 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 		return fmt.Errorf("while parsing %s: %s", mountInfo, err)
 	}
 	for _, m := range mounts["/sys"] {
+		// In Linux <5.9 this is required so that in the chroot, selinux is seen as ro, i.e.
+		// disabled, and errors getting security labels do not occur.
+		// In 5.9 the remount will now fail, but it is not needed due to changes in label handling.
 		if m == selinuxMount {
 			flags := uintptr(syscall.MS_BIND | syscall.MS_REMOUNT | syscall.MS_RDONLY)
 			err = syscall.Mount("", selinuxMount, "", flags, "")
 			if err != nil {
-				return fmt.Errorf("while remount %s read-only: %s", selinuxMount, err)
+				sylog.Debugf("while remount %s read-only: %s", selinuxMount, err)
+				sylog.Debugf("note %s remount failure is expected on kernel 5.9+", selinuxMount)
 			}
 			break
 		}
@@ -245,6 +265,11 @@ func (e *EngineOperations) MonitorContainer(pid int, signals chan os.Signal) (sy
 				continue
 			}
 			return status, nil
+		case syscall.SIGURG:
+			// Ignore SIGURG, which is used for non-cooperative goroutine
+			// preemption starting with Go 1.14. For more information, see
+			// https://github.com/golang/go/issues/24543.
+			break
 		default:
 			if err := syscall.Kill(pid, s.(syscall.Signal)); err != nil {
 				return status, fmt.Errorf("interrupted by signal %s", s.String())

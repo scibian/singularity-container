@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -20,18 +20,16 @@ import (
 	"strings"
 	"time"
 
+	golog "github.com/go-log/log"
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
 	buildclient "github.com/sylabs/scs-build-client/client"
 	client "github.com/sylabs/scs-library-client/client"
-	"github.com/sylabs/singularity/internal/pkg/library"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
+	"github.com/sylabs/singularity/internal/pkg/client/library"
 	"github.com/sylabs/singularity/pkg/build/types"
+	"github.com/sylabs/singularity/pkg/sylog"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
 )
-
-// CloudURI holds the URI of the Library web front-end.
-const CloudURI = "https://cloud.sylabs.io"
 
 // RemoteBuilder contains the build request and response
 type RemoteBuilder struct {
@@ -44,10 +42,11 @@ type RemoteBuilder struct {
 	Force               bool
 	IsDetached          bool
 	BuilderRequirements map[string]string
+	WebURL              string
 }
 
 // New creates a RemoteBuilder with the specified details.
-func New(imagePath, libraryURL string, d types.Definition, isDetached, force bool, builderAddr, authToken, buildArch string) (rb *RemoteBuilder, err error) {
+func New(imagePath, libraryURL string, d types.Definition, isDetached, force bool, builderAddr, authToken, buildArch, webURL string) (rb *RemoteBuilder, err error) {
 	bc, err := buildclient.New(&buildclient.Config{
 		BaseURL:   builderAddr,
 		AuthToken: authToken,
@@ -72,6 +71,7 @@ func New(imagePath, libraryURL string, d types.Definition, isDetached, force boo
 		BuilderRequirements: map[string]string{
 			"arch": buildArch,
 		},
+		WebURL: webURL,
 	}, nil
 }
 
@@ -106,7 +106,9 @@ func (rb *RemoteBuilder) Build(ctx context.Context) (err error) {
 	if rb.IsDetached {
 		fmt.Printf("Build submitted! Once it is complete, the image can be retrieved by running:\n")
 		fmt.Printf("\tsingularity pull --library %s library://%s\n\n", bi.LibraryURL, libraryRefRaw)
-		fmt.Printf("Alternatively, you can access it from a browser at:\n\t%s/library/%s\n", CloudURI, libraryRefRaw)
+		if rb.WebURL != "" {
+			fmt.Printf("Alternatively, you can access it from a browser at:\n\t%s/library/%s\n", rb.WebURL, libraryRefRaw)
+		}
 		return nil
 	}
 
@@ -142,6 +144,7 @@ func (rb *RemoteBuilder) Build(ctx context.Context) (err error) {
 		c, err := client.NewClient(&client.Config{
 			BaseURL:   bi.LibraryURL,
 			AuthToken: rb.AuthToken,
+			Logger:    (golog.Logger)(sylog.DebugLogger{}),
 		})
 		if err != nil {
 			return errors.Wrap(err, fmt.Sprintf("error initializing library client: %v", err))

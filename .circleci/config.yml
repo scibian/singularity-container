@@ -1,21 +1,11 @@
 version: 2.1
 
-defaults: &defaults
-  working_directory: ~/go/singularity
-
 vm_defaults: &vm_defaults
-  <<: *defaults
+  working_directory: ~/go/singularity
   machine:
-    image: ubuntu-1604:201903-01
+    image: ubuntu-2004:202008-01
 
 x-run:
-  debug_env: &debug_env
-    name: Debug environment
-    command: |-
-      set -x
-      env | sed -e 's,^,ENV: ,' | sort
-      test -n "$BASH_ENV" -a -e "$BASH_ENV" && sed -e 's,^,BASH_ENV: ,' < $BASH_ENV || echo "$BASH_ENV not found"
-
   setup_environment: &setup_environment
     name: Setup environment
     command: |-
@@ -28,12 +18,12 @@ x-run:
       test -e $BASH_ENV && sed -e 's,^,BASH_ENV: ,' < $BASH_ENV
 
   update_go: &update_go
-    name: Update Go to 1.13.1
+    name: Update Go to 1.14.9
     working_directory: /tmp
     command: |-
-      wget https://dl.google.com/go/go1.13.1.linux-amd64.tar.gz
+      wget https://dl.google.com/go/go1.14.9.linux-amd64.tar.gz
       sudo rm -rf $GOROOT
-      sudo tar -C /usr/local -xzf go1.13.1.linux-amd64.tar.gz
+      sudo tar -C /usr/local -xzf go1.14.9.linux-amd64.tar.gz
       sudo ln -s $GOROOT/bin/go /usr/local/bin/go
 
   fetch_deb_deps: &fetch_deb_deps
@@ -43,18 +33,26 @@ x-run:
       # https://discuss.circleci.com/t/could-not-get-lock-var-lib-apt-lists-lock/28337/4
       sudo killall -9 apt-get || true && \
       sudo apt-get update -y && \
-      sudo apt-get install -y build-essential libssl-dev uuid-dev squashfs-tools libseccomp-dev cryptsetup
+      sudo apt-get install -y build-essential squashfs-tools libseccomp-dev cryptsetup
+
+  buildtest_rpm: &buildtest_rpm
+    name: Build and test rpm under docker
+    no_output_timeout: 10m
+    command: |-
+      export E2E_DOCKER_USERNAME=$CIRCLE_CI_DOCKER_USERNAME && \
+      export E2E_DOCKER_PASSWORD=$CIRCLE_CI_DOCKER_PASSWORD && \
+      scripts/ci-docker-run
 
   build_singularity: &build_singularity
     name: Build Singularity
     command: |-
       ./mconfig -v -p /usr/local
-      make -j$(nproc) -C ./builddir all
+      make -C ./builddir all
 
   check_singularity: &check_singularity
     name: Check Singularity
     command: |-
-      make -j$(nproc) -C ./builddir check
+      make -C ./builddir check
 
   install_singularity: &install_singularity
     name: Install Singularity
@@ -83,60 +81,51 @@ x-run:
       esac
 
 jobs:
-  get_source:
-    <<: *defaults
+  check_go_mod:
     docker:
-      - image: sylabsio/golang:1.13.1-stretch
+      - image: golang:1.14
+        auth:
+          username: $CIRCLE_CI_DOCKER_USERNAME
+          password: $CIRCLE_CI_DOCKER_PASSWORD
     steps:
       - checkout
-      - persist_to_workspace:
-          root: ~/go
-          paths:
-            - singularity
-
-  cache_go_mod:
-    <<: *defaults
-    docker:
-      - image: sylabsio/golang:1.13.1-stretch
-    steps:
-      - attach_workspace:
-          at: ~/go
-      - restore_cache:
-          keys:
-            - go-mod-{{ checksum "go.sum" }}
       - run:
           name: Check go.mod
           command: scripts/check-go.mod
-      - save_cache:
-          key: go-mod-{{ checksum "go.sum" }}
-          paths:
-            - ~/go/pkg/mod
 
-  go113-stretch:
-    <<: *defaults
+  go114-stretch:
     docker:
-      - image: sylabsio/golang:1.13.1-stretch
+      - image: golang:1.14-stretch
+        auth:
+          username: $CIRCLE_CI_DOCKER_USERNAME
+          password: $CIRCLE_CI_DOCKER_PASSWORD
     steps:
-      - attach_workspace:
-          at: ~/go
+      - checkout
+      - run:
+          name: Fetch deps
+          command: apt-get -q update && apt-get -q install -y build-essential libssl-dev uuid-dev squashfs-tools cryptsetup-bin
       - run:
           <<: *build_singularity
       - run:
           <<: *check_singularity
 
-  go113-alpine:
-    <<: *defaults
+  go114-alpine:
     docker:
-      - image: sylabsio/golang:1.13.1-alpine
+      - image: golang:1.14-alpine
+        auth:
+          username: $CIRCLE_CI_DOCKER_USERNAME
+          password: $CIRCLE_CI_DOCKER_PASSWORD
     steps:
-      - attach_workspace:
-          at: ~/go
+      - checkout
+      - run:
+          name: Fetch deps
+          command: apk add -q --no-cache git alpine-sdk automake libtool linux-headers libarchive-dev util-linux-dev libuuid openssl-dev gawk sed cryptsetup
       - run:
           <<: *build_singularity
       - run:
           <<: *check_singularity
 
-  go113-macos:
+  go114-macos:
     macos:
       xcode: "10.2.0"
     working_directory: /Users/distiller/go/src/github.com/sylabs/singularity
@@ -149,28 +138,47 @@ jobs:
             echo 'export GOROOT=/usr/local/go' >> $BASH_ENV
             echo 'export PATH=$GOPATH/bin:$GOROOT/bin:$PATH' >> $BASH_ENV
       - run:
-          name: Update Go to 1.13.1
+          name: Update Go to 1.14.9
           working_directory: /tmp
           command: |-
-            curl -LO https://dl.google.com/go/go1.13.1.darwin-amd64.tar.gz
+            curl -LO https://dl.google.com/go/go1.14.9.darwin-amd64.tar.gz
             sudo rm -rf /usr/local/go
-            sudo tar -C /usr/local -xzf go1.13.1.darwin-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go1.14.9.darwin-amd64.tar.gz
             sudo ln -s /usr/local/go/bin/go /usr/local/bin/go
       - run:
           name: Build Singularity
           command: |-
             ./mconfig -v -p /usr/local
-            make -j$(sysctl -n hw.logicalcpu) -C ./builddir all
+            make -C ./builddir all
       - run:
           name: Check code
           command: |-
-            make -j$(sysctl -n hw.logicalcpu) -C ./builddir check
+            make -C ./builddir check
 
-  build_check_and_install:
+  rpmbuild-centos7:
     <<: *vm_defaults
     steps:
-      - attach_workspace:
-          at: ~/go
+      - checkout
+      - run:
+          name: set OS type and version
+          command: echo 'export OS_TYPE=centos OS_VERSION=7' >> $BASH_ENV
+      - run:
+          <<: *buildtest_rpm
+
+  rpmbuild-centos8:
+    <<: *vm_defaults
+    steps:
+      - checkout
+      - run:
+          name: set OS type and version
+          command: echo 'export OS_TYPE=centos OS_VERSION=8' >> $BASH_ENV
+      - run:
+          <<: *buildtest_rpm
+
+  short_unit_tests:
+    <<: *vm_defaults
+    steps:
+      - checkout
       - run:
           <<: *setup_environment
       - run:
@@ -180,35 +188,16 @@ jobs:
       - run:
           <<: *build_singularity
       - run:
-          <<: *check_singularity
-      - persist_to_workspace:
-          root: ~/go
-          paths:
-            - singularity
-
-  unit_tests:
-    <<: *vm_defaults
-    steps:
-      - attach_workspace:
-          at: ~/go
-      - run:
-          <<: *setup_environment
-      - run:
-          <<: *update_go
-      - run:
-          <<: *fetch_deb_deps
-      - run:
           <<: *install_singularity
       - run:
           name: Run unit tests
           command: |-
-            make -j$(nproc) -C ./builddir unit-test
+            make -C ./builddir short-unit-test
 
-  integration_tests:
+  short_integration_tests:
     <<: *vm_defaults
     steps:
-      - attach_workspace:
-          at: ~/go
+      - checkout
       - run:
           <<: *setup_environment
       - run:
@@ -218,18 +207,19 @@ jobs:
       - run:
           <<: *fetch_deb_deps
       - run:
+          <<: *build_singularity
+      - run:
           <<: *install_singularity
       - run:
-          name: Run integration tests
+          name: Run short integration tests
           no_output_timeout: 20m
           command: |-
-            make -C ./builddir integration-test
+            make -C ./builddir short-integration-test
 
   e2e_tests:
     <<: *vm_defaults
     steps:
-      - attach_workspace:
-          at: ~/go
+      - checkout
       - run:
           <<: *setup_environment
       - run:
@@ -238,38 +228,33 @@ jobs:
           <<: *update_go
       - run:
           <<: *fetch_deb_deps
+      - run:
+          <<: *build_singularity
       - run:
           <<: *install_singularity
       - run:
           name: Run E2E tests
           no_output_timeout: 35m
           command: |-
+            export E2E_PARALLEL=8 && \
+            export E2E_DOCKER_USERNAME=$CIRCLE_CI_DOCKER_USERNAME && \
+            export E2E_DOCKER_PASSWORD=$CIRCLE_CI_DOCKER_PASSWORD && \
             make -C ./builddir e2e-test
+      - store_artifacts:
+          path: builddir/e2e-cmd-report.txt
 
 workflows:
   version: 2
   build_and_test:
     jobs:
-      - get_source
-      - cache_go_mod:
-          requires:
-            - get_source
-      - go113-stretch:
-          requires:
-            - cache_go_mod
-      - go113-alpine:
-          requires:
-            - cache_go_mod
-      - go113-macos
-      - build_check_and_install:
-          requires:
-            - cache_go_mod
-      - unit_tests:
-          requires:
-            - build_check_and_install
-      - integration_tests:
-          requires:
-            - build_check_and_install
-      - e2e_tests:
-          requires:
-            - build_check_and_install
+      - go114-stretch
+      - go114-alpine
+      - go114-macos
+      - check_go_mod
+      - short_unit_tests
+      - short_integration_tests
+      - e2e_tests
+  rpmbuild:
+    jobs:
+      - rpmbuild-centos7
+      - rpmbuild-centos8

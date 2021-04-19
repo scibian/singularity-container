@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,6 +6,7 @@
 package build
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
@@ -15,25 +16,20 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/pkg/util/fs/proc"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 
-	specs "github.com/opencontainers/runtime-spec/specs-go"
-	uuid "github.com/satori/go.uuid"
 	"github.com/sylabs/singularity/internal/pkg/build/apps"
 	"github.com/sylabs/singularity/internal/pkg/build/assemblers"
-	"github.com/sylabs/singularity/internal/pkg/build/files"
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
-	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
-	imgbuildConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/imgbuild/config"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/fs/squashfs"
-	"github.com/sylabs/singularity/internal/pkg/util/starter"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/build/types/parser"
 	"github.com/sylabs/singularity/pkg/image"
 	"github.com/sylabs/singularity/pkg/image/packer"
-	"github.com/sylabs/singularity/pkg/runtime/engine/config"
+	"github.com/sylabs/singularity/pkg/sylog"
 )
 
 // Build is an abstracted way to look at the entire build process.
@@ -82,7 +78,7 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 	oldumask := syscall.Umask(0002)
 	defer syscall.Umask(oldumask)
 
-	dest, err := filepath.Abs(conf.Dest)
+	dest, err := fs.Abs(conf.Dest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine absolute path for %q: %v", conf.Dest, err)
 	}
@@ -117,14 +113,16 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 		if conf.Format == "sandbox" {
 			rootfsParent = filepath.Dir(conf.Dest)
 		}
-		rootfs := filepath.Join(rootfsParent, "rootfs-"+uuid.NewV1().String())
+		parentPath, err := ioutil.TempDir(rootfsParent, "build-temp-")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create build parent dir: %w", err)
+		}
 
 		var s stage
-		var err error
 		if conf.Opts.EncryptionKeyInfo != nil {
-			s.b, err = types.NewEncryptedBundle(rootfs, conf.Opts.TmpDir, conf.Opts.EncryptionKeyInfo)
+			s.b, err = types.NewEncryptedBundle(parentPath, conf.Opts.TmpDir, conf.Opts.EncryptionKeyInfo)
 		} else {
-			s.b, err = types.NewBundle(rootfs, conf.Opts.TmpDir)
+			s.b, err = types.NewBundle(parentPath, conf.Opts.TmpDir)
 		}
 		if err != nil {
 			return nil, err
@@ -138,7 +136,7 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 			// the old behavior which is to create the temporary rootfs inside
 			// $TMPDIR and copy the final root filesystem to the destination
 			// provided
-			if s.b.RootfsPath != rootfs {
+			if !strings.HasPrefix(s.b.RootfsPath, parentPath) {
 				sandboxCopy = true
 				sylog.Warningf("The underlying filesystem on which resides %q won't allow to set ownership, "+
 					"as a consequence the sandbox could not preserve image's files/directories ownerships", conf.Dest)
@@ -198,9 +196,19 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 		if err != nil {
 			return nil, fmt.Errorf("while ensuring correct compression algorithm: %v", err)
 		}
+		mksquashfsProcs, err := squashfs.GetProcs()
+		if err != nil {
+			return nil, fmt.Errorf("while searching for mksquashfs processor limits: %v", err)
+		}
+		mksquashfsMem, err := squashfs.GetMem()
+		if err != nil {
+			return nil, fmt.Errorf("while searching for mksquashfs mem limits: %v", err)
+		}
 		b.stages[lastStageIndex].a = &assemblers.SIFAssembler{
-			GzipFlag:       flag,
-			MksquashfsPath: mksquashfsPath,
+			GzipFlag:        flag,
+			MksquashfsProcs: mksquashfsProcs,
+			MksquashfsMem:   mksquashfsMem,
+			MksquashfsPath:  mksquashfsPath,
 		}
 	default:
 		return nil, fmt.Errorf("unrecognized output format %s", conf.Format)
@@ -235,6 +243,22 @@ func ensureGzipComp(tmpdir, mksquashfsPath string) (bool, error) {
 	f.Close()
 
 	flags := []string{"-noappend"}
+
+	mksquashfsProcs, err := squashfs.GetProcs()
+	if err != nil {
+		return false, fmt.Errorf("while searching for mksquashfs processor limits: %v", err)
+	}
+	mksquashfsMem, err := squashfs.GetMem()
+	if err != nil {
+		return false, fmt.Errorf("while searching for mksquashfs mem limits: %v", err)
+	}
+	if mksquashfsMem != "" {
+		flags = append(flags, "-mem", mksquashfsMem)
+	}
+	if mksquashfsProcs != 0 {
+		flags = append(flags, "-processors", fmt.Sprint(mksquashfsProcs))
+	}
+
 	if err := s.Create([]string{srcf.Name()}, f.Name(), flags); err != nil {
 		return false, fmt.Errorf("while creating squashfs: %v", err)
 	}
@@ -254,7 +278,9 @@ func ensureGzipComp(tmpdir, mksquashfsPath string) (bool, error) {
 		return false, nil
 	}
 
-	flags = []string{"-noappend", "-comp", "gzip"}
+	// Now force add `-comp gzip` in addition to -noappend -mem -processors
+	flags = append(flags, "-comp", "gzip")
+
 	if err := s.Create([]string{srcf.Name()}, f.Name(), flags); err != nil {
 		return false, fmt.Errorf("could not build squashfs with required gzip compression")
 	}
@@ -302,7 +328,7 @@ func (b *Build) Full(ctx context.Context) error {
 	sylog.Infof("Starting build...")
 
 	// monitor build for termination signal and clean up
-	c := make(chan os.Signal)
+	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
@@ -314,9 +340,26 @@ func (b *Build) Full(ctx context.Context) error {
 
 	oldumask := syscall.Umask(0002)
 
+	// generate the default configuration
+	config, err := singularityconf.Parse("")
+	if err != nil {
+		return err
+	}
+	config.BindPath = nil
+	config.ConfigResolvConf = false
+	config.MountHome = false
+	config.MountDevPts = false
+
+	var buffer bytes.Buffer
+
+	if err := singularityconf.Generate(&buffer, "", config); err != nil {
+		return fmt.Errorf("while generating configuration file: %s", err)
+	}
+	configData := buffer.Bytes()
+
 	// build each stage one after the other
 	for i, stage := range b.stages {
-		if err := stage.runPreScript(); err != nil {
+		if err := stage.runSectionScript("pre", stage.b.Recipe.BuildData.Pre); err != nil {
 			return err
 		}
 
@@ -325,7 +368,7 @@ func (b *Build) Full(ctx context.Context) error {
 		if update {
 			// updating, extract dest container to bundle
 			sylog.Infof("Building into existing container: %s", b.Conf.Dest)
-			p, err := sources.GetLocalPacker(b.Conf.Dest, stage.b)
+			p, err := sources.GetLocalPacker(ctx, b.Conf.Dest, stage.b)
 			if err != nil {
 				return err
 			}
@@ -356,16 +399,53 @@ func (b *Build) Full(ctx context.Context) error {
 		}
 
 		a.HandleBundle(stage.b)
-		stage.b.Recipe.BuildData.Post.Script += a.HandlePost()
+		appPost, err := a.HandlePost(stage.b)
+		if err != nil {
+			return fmt.Errorf("unable to get app post information: %v", err)
+		}
+		stage.b.Recipe.BuildData.Post.Script += appPost
 
+		// copy potential files from previous stage
 		if stage.b.RunSection("files") {
-			if err := stage.copyFiles(b); err != nil {
-				return fmt.Errorf("unable to copy files a stage to container fs: %v", err)
+			if err := stage.copyFilesFrom(b); err != nil {
+				return fmt.Errorf("unable to copy files from stage to container fs: %v", err)
 			}
 		}
 
-		if engineRequired(stage.b.Recipe) {
-			if err := runBuildEngine(stage.b); err != nil {
+		if err := stage.runSectionScript("setup", stage.b.Recipe.BuildData.Setup); err != nil {
+			return err
+		}
+
+		// copy files from host
+		if stage.b.RunSection("files") {
+			if err := stage.copyFiles(); err != nil {
+				return fmt.Errorf("unable to copy files from host to container fs: %v", err)
+			}
+		}
+
+		// create stage file for /etc/resolv.conf and /etc/hosts
+		sessionResolv, err := createStageFile("/etc/resolv.conf", stage.b, "Name resolution could fail")
+		if err != nil {
+			return err
+		} else if sessionResolv != "" {
+			defer os.Remove(sessionResolv)
+		}
+		sessionHosts, err := createStageFile("/etc/hosts", stage.b, "Host resolution could fail")
+		if err != nil {
+			return err
+		} else if sessionHosts != "" {
+			defer os.Remove(sessionHosts)
+		}
+
+		// write the build configuration used for %post and %test sections
+		configFile := filepath.Join(stage.b.TmpDir, "singularity.conf")
+		if err := ioutil.WriteFile(configFile, configData, 0644); err != nil {
+			return fmt.Errorf("while creating %s: %s", configFile, err)
+		}
+		defer os.Remove(configFile)
+
+		if stage.b.Recipe.BuildData.Post.Script != "" {
+			if err := stage.runPostScript(configFile, sessionResolv, sessionHosts); err != nil {
 				return fmt.Errorf("while running engine: %v", err)
 			}
 		}
@@ -373,6 +453,10 @@ func (b *Build) Full(ctx context.Context) error {
 		sylog.Debugf("Inserting Metadata")
 		if err := stage.insertMetadata(); err != nil {
 			return fmt.Errorf("while inserting metadata to bundle: %v", err)
+		}
+
+		if err := stage.runTestScript(configFile, sessionResolv, sessionHosts); err != nil {
+			return fmt.Errorf("failed to execute %%test script: %v", err)
 		}
 	}
 
@@ -385,46 +469,6 @@ func (b *Build) Full(ctx context.Context) error {
 
 	sylog.Verbosef("Build complete: %s", b.Conf.Dest)
 	return nil
-}
-
-// engineRequired returns true if build definition is requesting to run scripts or copy files
-func engineRequired(def types.Definition) bool {
-	return def.BuildData.Post.Script != "" || def.BuildData.Setup.Script != "" || def.BuildData.Test.Script != "" || len(def.BuildData.Files) != 0
-}
-
-// runBuildEngine creates an imgbuild engine and creates a container out of our bundle in order to execute %post %setup scripts in the bundle
-func runBuildEngine(b *types.Bundle) error {
-	if syscall.Getuid() != 0 {
-		return fmt.Errorf("attempted to build with scripts as non-root user or without --fakeroot")
-	}
-
-	sylog.Debugf("Starting build engine")
-	ociConfig := &oci.Config{}
-
-	engineConfig := &imgbuildConfig.EngineConfig{
-		Bundle:    *b,
-		OciConfig: ociConfig,
-	}
-
-	// surface build specific environment variables for scripts
-	sRootfs := "SINGULARITY_ROOTFS=" + b.RootfsPath
-	sEnvironment := "SINGULARITY_ENVIRONMENT=" + "/.singularity.d/env/91-environment.sh"
-
-	ociConfig.Process = &specs.Process{}
-	ociConfig.Process.Env = append(os.Environ(), sRootfs, sEnvironment)
-
-	config := &config.Common{
-		EngineName:   imgbuildConfig.Name,
-		ContainerID:  "image-build",
-		EngineConfig: engineConfig,
-	}
-
-	return starter.Run(
-		"Singularity image-build",
-		config,
-		starter.WithStdout(os.Stdout),
-		starter.WithStderr(os.Stderr),
-	)
 }
 
 // makeDef gets a definition object from a spec.
@@ -492,49 +536,4 @@ func (b *Build) findStageIndex(name string) (int, error) {
 	}
 
 	return -1, fmt.Errorf("stage %s was not found", name)
-}
-
-func (s *stage) copyFiles(b *Build) error {
-	def := s.b.Recipe
-	for _, f := range def.BuildData.Files {
-		if f.Args == "" {
-			continue
-		}
-		args := strings.Fields(f.Args)
-		if len(args) != 2 {
-			continue
-		}
-
-		stageIndex, err := b.findStageIndex(args[1])
-		if err != nil {
-			return err
-		}
-
-		sylog.Debugf("Copying files from stage: %s", args[1])
-
-		// iterate through filetransfers
-		for _, transfer := range f.Files {
-			// sanity
-			if transfer.Src == "" {
-				sylog.Warningf("Attempt to copy file with no name, skipping.")
-				continue
-			}
-			// dest = source if not specified
-			if transfer.Dst == "" {
-				transfer.Dst = transfer.Src
-			}
-
-			// copy each file into bundle rootfs
-			// prepend appropriate bundle path to supplied paths
-			// copying between stages should not follow symlinks
-			transfer.Src = files.AddPrefix(b.stages[stageIndex].b.RootfsPath, transfer.Src)
-			transfer.Dst = files.AddPrefix(s.b.RootfsPath, transfer.Dst)
-			sylog.Infof("Copying %v to %v", transfer.Src, transfer.Dst)
-			if err := files.Copy(transfer.Src, transfer.Dst, false); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }

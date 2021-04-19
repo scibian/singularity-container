@@ -1,4 +1,5 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020, Control Command Inc. All rights reserved.
+// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,6 +9,7 @@ package singularity
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -21,20 +23,26 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	fakerootutil "github.com/sylabs/singularity/internal/pkg/fakeroot"
 	"github.com/sylabs/singularity/internal/pkg/instance"
+	"github.com/sylabs/singularity/internal/pkg/plugin"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/starter"
 	"github.com/sylabs/singularity/internal/pkg/security"
 	"github.com/sylabs/singularity/internal/pkg/security/seccomp"
 	"github.com/sylabs/singularity/internal/pkg/syecl"
-	"github.com/sylabs/singularity/internal/pkg/sylog"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/fs/overlay"
 	"github.com/sylabs/singularity/internal/pkg/util/mainthread"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
 	"github.com/sylabs/singularity/pkg/image"
+	fakerootcallback "github.com/sylabs/singularity/pkg/plugin/callback/runtime/fakeroot"
 	"github.com/sylabs/singularity/pkg/runtime/engine/config"
 	singularityConfig "github.com/sylabs/singularity/pkg/runtime/engine/singularity/config"
+	"github.com/sylabs/singularity/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/sypgp"
 	"github.com/sylabs/singularity/pkg/util/capabilities"
 	"github.com/sylabs/singularity/pkg/util/fs/proc"
+	"github.com/sylabs/singularity/pkg/util/namespaces"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
+	"golang.org/x/crypto/openpgp"
 	"golang.org/x/sys/unix"
 )
 
@@ -67,7 +75,14 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 	}
 
 	configurationFile := buildcfg.SINGULARITY_CONF_FILE
-	e.EngineConfig.File, err = config.ParseFile(configurationFile)
+	if buildcfg.SINGULARITY_SUID_INSTALL == 0 || os.Geteuid() == 0 {
+		configFile := e.EngineConfig.GetConfigurationFile()
+		if configFile != "" {
+			configurationFile = configFile
+		}
+	}
+
+	e.EngineConfig.File, err = singularityconf.Parse(configurationFile)
 	if err != nil {
 		return fmt.Errorf("unable to parse singularity.conf file: %s", err)
 	}
@@ -157,8 +172,21 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 	// that the user running singularity has access to /dev/fuse
 	// (typically it's 0666, or 0660 belonging to a group that
 	// allows the user to read and write to it).
-	if err := openDevFuse(e, starterConfig); err != nil {
+	sendFd, err := openDevFuse(e, starterConfig)
+	if err != nil {
 		return err
+	}
+
+	if sendFd || e.EngineConfig.File.ImageDriver != "" {
+		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		if err != nil {
+			return fmt.Errorf("failed to create socketpair to pass file descriptor: %s", err)
+		}
+		e.EngineConfig.SetUnixSocketPair(fds)
+		starterConfig.KeepFileDescriptor(fds[0])
+		starterConfig.KeepFileDescriptor(fds[1])
+	} else {
+		e.EngineConfig.SetUnixSocketPair([2]int{-1, -1})
 	}
 
 	return nil
@@ -416,11 +444,9 @@ func (e *EngineOperations) prepareAutofs(starterConfig *starter.Config) error {
 
 	if e.EngineConfig.File.UserBindControl {
 		for _, b := range e.EngineConfig.GetBindPath() {
-			splitted := strings.Split(b, ":")
-
-			fd, err := keepAutofsMount(splitted[0], autoFsPoints)
+			fd, err := keepAutofsMount(b.Source, autoFsPoints)
 			if err != nil {
-				sylog.Debugf("Could not keep file descriptor for user bind path %s: %s", splitted[0], err)
+				sylog.Debugf("Could not keep file descriptor for user bind path %s: %s", b.Source, err)
 				continue
 			}
 			fds = append(fds, fd)
@@ -530,8 +556,21 @@ func (e *EngineOperations) prepareContainerConfig(starterConfig *starter.Config)
 		uid := uint32(os.Getuid())
 		gid := uint32(os.Getgid())
 
+		getIDRange := fakerootutil.GetIDRange
+
+		callbackType := (fakerootcallback.UserMapping)(nil)
+		callbacks, err := plugin.LoadCallbacks(callbackType)
+		if err != nil {
+			return fmt.Errorf("while loading plugins callbacks '%T': %s", callbackType, err)
+		}
+		if len(callbacks) > 1 {
+			return fmt.Errorf("multiple plugins have registered hook callback for fakeroot")
+		} else if len(callbacks) == 1 {
+			getIDRange = callbacks[0].(fakerootcallback.UserMapping)
+		}
+
 		e.EngineConfig.OciConfig.AddLinuxUIDMapping(uid, 0, 1)
-		idRange, err := fakerootutil.GetIDRange(fakerootutil.SubUIDFile, uid)
+		idRange, err := getIDRange(fakerootutil.SubUIDFile, uid)
 		if err != nil {
 			return fmt.Errorf("could not use fakeroot: %s", err)
 		}
@@ -539,7 +578,7 @@ func (e *EngineOperations) prepareContainerConfig(starterConfig *starter.Config)
 		starterConfig.AddUIDMappings(e.EngineConfig.OciConfig.Linux.UIDMappings)
 
 		e.EngineConfig.OciConfig.AddLinuxGIDMapping(gid, 0, 1)
-		idRange, err = fakerootutil.GetIDRange(fakerootutil.SubGIDFile, uid)
+		idRange, err = getIDRange(fakerootutil.SubGIDFile, uid)
 		if err != nil {
 			return fmt.Errorf("could not use fakeroot: %s", err)
 		}
@@ -878,24 +917,37 @@ func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Conf
 
 // openDevFuse is a helper function that opens /dev/fuse once for each
 // plugin that wants to mount a FUSE filesystem.
-func openDevFuse(e *EngineOperations, starterConfig *starter.Config) error {
-	for _, name := range e.EngineConfig.GetPluginFuseMounts() {
-		fd, err := syscall.Open("/dev/fuse", syscall.O_RDWR, 0)
-		if err != nil {
-			sylog.Debugf("Calling open: %+v\n", err)
-			return err
-		}
+func openDevFuse(e *EngineOperations, starterConfig *starter.Config) (bool, error) {
+	// do we require to send file descriptor
+	sendFd := false
 
-		err = e.EngineConfig.SetPluginFuseFd(name, fd)
-		if err != nil {
-			sylog.Debugf("Unable to setup plugin %s fd: %+v\n", name, err)
-			return err
-		}
+	// we won't copy slice while iterating fuse mounts
+	mounts := e.EngineConfig.GetFuseMount()
 
-		starterConfig.KeepFileDescriptor(fd)
+	if len(mounts) == 0 {
+		return false, nil
 	}
 
-	return nil
+	if !e.EngineConfig.File.EnableFusemount {
+		return false, fmt.Errorf("fusemount disabled by configuration 'enable fusemount = no'")
+	}
+
+	for i := range mounts {
+		sylog.Debugf("Opening /dev/fuse for FUSE mount point %s\n", mounts[i].MountPoint)
+		fd, err := syscall.Open("/dev/fuse", syscall.O_RDWR, 0)
+		if err != nil {
+			return false, err
+		}
+
+		mounts[i].Fd = fd
+		starterConfig.KeepFileDescriptor(fd)
+
+		if (!starterConfig.GetIsSUID() || e.EngineConfig.GetFakeroot()) && !mounts[i].FromContainer {
+			sendFd = true
+		}
+	}
+
+	return sendFd, nil
 }
 
 func (e *EngineOperations) checkSignalPropagation() {
@@ -929,27 +981,70 @@ func (e *EngineOperations) setSessionLayer(img *image.Image) error {
 	writableTmpfs := e.EngineConfig.GetWritableTmpfs()
 	writableImage := e.EngineConfig.GetWritableImage()
 	hasOverlayImage := len(e.EngineConfig.GetOverlayImage()) > 0
+	overlayDriver := e.EngineConfig.File.EnableOverlay == "driver"
 
 	if writableImage && hasOverlayImage {
 		return fmt.Errorf("you could not use --overlay in conjunction with --writable")
 	}
 
-	// NEED FIX: on ubuntu until 4.15 kernel it was possible to mount overlay
-	// with the current workflow, since 4.18 we get an operation not permitted
-	for _, ns := range e.EngineConfig.OciConfig.Linux.Namespaces {
-		if ns.Type == specs.UserNamespace {
-			if !e.EngineConfig.File.EnableUnderlay {
-				sylog.Debugf("Not attempting to use underlay with user namespace: disabled by configuration ('enable underlay = no')")
-				return nil
+	// a SIF image may contain one or more overlay partition
+	// check there is at least one ext3 overlay partition
+	// to validate overlay with writable flag
+	hasSIFOverlay := false
+
+	if img.Type == image.SIF {
+		overlays, err := img.GetOverlayPartitions()
+		if err != nil {
+			return fmt.Errorf("while getting overlay partition in SIF image %s: %s", img.Path, err)
+		}
+		for _, o := range overlays {
+			if o.Type == image.EXT3 {
+				hasSIFOverlay = true
+				break
 			}
-			if !writableImage {
-				sylog.Debugf("Using underlay layer: user namespace requested")
-				e.EngineConfig.SetSessionLayer(singularityConfig.UnderlayLayer)
-				return nil
-			}
-			sylog.Debugf("Not attempting to use overlay or underlay: writable flag requested")
+		}
+	}
+
+	// overlay is handled by the image driver
+	if overlayDriver {
+		if e.EngineConfig.File.ImageDriver == "" {
+			return fmt.Errorf("you need to specify an image driver with 'enable overlay = driver'")
+		}
+		if !writableImage || hasSIFOverlay {
+			e.EngineConfig.SetSessionLayer(singularityConfig.OverlayLayer)
 			return nil
 		}
+		sylog.Debugf("Not attempting to use overlay or underlay: writable flag requested")
+		return nil
+	}
+
+	// Check for implicit user namespace, e.g when we run %test in a fakeroot build
+	// https://github.com/hpcng/singularity/issues/5315
+	userNS, _ := namespaces.IsInsideUserNamespace(os.Getpid())
+
+	// NEED FIX: on ubuntu until 4.15 kernel it was possible to mount overlay
+	// with the current workflow, since 4.18 we get an operation not permitted
+	if !userNS {
+		for _, ns := range e.EngineConfig.OciConfig.Linux.Namespaces {
+			if ns.Type == specs.UserNamespace {
+				userNS = true
+				break
+			}
+		}
+	}
+
+	if userNS {
+		if !e.EngineConfig.File.EnableUnderlay {
+			sylog.Debugf("Not attempting to use underlay with user namespace: disabled by configuration ('enable underlay = no')")
+			return nil
+		}
+		if !writableImage {
+			sylog.Debugf("Using underlay layer: user namespace requested")
+			e.EngineConfig.SetSessionLayer(singularityConfig.UnderlayLayer)
+			return nil
+		}
+		sylog.Debugf("Not attempting to use overlay or underlay: writable flag requested")
+		return nil
 	}
 
 	// starter was forced to load overlay module, now check if there
@@ -959,20 +1054,6 @@ func (e *EngineOperations) setSessionLayer(img *image.Image) error {
 		switch e.EngineConfig.File.EnableOverlay {
 		case "yes", "try":
 			e.EngineConfig.SetSessionLayer(singularityConfig.OverlayLayer)
-
-			// a SIF image may contain one or more overlay partition
-			// check there is at least one ext3 overlay partition
-			// to validate overlay with writable flag
-			hasSIFOverlay := false
-
-			if img.Type == image.SIF {
-				for _, p := range img.Partitions[1:] {
-					if p.Type == image.EXT3 {
-						hasSIFOverlay = true
-						break
-					}
-				}
-			}
 
 			if !writableImage || hasSIFOverlay {
 				sylog.Debugf("Attempting to use overlayfs (enable overlay = %v)\n", e.EngineConfig.File.EnableOverlay)
@@ -1024,8 +1105,9 @@ func (e *EngineOperations) loadImages(starterConfig *starter.Config) error {
 		return err
 	}
 
-	if !img.HasRootFs() {
-		return fmt.Errorf("no root filesystem partition found in image %s", e.EngineConfig.GetImage())
+	rootFs, err := img.GetRootFsPartition()
+	if err != nil {
+		return fmt.Errorf("while getting root filesystem partition in %s: %s", e.EngineConfig.GetImage(), err)
 	}
 
 	if writable && !img.Writable {
@@ -1036,12 +1118,9 @@ func (e *EngineOperations) loadImages(starterConfig *starter.Config) error {
 		return err
 	}
 
-	sessionLayer := e.EngineConfig.GetSessionLayer()
-
 	// first image is always the root filesystem
 	images = append(images, *img)
 	writableOverlayPath := ""
-	overlayPartitions := []string{}
 
 	if err := starterConfig.KeepFileDescriptor(int(img.Fd)); err != nil {
 		return err
@@ -1056,83 +1135,113 @@ func (e *EngineOperations) loadImages(starterConfig *starter.Config) error {
 		// C starter code will position current working directory
 		starterConfig.SetWorkingDirectoryFd(int(img.Fd))
 
-		if err := overlay.CheckLower(img.Path); overlay.IsIncompatible(err) {
-			layer := singularityConfig.UnderlayLayer
-			if !e.EngineConfig.File.EnableUnderlay {
-				sylog.Debugf("Could not fallback to underlay, disabled by configuration ('enable underlay = no')")
-				layer = singularityConfig.DefaultLayer
-			}
-			e.EngineConfig.SetSessionLayer(layer)
-
-			// show a warning message if --writable-tmpfs or overlay images
-			// are requested otherwise make it verbose to not annoy users
-			if e.EngineConfig.GetWritableTmpfs() || len(e.EngineConfig.GetOverlayImage()) > 0 {
-				sylog.Warningf("Fallback to %s layer: %s", layer, err)
-
-				if e.EngineConfig.GetWritableTmpfs() {
-					e.EngineConfig.SetWritableTmpfs(false)
-					sylog.Warningf("--writable-tmpfs disabled due to sandbox filesystem incompatibility with overlay")
+		if e.EngineConfig.GetSessionLayer() == singularityConfig.OverlayLayer {
+			if err := overlay.CheckLower(img.Path); overlay.IsIncompatible(err) {
+				layer := singularityConfig.UnderlayLayer
+				if !e.EngineConfig.File.EnableUnderlay {
+					sylog.Warningf("Could not fallback to underlay, disabled by configuration ('enable underlay = no')")
+					layer = singularityConfig.DefaultLayer
 				}
-				if len(e.EngineConfig.GetOverlayImage()) > 0 {
-					e.EngineConfig.SetOverlayImage(nil)
-					sylog.Warningf("overlay image(s) not loaded due to sandbox filesystem incompatibility with overlay")
-				}
-			} else {
-				sylog.Verbosef("Fallback to %s layer: %s", layer, err)
-			}
+				e.EngineConfig.SetSessionLayer(layer)
 
-			e.EngineConfig.SetImageList(images)
-			return nil
-		} else if err != nil {
-			return fmt.Errorf("while checking image compatibility with overlay: %s", err)
+				// show a warning message if --writable-tmpfs or overlay images
+				// are requested otherwise make it verbose to not annoy users
+				if e.EngineConfig.GetWritableTmpfs() || len(e.EngineConfig.GetOverlayImage()) > 0 {
+					sylog.Warningf("Fallback to %s layer: %s", layer, err)
+
+					if e.EngineConfig.GetWritableTmpfs() {
+						e.EngineConfig.SetWritableTmpfs(false)
+						sylog.Warningf("--writable-tmpfs disabled due to sandbox filesystem incompatibility with overlay")
+					}
+					if len(e.EngineConfig.GetOverlayImage()) > 0 {
+						e.EngineConfig.SetOverlayImage(nil)
+						sylog.Warningf("overlay image(s) not loaded due to sandbox filesystem incompatibility with overlay")
+					}
+				} else {
+					sylog.Verbosef("Fallback to %s layer: %s", layer, err)
+				}
+			} else if err != nil {
+				return fmt.Errorf("while checking image compatibility with overlay: %s", err)
+			}
 		}
 	} else if img.Type == image.SIF {
 		// query the ECL module, proceed if an ecl config file is found
 		ecl, err := syecl.LoadConfig(buildcfg.ECL_FILE)
 		if err == nil {
 			if err = ecl.ValidateConfig(); err != nil {
-				return err
+				return fmt.Errorf("while validating ECL configuration: %s", err)
 			}
-			_, err := ecl.ShouldRunFp(img.File)
-			if err != nil {
-				return err
+
+			// Only try to load the global keyring here if the ECL is active.
+			// Otherwise pass through an empty keyring rather than avoiding calling
+			// the ECL functions as this keeps the logic for applying / ignoring ECL in a
+			// single location.
+			var kr openpgp.KeyRing = openpgp.EntityList{}
+			if ecl.Activated {
+				keyring := sypgp.NewHandle(buildcfg.SINGULARITY_CONFDIR, sypgp.GlobalHandleOpt())
+				kr, err = keyring.LoadPubKeyring()
+				if err != nil {
+					return fmt.Errorf("while obtaining keyring for ECL: %s", err)
+				}
+			}
+
+			if ok, err := ecl.ShouldRunFp(img.File, kr); err != nil {
+				return fmt.Errorf("while checking container image with ECL: %s", err)
+			} else if !ok {
+				return errors.New("image prohibited by ECL")
 			}
 		}
-		// load overlay partition if we use overlay layer
-		if sessionLayer == singularityConfig.OverlayLayer {
-			// look for potential overlay partition in SIF image
-			// and inject them into the overlay list
-			for _, p := range img.Partitions[1:] {
-				if p.Type == image.EXT3 || p.Type == image.SQUASHFS {
-					imgCopy := *img
-					imgCopy.Type = int(p.Type)
-					imgCopy.Partitions = []image.Section{p}
-					images = append(images, imgCopy)
-					overlayPartitions = append(overlayPartitions, imgCopy.Path)
-					if img.Writable && p.Type == image.EXT3 {
-						writableOverlayPath = img.Path
-					}
+
+		// look for potential overlay partition in SIF image
+		if e.EngineConfig.GetSessionLayer() == singularityConfig.OverlayLayer {
+			overlays, err := img.GetOverlayPartitions()
+			if err != nil {
+				return fmt.Errorf("while getting overlay partitions in %s: %s", img.Path, err)
+			}
+			for _, p := range overlays {
+				if img.Writable && p.Type == image.EXT3 {
+					writableOverlayPath = img.Path
 				}
 			}
 		}
+
 		// SIF image open for writing without writable
 		// overlay partition, assuming that the root
 		// filesystem is squashfs or encrypted squashfs
-		if img.Writable && img.Partitions[0].Type != image.EXT3 && writableOverlayPath == "" {
+		if img.Writable && rootFs.Type != image.EXT3 && writableOverlayPath == "" {
 			return fmt.Errorf("no SIF writable overlay partition found in %s", img.Path)
 		}
 	}
 
-	// lock all ext3 partitions if any to prevent concurrent writes
-	for _, part := range img.Partitions {
-		if part.Type == image.EXT3 {
-			if err := img.LockSection(part); err != nil {
-				return fmt.Errorf("error while locking ext3 partition from %s: %s", img.Path, err)
-			}
+	switch e.EngineConfig.GetSessionLayer() {
+	case singularityConfig.OverlayLayer:
+		overlayImages, err := e.loadOverlayImages(starterConfig, writableOverlayPath)
+		if err != nil {
+			return fmt.Errorf("while loading overlay images: %s", err)
+		}
+		images = append(images, overlayImages...)
+	case singularityConfig.UnderlayLayer:
+		if e.EngineConfig.GetWritableTmpfs() {
+			sylog.Warningf("Disabling --writable-tmpfs as it can't be used in conjunction with underlay")
+			e.EngineConfig.SetWritableTmpfs(false)
 		}
 	}
 
-	// load overlay images
+	bindImages, err := e.loadBindImages(starterConfig)
+	if err != nil {
+		return fmt.Errorf("while loading data bind images: %s", err)
+	}
+	images = append(images, bindImages...)
+
+	e.EngineConfig.SetImageList(images)
+
+	return nil
+}
+
+// loadOverlayImages loads overlay images.
+func (e *EngineOperations) loadOverlayImages(starterConfig *starter.Config, writableOverlayPath string) ([]image.Image, error) {
+	images := make([]image.Image, 0)
+
 	for _, overlayImg := range e.EngineConfig.GetOverlayImage() {
 		writableOverlay := true
 
@@ -1145,58 +1254,95 @@ func (e *EngineOperations) loadImages(starterConfig *starter.Config) error {
 
 		img, err := e.loadImage(splitted[0], writableOverlay)
 		if err != nil {
-			return fmt.Errorf("failed to open overlay image %s: %s", splitted[0], err)
+			if !image.IsReadOnlyFilesytem(err) {
+				return nil, fmt.Errorf("failed to open overlay image %s: %s", splitted[0], err)
+			}
+			// let's proceed with readonly filesystem and set
+			// writableOverlay to appropriate value
+			writableOverlay = false
 		}
+		img.Usage = image.OverlayUsage
 
-		for _, part := range img.Partitions {
-			// lock all ext3 partitions if any to prevent concurrent writes
-			if part.Type == image.EXT3 {
-				if err := img.LockSection(part); err != nil {
-					return fmt.Errorf("error while locking ext3 overlay partition from %s: %s", img.Path, err)
-				}
+		if writableOverlay && img.Writable {
+			if writableOverlayPath != "" {
+				return nil, fmt.Errorf(
+					"you can't specify more than one writable overlay, "+
+						"%s contains a writable overlay, requires to use '--overlay %s:ro'",
+					writableOverlayPath, img.Path,
+				)
 			}
-
-			if writableOverlay && img.Writable {
-				if writableOverlayPath != "" {
-					return fmt.Errorf(
-						"you can't specify more than one writable overlay, "+
-							"%s contains a writable overlay, requires to use '--overlay %s:ro'",
-						writableOverlayPath, img.Path,
-					)
-				}
-				writableOverlayPath = img.Path
-			}
+			writableOverlayPath = img.Path
 		}
 
 		if err := starterConfig.KeepFileDescriptor(int(img.Fd)); err != nil {
-			return err
+			return nil, err
 		}
 		images = append(images, *img)
 	}
 
 	if e.EngineConfig.GetWritableTmpfs() && writableOverlayPath != "" {
-		return fmt.Errorf("you can't specify --writable-tmpfs with another writable overlay image (%s)", writableOverlayPath)
+		return nil, fmt.Errorf("you can't specify --writable-tmpfs with another writable overlay image (%s)", writableOverlayPath)
 	}
 
-	e.EngineConfig.SetOverlayImage(append(e.EngineConfig.GetOverlayImage(), overlayPartitions...))
-	e.EngineConfig.SetImageList(images)
+	return images, nil
+}
 
-	return nil
+// loadBindImages load data bind images.
+func (e *EngineOperations) loadBindImages(starterConfig *starter.Config) ([]image.Image, error) {
+	images := make([]image.Image, 0)
+
+	binds := e.EngineConfig.GetBindPath()
+
+	for i := range binds {
+		if binds[i].ImageSrc() == "" && binds[i].ID() == "" {
+			continue
+		}
+
+		imagePath := binds[i].Source
+
+		sylog.Debugf("Loading data image %s", imagePath)
+
+		img, err := e.loadImage(imagePath, !binds[i].Readonly())
+		if err != nil && !image.IsReadOnlyFilesytem(err) {
+			return nil, fmt.Errorf("failed to load data image %s: %s", imagePath, err)
+		}
+		img.Usage = image.DataUsage
+
+		if err := starterConfig.KeepFileDescriptor(int(img.Fd)); err != nil {
+			return nil, err
+		}
+		images = append(images, *img)
+		binds[i].Source = img.Source
+	}
+
+	return images, nil
 }
 
 func (e *EngineOperations) loadImage(path string, writable bool) (*image.Image, error) {
-	imgObject, err := image.Init(path, writable)
-	if err != nil {
-		return nil, err
+	const delSuffix = " (deleted)"
+
+	imgObject, imgErr := image.Init(path, writable)
+	// pass imgObject if not nil for overlay and read-only filesystem error.
+	// Do not remove this line
+	if imgErr != nil && imgObject == nil {
+		return nil, imgErr
 	}
 
-	link, err := mainthread.Readlink(imgObject.Source)
+	// get the real path from /proc/self/fd/X
+	imgTarget, err := mainthread.Readlink(imgObject.Source)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("while reading symlink %s: %s", imgObject.Source, err)
 	}
-
-	if link != imgObject.Path {
-		return nil, fmt.Errorf("resolved path %s doesn't match with opened path %s", imgObject.Path, link)
+	// imgObject.Path is the resolved path provided to image.Init and imgTarget point
+	// to the opened path, if they are not identical (for some obscure reasons) we use
+	// the resolved path from /proc/self/fd/X
+	if imgObject.Path != imgTarget {
+		// With some kernel/filesystem combination the symlink target of /proc/self/fd/X
+		// may return a path with the suffix " (deleted)" even if not deleted, we just
+		// remove it because it won't impact ACL path check
+		finalTarget := strings.TrimSuffix(imgTarget, delSuffix)
+		sylog.Debugf("Replacing image resolved path %s by %s", imgObject.Path, finalTarget)
+		imgObject.Path = finalTarget
 	}
 
 	if len(e.EngineConfig.File.LimitContainerPaths) != 0 {
@@ -1242,5 +1388,5 @@ func (e *EngineOperations) loadImage(path string, writable bool) (*image.Image, 
 		}
 	}
 
-	return imgObject, nil
+	return imgObject, imgErr
 }
