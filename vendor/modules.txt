@@ -401,7 +401,7 @@ github.com/spf13/cobra
 github.com/spf13/cobra/doc
 # github.com/spf13/pflag v1.0.5
 github.com/spf13/pflag
-# github.com/sylabs/json-resp v0.7.0
+# github.com/sylabs/json-resp v0.7.1
 github.com/sylabs/json-resp
 # github.com/sylabs/scs-build-client v0.1.5
 github.com/sylabs/scs-build-client/client
