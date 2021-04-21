@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# Files-Excluded in d/copyright does not, as far as I know, have a way of
+# excluding all but certain files/directories, so we have here this
+# script to take care of this. It should be called by uscan after processing
+# d/watch.
+#
+# see uscan(8) "HISTORY AND UPGRADING" for how the script is invoked
+# v3: <script> --upstream-version <version> ../<spkg>_<version>.orig.tar.gz
+# v4: <script> --upstream-version <version>
+
+spkg="singularity-container"
+
+die () {
+    >&2 echo "error: $1"
+    exit 1
+}
+
+cleanup () {
+    rm -rf "$tmpdir"
+}
+
+main () {
+
+    ARGS=$(getopt -o 'v:' -l 'upstream-version:' -- "$@")
+
+    test $? -eq 0 || die "could not parse arguments"
+
+    eval set -- "$ARGS"
+    unset ARGS
+
+    while true
+    do
+	case "$1" in
+	    '-v'|'--upstream-version')
+		upstream_version="$2"
+		shift 2
+		continue
+		;;
+	    '--')
+		shift
+		break
+		;;
+	    *)
+		die "unexpected argument $1"
+		;;
+	esac
+    done
+
+    if [ $# -eq 1 ] && [ -f "$1" ]
+    then
+	tarball="$1"
+    elif [ $# -eq 0 ]
+    then
+	tarball="../${spkg}_${upstream_version}.orig.tar.gz"
+    else
+	die "unexpected arguments"
+    fi
+
+    tar -C "$tmpdir" -xf "$tarball" \
+	|| die "could not extract tarball $tarball"
+
+    origdir="$PWD"
+
+    cd $tmpdir || die "could not enter temporary directory"
+
+    sourcedir=${spkg}-${upstream_version}
+
+    mv * "$sourcedir" \
+	|| die "could not rename top-level source folder"
+
+    cd "$sourcedir" \
+	|| die "could not enter source directory"
+
+    find vendor \
+	 \( \
+	 -path "vendor/github.com/sylabs" -o \
+	 -path "vendor/github.com/globalsign/mgo" -o \
+	 -path "vendor/github.com/safchain/ethtool" -o \
+	 -path "vendor/github.com/alexflint/go-filemutex" -o \
+	 -path "vendor/github.com/kubernetes-sigs/cri-o" -o \
+	 -path "vendor/github.com/mtrmac/gpgme" -o \
+	 -path "vendor/github.com/opencontainers/image-tools" -o \
+	 -path "vendor/github.com/pquerna/ffjson" -o \
+	 -path "vendor/golang.org/x/crypto" -o `# patched by upstream...` \
+	 -path "vendor/github.com/containernetworking" -o \
+	 -path "vendor/github.com/containers" \
+	 \) \
+	 `# rm -rf would delete everything via higher-level matches` \
+	 `# that can't be properly avoided with -mindepth` \
+	 -prune -o -type f -exec rm -f {} + \
+	&&
+	find vendor -type d -empty -delete \
+	    || die "could not remove vendored files"
+
+    cd "$tmpdir" &&
+	tar -czf "$origdir/../${spkg}_${upstream_version}+ds.orig.tar.gz" \
+	$sourcedir || die "could not repack tarball"
+
+    # delete original tarball
+    rm -f "$origdir/$tarball"
+}
+
+trap cleanup EXIT
+
+tmpdir=$(mktemp -d)
+test $? -eq 0 || die "could not create temporary directory"
+
+main "$@"

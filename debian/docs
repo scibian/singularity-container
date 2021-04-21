@@ -1,0 +1,5 @@
+CONTRIBUTORS.md
+README.md
+# pointed out by lintian error
+# "missing-notice-file-for-apache-license"
+vendor/github.com/containers/storage/NOTICE
