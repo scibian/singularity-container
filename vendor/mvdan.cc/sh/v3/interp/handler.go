@@ -68,7 +68,7 @@ type ExecHandlerFunc func(ctx context.Context, args []string) error
 func DefaultExecHandler(killTimeout time.Duration) ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := HandlerCtx(ctx)
-		path, err := LookPath(hc.Env, args[0])
+		path, err := LookPathDir(hc.Dir, hc.Env, args[0])
 		if err != nil {
 			fmt.Fprintln(hc.Stderr, err)
 			return NewExitStatus(127)
@@ -132,7 +132,7 @@ func DefaultExecHandler(killTimeout time.Duration) ExecHandlerFunc {
 	}
 }
 
-func checkStat(dir, file string) (string, error) {
+func checkStat(dir, file string, checkExec bool) (string, error) {
 	if !filepath.IsAbs(file) {
 		file = filepath.Join(dir, file)
 	}
@@ -144,7 +144,7 @@ func checkStat(dir, file string) (string, error) {
 	if m.IsDir() {
 		return "", fmt.Errorf("is a directory")
 	}
-	if runtime.GOOS != "windows" && m&0o111 == 0 {
+	if checkExec && runtime.GOOS != "windows" && m&0o111 == 0 {
 		return "", fmt.Errorf("permission denied")
 	}
 	return file, nil
@@ -158,23 +158,29 @@ func winHasExt(file string) bool {
 	return strings.LastIndexAny(file, `:\/`) < i
 }
 
+// findExecutable returns the path to an existing executable file.
 func findExecutable(dir, file string, exts []string) (string, error) {
 	if len(exts) == 0 {
 		// non-windows
-		return checkStat(dir, file)
+		return checkStat(dir, file, true)
 	}
 	if winHasExt(file) {
-		if file, err := checkStat(dir, file); err == nil {
+		if file, err := checkStat(dir, file, true); err == nil {
 			return file, nil
 		}
 	}
 	for _, e := range exts {
 		f := file + e
-		if f, err := checkStat(dir, f); err == nil {
+		if f, err := checkStat(dir, f, true); err == nil {
 			return f, nil
 		}
 	}
 	return "", fmt.Errorf("not found")
+}
+
+// findFile returns the path to an existing file.
+func findFile(dir, file string, _ []string) (string, error) {
+	return checkStat(dir, file, false)
 }
 
 func driveLetter(c byte) bool {
@@ -212,23 +218,36 @@ func splitList(path string) []string {
 	return fixed
 }
 
-// LookPath is similar to os/exec.LookPath, with the difference that it uses the
+// LookPath is deprecated. See LookPathDir.
+func LookPath(env expand.Environ, file string) (string, error) {
+	return LookPathDir(env.Get("PWD").String(), env, file)
+}
+
+// LookPathDir is similar to os/exec.LookPath, with the difference that it uses the
 // provided environment. env is used to fetch relevant environment variables
 // such as PWD and PATH.
 //
 // If no error is returned, the returned path must be valid.
-func LookPath(env expand.Environ, file string) (string, error) {
+func LookPathDir(cwd string, env expand.Environ, file string) (string, error) {
+	return lookPathDir(cwd, env, file, findExecutable)
+}
+
+// findAny defines a function to pass to lookPathDir.
+type findAny = func(dir string, file string, exts []string) (string, error)
+
+func lookPathDir(cwd string, env expand.Environ, file string, find findAny) (string, error) {
+	if find == nil {
+		panic("no find function found")
+	}
+
 	pathList := splitList(env.Get("PATH").String())
 	chars := `/`
 	if runtime.GOOS == "windows" {
 		chars = `:\/`
-		// so that "foo" always tries "./foo"
-		pathList = append([]string{"."}, pathList...)
 	}
 	exts := pathExts(env)
-	dir := env.Get("PWD").String()
 	if strings.ContainsAny(file, chars) {
-		return findExecutable(dir, file, exts)
+		return find(cwd, file, exts)
 	}
 	for _, elem := range pathList {
 		var path string
@@ -239,11 +258,17 @@ func LookPath(env expand.Environ, file string) (string, error) {
 		default:
 			path = filepath.Join(elem, file)
 		}
-		if f, err := findExecutable(dir, path, exts); err == nil {
+		if f, err := find(cwd, path, exts); err == nil {
 			return f, nil
 		}
 	}
 	return "", fmt.Errorf("%q: executable file not found in $PATH", file)
+}
+
+// scriptFromPathDir is similar to LookPathDir, with the difference that it looks
+// for both executable and non-executable files.
+func scriptFromPathDir(cwd string, env expand.Environ, file string) (string, error) {
+	return lookPathDir(cwd, env, file, findFile)
 }
 
 func pathExts(env expand.Environ) []string {
