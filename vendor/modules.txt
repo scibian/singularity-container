@@ -360,7 +360,7 @@ github.com/opencontainers/umoci/pkg/system
 github.com/opencontainers/umoci/pkg/testutils
 github.com/opencontainers/umoci/pkg/unpriv
 github.com/opencontainers/umoci/third_party/shared
-# github.com/pelletier/go-toml v1.8.1
+# github.com/pelletier/go-toml v1.9.5
 github.com/pelletier/go-toml
 # github.com/pkg/errors v0.9.1
 github.com/pkg/errors
