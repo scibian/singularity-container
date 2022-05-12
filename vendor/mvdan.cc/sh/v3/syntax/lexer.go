@@ -61,13 +61,13 @@ func (p *Parser) rune() rune {
 	if p.r == '\n' || p.r == escNewl {
 		// p.r instead of b so that newline
 		// character positions don't have col 0.
-		if p.npos.line++; p.npos.line == 0 {
+		if p.line++; p.line > lineMax {
 			p.lineOverflow = true
 		}
-		p.npos.col = 0
+		p.col = 0
 		p.colOverflow = false
 	}
-	if p.npos.col += p.w; p.npos.col < p.w {
+	if p.col += p.w; p.col > colMax {
 		p.colOverflow = true
 	}
 	bquotes := 0
@@ -75,10 +75,19 @@ retry:
 	if p.bsp < len(p.bs) {
 		if b := p.bs[p.bsp]; b < utf8.RuneSelf {
 			p.bsp++
+			if b == '\x00' {
+				// Ignore null bytes while parsing, like bash.
+				goto retry
+			}
 			if b == '\\' {
-				if p.r != '\\' && p.peekByte('\n') {
+				if p.r == '\\' {
+				} else if p.peekByte('\n') {
 					p.bsp++
 					p.w, p.r = 1, escNewl
+					return escNewl
+				} else if p.peekBytes("\r\n") {
+					p.bsp += 2
+					p.w, p.r = 2, escNewl
 					return escNewl
 				}
 				if p.openBquotes > 0 && bquotes < p.openBquotes &&
@@ -107,9 +116,9 @@ retry:
 		}
 		p.bsp += w
 		if p.r == utf8.RuneError && w == 1 {
-			p.posErr(p.npos, "invalid UTF-8 encoding")
+			p.posErr(p.nextPos(), "invalid UTF-8 encoding")
 		}
-		p.w = uint16(w)
+		p.w = w
 	} else {
 		if p.r == utf8.RuneSelf {
 		} else if p.fill(); p.bs == nil {
@@ -157,7 +166,14 @@ readAgain:
 
 func (p *Parser) nextKeepSpaces() {
 	r := p.r
-	p.pos = p.getPos()
+	if p.quote != hdocBody && p.quote != hdocBodyTabs {
+		// Heredocs handle escaped newlines in a special way, but others
+		// do not.
+		for r == escNewl {
+			r = p.rune()
+		}
+	}
+	p.pos = p.nextPos()
 	switch p.quote {
 	case paramExpRepl:
 		switch r {
@@ -202,15 +218,15 @@ func (p *Parser) next() {
 		p.tok = _EOF
 		return
 	}
-	for p.r == escNewl {
-		p.rune()
-	}
 	p.spaced = false
 	if p.quote&allKeepSpaces != 0 {
 		p.nextKeepSpaces()
 		return
 	}
 	r := p.r
+	for r == escNewl {
+		r = p.rune()
+	}
 skipSpace:
 	for {
 		switch r {
@@ -238,7 +254,7 @@ skipSpace:
 			break skipSpace
 		}
 	}
-	if p.stopAt != nil && (p.spaced || p.tok == illegalTok || stopToken(p.tok)) {
+	if p.stopAt != nil && (p.spaced || p.tok == illegalTok || p.stopToken()) {
 		w := utf8.RuneLen(r)
 		if bytes.HasPrefix(p.bs[p.bsp-w:], p.stopAt) {
 			p.r = utf8.RuneSelf
@@ -247,7 +263,7 @@ skipSpace:
 			return
 		}
 	}
-	p.pos = p.getPos()
+	p.pos = p.nextPos()
 	switch {
 	case p.quote&allRegTokens != 0:
 		switch r {
@@ -256,10 +272,18 @@ skipSpace:
 		case '#':
 			r = p.rune()
 			p.newLit(r)
-			for r != '\n' && r != utf8.RuneSelf {
-				if r == escNewl {
+		runeLoop:
+			for {
+				switch r {
+				case '\n', utf8.RuneSelf:
+					break runeLoop
+				case escNewl:
 					p.litBs = append(p.litBs, '\\', '\n')
-					break
+					break runeLoop
+				case '`':
+					if p.backquoteEnd() {
+						break runeLoop
+					}
 				}
 				r = p.rune()
 			}
@@ -279,7 +303,7 @@ skipSpace:
 				p.advanceLitNone(r)
 			}
 		case '?', '*', '+', '@', '!':
-			if p.peekByte('(') {
+			if p.tokenizeGlob() {
 				switch r {
 				case '?':
 					p.tok = globQuest
@@ -333,6 +357,28 @@ skipSpace:
 	if p.err != nil && p.tok != _EOF {
 		p.tok = _EOF
 	}
+}
+
+// tokenizeGlob determines whether the expression should be tokenized as a glob literal
+func (p *Parser) tokenizeGlob() bool {
+	if p.val == "function" {
+		return false
+	}
+	// NOTE: empty pattern list is a valid globbing syntax, eg @()
+	// but we'll operate on the "likelihood" that it is a function;
+	// only tokenize if its a non-empty pattern list
+	if p.peekBytes("()") {
+		return false
+	}
+	return p.peekByte('(')
+}
+
+func (p *Parser) peekBytes(s string) bool {
+	for p.bsp+(len(p.bs)-1) >= len(p.bs) {
+		p.fill()
+	}
+	bw := p.bsp + len(s)
+	return bw <= len(p.bs) && bytes.HasPrefix(p.bs[p.bsp:bw], []byte(s))
 }
 
 func (p *Parser) peekByte(b byte) bool {
@@ -871,7 +917,7 @@ loop:
 			tok = _Lit
 			break loop
 		case '?', '*', '+', '@', '!':
-			if p.peekByte('(') {
+			if p.tokenizeGlob() {
 				tok = _Lit
 				break loop
 			}
@@ -907,6 +953,16 @@ loop:
 }
 
 func (p *Parser) advanceLitHdoc(r rune) {
+	// Unlike the rest of nextKeepSpaces quote states, we handle escaped
+	// newlines here. If lastTok==_Lit, then we know we're following an
+	// escaped newline, so the first line can't end the heredoc.
+	lastTok := p.tok
+	for r == escNewl {
+		r = p.rune()
+		lastTok = _Lit
+	}
+	p.pos = p.nextPos()
+
 	p.tok = _Lit
 	p.newLit(r)
 	if p.quote == hdocBodyTabs {
@@ -918,24 +974,35 @@ func (p *Parser) advanceLitHdoc(r rune) {
 	stop := p.hdocStops[len(p.hdocStops)-1]
 	for ; ; r = p.rune() {
 		switch r {
-		case escNewl, '`', '$':
+		case escNewl, '$':
 			p.val = p.endLit()
 			return
 		case '\\': // escaped byte follows
 			p.rune()
+		case '`':
+			if !p.backquoteEnd() {
+				p.val = p.endLit()
+				return
+			}
+			fallthrough
 		case '\n', utf8.RuneSelf:
 			if p.parsingDoc {
 				if r == utf8.RuneSelf {
+					p.tok = _LitWord
 					p.val = p.endLit()
 					return
 				}
+			} else if lStart == 0 && lastTok == _Lit {
+				// This line starts right after an escaped
+				// newline, so it should never end the heredoc.
 			} else if lStart >= 0 {
 				// Compare the current line with the stop word.
 				line := p.litBs[lStart:]
-				if r == '\n' && len(line) > 0 {
-					line = line[:len(line)-1] // minus \n
+				if r != utf8.RuneSelf && len(line) > 0 {
+					line = line[:len(line)-1] // minus trailing character
 				}
 				if bytes.Equal(line, stop) {
+					p.tok = _LitWord
 					p.val = p.endLit()[:lStart]
 					if p.val == "" {
 						p.tok = _Newl
@@ -944,8 +1011,8 @@ func (p *Parser) advanceLitHdoc(r rune) {
 					return
 				}
 			}
-			if r == utf8.RuneSelf {
-				return
+			if r != '\n' {
+				return // hit an unexpected EOF or closing backquote
 			}
 			if p.quote == hdocBodyTabs {
 				for p.peekByte('\t') {
@@ -960,7 +1027,7 @@ func (p *Parser) advanceLitHdoc(r rune) {
 func (p *Parser) quotedHdocWord() *Word {
 	r := p.r
 	p.newLit(r)
-	pos := p.getPos()
+	pos := p.nextPos()
 	stop := p.hdocStops[len(p.hdocStops)-1]
 	for ; ; r = p.rune() {
 		if r == utf8.RuneSelf {
@@ -972,10 +1039,18 @@ func (p *Parser) quotedHdocWord() *Word {
 			}
 		}
 		lStart := len(p.litBs) - 1
-		for r != utf8.RuneSelf && r != '\n' {
-			if r == escNewl {
+	runeLoop:
+		for {
+			switch r {
+			case utf8.RuneSelf, '\n':
+				break runeLoop
+			case '`':
+				if p.backquoteEnd() {
+					break runeLoop
+				}
+			case escNewl:
 				p.litBs = append(p.litBs, '\\', '\n')
-				break
+				break runeLoop
 			}
 			r = p.rune()
 		}
@@ -984,7 +1059,7 @@ func (p *Parser) quotedHdocWord() *Word {
 		}
 		// Compare the current line with the stop word.
 		line := p.litBs[lStart:]
-		if r == '\n' && len(line) > 0 {
+		if r != utf8.RuneSelf && len(line) > 0 {
 			line = line[:len(line)-1] // minus \n
 		}
 		if bytes.Equal(line, stop) {

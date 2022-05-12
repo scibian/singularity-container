@@ -5,8 +5,10 @@ package expand
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"mvdan.cc/sh/v3/pattern"
 	"mvdan.cc/sh/v3/syntax"
@@ -49,6 +52,10 @@ type Config struct {
 	// this field might change until #451 is completely fixed.
 	ProcSubst func(*syntax.ProcSubst) (string, error)
 
+	// TODO(v4): update to os.Readdir with fs.DirEntry.
+	// We could possibly expose that as a preferred ReadDir2 before then,
+	// to allow users to opt into better performance in v3.
+
 	// ReadDir is used for file path globbing. If nil, globbing is disabled.
 	// Use ioutil.ReadDir to use the filesystem directly.
 	ReadDir func(string) ([]os.FileInfo, error)
@@ -57,7 +64,15 @@ type Config struct {
 	// "**".
 	GlobStar bool
 
-	bufferAlloc bytes.Buffer
+	// NullGlob corresponds to the shell option that allows globbing
+	// patterns which match nothing to result in zero fields.
+	NullGlob bool
+
+	// NoUnset corresponds to the shell option that treats unset variables
+	// as errors.
+	NoUnset bool
+
+	bufferAlloc bytes.Buffer // TODO: use strings.Builder
 	fieldAlloc  [4]fieldPart
 	fieldsAlloc [4][]fieldPart
 
@@ -148,7 +163,7 @@ func Literal(cfg *Config, word *syntax.Word) (string, error) {
 }
 
 // Document expands a single shell word as if it were within double quotes. It
-// is simlar to Literal, but without brace expansion, tilde expansion, and
+// is similar to Literal, but without brace expansion, tilde expansion, and
 // globbing.
 //
 // The config specifies shell expansion options; nil behaves the same as an
@@ -203,6 +218,7 @@ func Format(cfg *Config, format string, args []string) (string, int, error) {
 	var fmts []byte
 	initialArgs := len(args)
 
+formatLoop:
 	for i := 0; i < len(format); i++ {
 		// readDigits reads from 0 to max digits, either octal or
 		// hexadecimal.
@@ -262,6 +278,11 @@ func Format(cfg *Config, format string, args []string) (string, int, error) {
 				if len(digits) > 0 {
 					// can't error
 					n, _ := strconv.ParseUint(digits, 16, 32)
+					if n == 0 {
+						// If we're about to print \x00,
+						// stop the entire loop, like bash.
+						break formatLoop
+					}
 					if c == 'x' {
 						// always as a single byte
 						buf.WriteByte(byte(n))
@@ -393,7 +414,7 @@ func Fields(cfg *Config, words ...*syntax.Word) ([]string, error) {
 					if err != nil {
 						return nil, err
 					}
-					if len(matches) > 0 {
+					if len(matches) > 0 || cfg.NullGlob {
 						fields = append(fields, matches...)
 						continue
 					}
@@ -444,6 +465,9 @@ func (cfg *Config) wordField(wps []syntax.WordPart, ql quoteLevel) ([]fieldPart,
 					buf.WriteByte(b)
 				}
 				s = buf.String()
+			}
+			if i := strings.IndexByte(s, '\x00'); i >= 0 {
+				s = s[:i]
 			}
 			field = append(field, fieldPart{val: s})
 		case *syntax.SglQuoted:
@@ -500,7 +524,11 @@ func (cfg *Config) cmdSubst(cs *syntax.CmdSubst) (string, error) {
 	if err := cfg.CmdSubst(buf, cs); err != nil {
 		return "", err
 	}
-	return strings.TrimRight(buf.String(), "\n"), nil
+	out := buf.String()
+	if strings.IndexByte(out, '\x00') >= 0 {
+		out = strings.ReplaceAll(out, "\x00", "")
+	}
+	return strings.TrimRight(out, "\n"), nil
 }
 
 func (cfg *Config) wordFields(wps []syntax.WordPart) ([][]fieldPart, error) {
@@ -539,7 +567,9 @@ func (cfg *Config) wordFields(wps []syntax.WordPart) ([][]fieldPart, error) {
 				for i := 0; i < len(s); i++ {
 					b := s[i]
 					if b == '\\' {
-						i++
+						if i++; i >= len(s) {
+							break
+						}
 						b = s[i]
 					}
 					buf.WriteByte(b)
@@ -735,7 +765,17 @@ func (cfg *Config) glob(base, pat string) ([]string, error) {
 	}
 	// TODO: as an optimization, we could do chunks of the path all at once,
 	// like doing a single stat for "/foo/bar" in "/foo/bar/*".
+
+	// TODO: Another optimization would be to reduce the number of ReadDir calls.
+	// For example, /foo/* can end up doing one duplicate call:
+	//
+	//    ReadDir("/foo") to ensure that "/foo/" exists and only matches a directory
+	//    ReadDir("/foo") glob "*"
+
 	for i, part := range parts {
+		// Keep around for debugging.
+		// log.Printf("matches %q part %d %q", matches, i, part)
+
 		wantDir := i < len(parts)-1
 		switch {
 		case part == "", part == ".", part == "..":
@@ -751,42 +791,61 @@ func (cfg *Config) glob(base, pat string) ([]string, error) {
 					match = filepath.Join(base, match)
 				}
 				match = pathJoin2(match, part)
-				info, err := os.Stat(match)
-				if err != nil {
-					continue
-				}
-				if wantDir && !info.IsDir() {
-					continue
+				// We can't use ReadDir on the parent and match the directory
+				// entry by name, because short paths on Windows break that.
+				// Our only option is to ReadDir on the directory entry itself,
+				// which can be wasteful if we only want to see if it exists,
+				// but at least it's correct in all scenarios.
+				if _, err := cfg.ReadDir(match); err != nil {
+					const errPathNotFound = syscall.Errno(3) // from syscall/types_windows.go, to avoid a build tag
+					var pathErr *os.PathError
+					if runtime.GOOS == "windows" && errors.As(err, &pathErr) && pathErr.Err == errPathNotFound {
+						// Unfortunately, os.File.Readdir on a regular file on
+						// Windows returns an error that satisfies ErrNotExist.
+						// Luckily, it returns a special "path not found" rather
+						// than the normal "file not found" for missing files,
+						// so we can use that knowledge to work around the bug.
+						// See https://github.com/golang/go/issues/46734.
+						// TODO: remove when the Go issue above is resolved.
+					} else if errors.Is(err, fs.ErrNotExist) {
+						continue // simply doesn't exist
+					}
+					if wantDir {
+						continue // exists but not a directory
+					}
 				}
 				newMatches = append(newMatches, pathJoin2(dir, part))
 			}
 			matches = newMatches
 			continue
 		case part == "**" && cfg.GlobStar:
-			for i, match := range matches {
-				// "a/**" should match "a/ a/b a/b/cfg ..."; note
-				// how the zero-match case has a trailing
-				// separator.
-				matches[i] = pathJoin2(match, "")
+			// Find all recursive matches for "**".
+			// Note that we need the results to be in depth-first order,
+			// and to avoid recursion, we use a slice as a stack.
+			// Since we pop from the back, we populate the stack backwards.
+			stack := make([]string, 0, len(matches))
+			for i := len(matches) - 1; i >= 0; i-- {
+				// "a/**" should match "a/ a/b a/b/cfg ...";
+				// note how the zero-match case has a trailing separator.
+				stack = append(stack, pathJoin2(matches[i], ""))
 			}
-			// expand all the possible levels of **
-			latest := matches
-			for {
-				var newMatches []string
-				for _, dir := range latest {
-					var err error
-					newMatches, err = cfg.globDir(base, dir, rxGlobStar, wantDir, newMatches)
-					if err != nil {
-						return nil, err
-					}
+			matches = matches[:0]
+			var newMatches []string // to reuse its capacity
+			for len(stack) > 0 {
+				dir := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+
+				// Don't include the original "" match as it's not a valid path.
+				if dir != "" {
+					matches = append(matches, dir)
 				}
-				if len(newMatches) == 0 {
-					// not another level of directories to
-					// try; stop
-					break
+
+				// If dir is not a directory, we keep the stack as-is and continue.
+				newMatches = newMatches[:0]
+				newMatches, _ = cfg.globDir(base, dir, rxGlobStar, wantDir, newMatches)
+				for i := len(newMatches) - 1; i >= 0; i-- {
+					stack = append(stack, newMatches[i])
 				}
-				matches = append(matches, newMatches...)
-				latest = newMatches
 			}
 			continue
 		}
@@ -815,21 +874,24 @@ func (cfg *Config) globDir(base, dir string, rx *regexp.Regexp, wantDir bool, ma
 	}
 	infos, err := cfg.ReadDir(fullDir)
 	if err != nil {
-		return nil, err
+		// We still want to return matches, for the sake of reusing slices.
+		return matches, err
 	}
 	for _, info := range infos {
 		name := info.Name()
 		if !wantDir {
-			// no filtering
+			// No filtering.
 		} else if mode := info.Mode(); mode&os.ModeSymlink != 0 {
-			// TODO: is there a way to do this without the
-			// extra syscall?
-			if _, err := cfg.ReadDir(filepath.Join(fullDir, name)); err != nil {
-				// symlink pointing to non-directory
+			// We need to know if the symlink points to a directory.
+			// This requires an extra syscall, as ReadDir on the parent directory
+			// does not follow symlinks for each of the directory entries.
+			// ReadDir is somewhat wasteful here, as we only want its error result,
+			// but we could try to reuse its result as per the TODO in Config.glob.
+			if _, err := cfg.ReadDir(filepath.Join(fullDir, info.Name())); err != nil {
 				continue
 			}
 		} else if !mode.IsDir() {
-			// definitely not a directory
+			// Not a symlink nor a directory.
 			continue
 		}
 		if !strings.HasPrefix(rx.String(), `^\.`) && name[0] == '.' {
