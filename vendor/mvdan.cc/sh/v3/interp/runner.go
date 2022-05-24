@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
@@ -42,11 +41,13 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 					return err
 				}
 				_, err = io.Copy(w, f)
+				f.Close()
 				return err
 			}
 			r2 := r.Subshell()
 			r2.stdout = w
 			r2.stmts(ctx, cs.Stmts)
+			r.lastExpandExit = r2.exit
 			return r2.err
 		},
 		ProcSubst: func(ps *syntax.ProcSubst) (string, error) {
@@ -61,10 +62,27 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 				r.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 			}
 			dir := os.TempDir()
-			path := fmt.Sprintf("%s/sh-interp-%d", dir, r.rand.Uint32())
-			if err := mkfifo(path, 0o666); err != nil {
-				return "", fmt.Errorf("cannot create fifo: %v", err)
+
+			// We can't atomically create a random unused temporary FIFO.
+			// Similar to os.CreateTemp,
+			// keep trying new random paths until one does not exist.
+			// We use a uint64 because a uint32 easily runs into retries.
+			var path string
+			try := 0
+			for {
+				path = fmt.Sprintf("%s/sh-interp-%x", dir, r.rand.Uint64())
+				err := mkfifo(path, 0o666)
+				if err == nil {
+					break
+				}
+				if !os.IsExist(err) {
+					return "", fmt.Errorf("cannot create fifo: %v", err)
+				}
+				if try++; try > 100 {
+					return "", fmt.Errorf("giving up at creating fifo: %v", err)
+				}
 			}
+
 			r2 := r.Subshell()
 			stdout := r.origStdout
 			r.wgProcSubsts.Add(1)
@@ -126,16 +144,19 @@ func (r *Runner) updateExpandOpts() {
 	if r.opts[optNoGlob] {
 		r.ecfg.ReadDir = nil
 	} else {
-		r.ecfg.ReadDir = ioutil.ReadDir
+		r.ecfg.ReadDir = func(s string) ([]os.FileInfo, error) {
+			return r.readDirHandler(r.handlerCtx(context.Background()), s)
+		}
 	}
 	r.ecfg.GlobStar = r.opts[optGlobStar]
+	r.ecfg.NullGlob = r.opts[optNullGlob]
+	r.ecfg.NoUnset = r.opts[optNoUnset]
 }
 
 func (r *Runner) expandErr(err error) {
 	if err != nil {
 		r.errf("%v\n", err)
-		r.exit = 1
-		r.exitShell = true
+		r.exitShell(context.TODO(), 1)
 	}
 }
 
@@ -169,7 +190,7 @@ func (r *Runner) pattern(word *syntax.Word) string {
 	return str
 }
 
-// expandEnv exposes Runner's variables to the expand package.
+// expandEnviron exposes Runner's variables to the expand package.
 type expandEnv struct {
 	r *Runner
 }
@@ -186,35 +207,17 @@ func (e expandEnv) Set(name string, vr expand.Variable) error {
 }
 
 func (e expandEnv) Each(fn func(name string, vr expand.Variable) bool) {
-	e.r.Env.Each(fn)
-	for name, vr := range e.r.Vars {
-		if !fn(name, vr) {
-			return
-		}
-	}
+	e.r.writeEnv.Each(fn)
 }
 
 func (r *Runner) handlerCtx(ctx context.Context) context.Context {
 	hc := HandlerContext{
+		Env:    &overlayEnviron{parent: r.writeEnv},
 		Dir:    r.Dir,
 		Stdin:  r.stdin,
 		Stdout: r.stdout,
 		Stderr: r.stderr,
 	}
-	oenv := overlayEnviron{
-		parent: r.Env,
-		values: make(map[string]expand.Variable),
-	}
-	for name, vr := range r.Vars {
-		oenv.Set(name, vr)
-	}
-	for name, vr := range r.funcVars {
-		oenv.Set(name, vr)
-	}
-	for name, value := range r.cmdVars {
-		oenv.Set(name, expand.Variable{Exported: true, Kind: expand.String, Str: value})
-	}
-	hc.Env = oenv
 	return context.WithValue(ctx, handlerCtxKey{}, hc)
 }
 
@@ -237,7 +240,7 @@ func (r *Runner) errf(format string, a ...interface{}) {
 }
 
 func (r *Runner) stop(ctx context.Context) bool {
-	if r.err != nil || r.exitShell {
+	if r.err != nil || r.Exited() {
 		return true
 	}
 	if err := ctx.Err(); err != nil {
@@ -275,13 +278,13 @@ func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 		cls, err := r.redir(ctx, rd)
 		if err != nil {
 			r.exit = 1
-			return
+			break
 		}
 		if cls != nil {
 			defer cls.Close()
 		}
 	}
-	if st.Cmd != nil {
+	if r.exit == 0 && st.Cmd != nil {
 		r.cmd(ctx, st.Cmd)
 	}
 	if st.Negated {
@@ -294,7 +297,9 @@ func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 		//   conditions (if <cond>, while <cond>, etc)
 		//   part of && or || lists
 		//   preceded by !
-		r.exitShell = true
+		r.exitShell(ctx, r.exit)
+	} else if r.exit != 0 {
+		r.trapCallback(ctx, r.callbackErr, "error")
 	}
 	if !r.keepRedirs {
 		r.stdin, r.stdout, r.stderr = oldIn, oldOut, oldErr
@@ -305,6 +310,10 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 	if r.stop(ctx) {
 		return
 	}
+
+	tracingEnabled := r.opts[optXTrace]
+	trace := r.tracer()
+
 	switch x := cm.(type) {
 	case *syntax.Block:
 		r.stmts(ctx, x.Stmts)
@@ -329,25 +338,65 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 			}
 		}
 		args = append(args, left...)
+		r.lastExpandExit = 0
 		fields := r.fields(args...)
 		if len(fields) == 0 {
 			for _, as := range x.Assigns {
 				vr := r.assignVal(as, "")
 				r.setVar(as.Name.Value, as.Index, vr)
+
+				if !tracingEnabled {
+					continue
+				}
+
+				// Strangely enough, it seems like Bash prints original
+				// source for arrays, but the expanded value otherwise.
+				// TODO: add test cases for x[i]=y and x+=y.
+				if as.Array != nil {
+					trace.expr(as)
+				} else if as.Value != nil {
+					val, err := syntax.Quote(vr.String(), syntax.LangBash)
+					if err != nil { // should never happen
+						panic(err)
+					}
+					trace.stringf("%s=%s", as.Name.Value, val)
+				}
+				trace.newLineFlush()
+			}
+			// If interpreting the last expansion like $(foo) failed,
+			// and the expansion and assignments otherwise succeeded,
+			// we need to surface that last exit code.
+			if r.exit == 0 {
+				r.exit = r.lastExpandExit
 			}
 			break
 		}
-		for _, as := range x.Assigns {
-			vr := r.assignVal(as, "")
-			// we know that inline vars must be strings
-			r.cmdVars[as.Name.Value] = vr.Str
+
+		type restoreVar struct {
+			name string
+			vr   expand.Variable
 		}
+		var restores []restoreVar
+
+		for _, as := range x.Assigns {
+			name := as.Name.Value
+			origVr := r.lookupVar(name)
+
+			vr := r.assignVal(as, "")
+			// Inline command vars are always exported.
+			vr.Exported = true
+
+			restores = append(restores, restoreVar{name, origVr})
+
+			r.setVarInternal(name, vr)
+		}
+
+		trace.call(fields[0], fields[1:]...)
+		trace.newLineFlush()
+
 		r.call(ctx, x.Args[0].Pos(), fields)
-		// cmdVars can be nuked here, as they are never useful
-		// again once we nest into further levels of inline
-		// vars.
-		for k := range r.cmdVars {
-			delete(r.cmdVars, k)
+		for _, restore := range restores {
+			r.setVarInternal(restore.name, restore.vr)
 		}
 	case *syntax.BinaryCmd:
 		switch x.Op {
@@ -420,11 +469,24 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 		case *syntax.WordIter:
 			name := y.Name.Value
 			items := r.Params // for i; do ...
-			if y.InPos.IsValid() {
+
+			inToken := y.InPos.IsValid()
+			if inToken {
 				items = r.fields(y.Items...) // for i in ...; do ...
 			}
+
 			for _, field := range items {
 				r.setVarString(name, field)
+				trace.stringf("for %s in", y.Name.Value)
+				if inToken {
+					for _, item := range y.Items {
+						trace.string(" ")
+						trace.expr(item)
+					}
+				} else {
+					trace.string(` "$@"`)
+				}
+				trace.newLineFlush()
 				if r.loopStmtsBroken(ctx, x.Do) {
 					break
 				}
@@ -450,9 +512,32 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 		var val int
 		for _, expr := range x.Exprs {
 			val = r.arithm(expr)
+
+			if !tracingEnabled {
+				continue
+			}
+
+			switch v := expr.(type) {
+			case *syntax.Word:
+				qs, err := syntax.Quote(r.literal(v), syntax.LangBash)
+				if err != nil {
+					return
+				}
+				trace.stringf("let %v", qs)
+			case *syntax.BinaryArithm, *syntax.UnaryArithm:
+				trace.expr(x)
+			case *syntax.ParenArithm:
+				// TODO
+			}
 		}
+
+		trace.newLineFlush()
 		r.exit = oneIf(val == 0)
 	case *syntax.CaseClause:
+		trace.string("case ")
+		trace.expr(x.Word)
+		trace.string(" in")
+		trace.newLineFlush()
 		str := r.literal(x.Word)
 		for _, ci := range x.Items {
 			for _, word := range ci.Patterns {
@@ -514,7 +599,10 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 					r.exit = 1
 					return
 				}
-				vr := r.assignVal(as, valType)
+				var vr expand.Variable
+				if !as.Naked {
+					vr = r.assignVal(as, valType)
+				}
 				if global {
 					vr.Local = false
 				} else if local {
@@ -529,7 +617,9 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 					}
 				}
 				if as.Naked {
-					r.setVarInternal(name, vr)
+					if vr.Exported || vr.Local || vr.ReadOnly {
+						r.setVarInternal(name, vr)
+					}
 				} else {
 					r.setVar(name, as.Index, vr)
 				}
@@ -554,6 +644,40 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 	default:
 		panic(fmt.Sprintf("unhandled command node: %T", x))
 	}
+}
+
+func (r *Runner) trapCallback(ctx context.Context, callback, name string) {
+	if callback == "" {
+		return // nothing to do
+	}
+	if r.handlingTrap {
+		return // don't recurse, as that could lead to cycles
+	}
+	r.handlingTrap = true
+
+	p := syntax.NewParser()
+	// TODO: do this parsing when "trap" is called?
+	file, err := p.Parse(strings.NewReader(callback), name+" trap")
+	if err != nil {
+		r.errf(name+"trap: %v\n", err)
+		// ignore errors in the callback
+		return
+	}
+	r.stmts(ctx, file.Stmts)
+
+	r.handlingTrap = false
+}
+
+// exitShell exits the current shell session with the given status code.
+func (r *Runner) exitShell(ctx context.Context, status int) {
+	if status != 0 {
+		r.trapCallback(ctx, r.callbackErr, "error")
+	}
+	r.trapCallback(ctx, r.callbackExit, "exit")
+
+	r.shellExited = true
+	// Restore the original exit status. We ignore the callbacks.
+	r.exit = status
 }
 
 func (r *Runner) flattenAssign(as *syntax.Assign) []*syntax.Assign {
@@ -585,7 +709,7 @@ func match(pat, name string) bool {
 	if err != nil {
 		return false
 	}
-	rx := regexp.MustCompile("^" + expr + "$")
+	rx := regexp.MustCompile("(?m)^" + expr + "$")
 	return rx.MatchString(name)
 }
 
@@ -594,7 +718,7 @@ func elapsedString(d time.Duration, posix bool) string {
 		return fmt.Sprintf("%.2f", d.Seconds())
 	}
 	min := int(d.Minutes())
-	sec := math.Remainder(d.Seconds(), 60.0)
+	sec := math.Mod(d.Seconds(), 60.0)
 	return fmt.Sprintf("%dm%.3fs", min, sec)
 }
 
@@ -721,20 +845,33 @@ func (r *Runner) call(ctx context.Context, pos syntax.Pos, args []string) {
 	if r.stop(ctx) {
 		return
 	}
+	if r.callHandler != nil {
+		var err error
+		args, err = r.callHandler(r.handlerCtx(ctx), args)
+		if err != nil {
+			// handler's custom fatal error
+			r.setErr(err)
+			return
+		}
+	}
 	name := args[0]
 	if body := r.Funcs[name]; body != nil {
 		// stack them to support nested func calls
 		oldParams := r.Params
 		r.Params = args[1:]
 		oldInFunc := r.inFunc
-		oldFuncVars := r.funcVars
-		r.funcVars = nil
 		r.inFunc = true
+
+		// Functions run in a nested scope.
+		// Note that Runner.exec below does something similar.
+		origEnv := r.writeEnv
+		r.writeEnv = &overlayEnviron{parent: r.writeEnv, funcScope: true}
 
 		r.stmt(ctx, body)
 
+		r.writeEnv = origEnv
+
 		r.Params = oldParams
-		r.funcVars = oldFuncVars
 		r.inFunc = oldInFunc
 		if code, ok := r.err.(returnStatus); ok {
 			r.err = nil
@@ -778,6 +915,12 @@ func (r *Runner) open(ctx context.Context, path string, flags int, mode os.FileM
 	return f, err
 }
 
-func (r *Runner) stat(name string) (os.FileInfo, error) {
-	return os.Stat(r.absPath(name))
+func (r *Runner) stat(ctx context.Context, name string) (os.FileInfo, error) {
+	path := absPath(r.Dir, name)
+	return r.statHandler(ctx, path, true)
+}
+
+func (r *Runner) lstat(ctx context.Context, name string) (os.FileInfo, error) {
+	path := absPath(r.Dir, name)
+	return r.statHandler(ctx, path, false)
 }
