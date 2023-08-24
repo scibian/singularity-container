@@ -15,19 +15,22 @@ import (
 	"syscall"
 
 	args "github.com/sylabs/singularity/internal/pkg/runtime/engine/singularity/rpc"
+	"github.com/sylabs/singularity/internal/pkg/util/crypt"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
+	"github.com/sylabs/singularity/internal/pkg/util/gpu"
 	"github.com/sylabs/singularity/internal/pkg/util/mainthread"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/capabilities"
-	"github.com/sylabs/singularity/pkg/util/crypt"
 	"github.com/sylabs/singularity/pkg/util/loop"
 	"github.com/sylabs/singularity/pkg/util/namespaces"
 	"golang.org/x/sys/unix"
 )
 
-var diskGID = -1
-var defaultEffective = uint64(0)
+var (
+	diskGID          = -1
+	defaultEffective = uint64(0)
+)
 
 func init() {
 	defaultEffective |= uint64(1 << capabilities.Map["CAP_SETUID"].Value)
@@ -254,7 +257,7 @@ func (t *Methods) LoopDevice(arguments *args.LoopArgs, reply *int) (err error) {
 		image = os.NewFile(uintptr(fd), "")
 	} else {
 		var err error
-		image, err = os.OpenFile(arguments.Image, arguments.Mode, 0600)
+		image, err = os.OpenFile(arguments.Image, arguments.Mode, 0o600)
 		if err != nil {
 			return fmt.Errorf("could not open image file: %v", err)
 		}
@@ -411,4 +414,29 @@ func (t *Methods) WriteFile(arguments *args.WriteFileArgs, reply *int) error {
 		err = err1
 	}
 	return err
+}
+
+// NvCCLI will call nvidia-container-cli to configure GPU(s) for the container.
+func (t *Methods) NvCCLI(arguments *args.NvCCLIArgs, reply *int) (err error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	// In the setuid flow we need CAP_CHOWN here to be able to start
+	// nvidia-container-cli successfully as root.
+	caps := defaultEffective
+	if !arguments.UserNS {
+		caps |= uint64(1 << capabilities.Map["CAP_CHOWN"].Value)
+	}
+	oldEffective, err := capabilities.SetProcessEffective(caps)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_, e := capabilities.SetProcessEffective(oldEffective)
+		if err == nil {
+			err = e
+		}
+	}()
+
+	return gpu.NVCLIConfigure(arguments.Flags, arguments.RootFsPath, arguments.UserNS)
 }

@@ -18,7 +18,6 @@ import (
 )
 
 func TestDebootstrapConveyor(t *testing.T) {
-
 	if testing.Short() {
 		t.SkipNow()
 	}
@@ -44,7 +43,7 @@ func TestDebootstrapConveyor(t *testing.T) {
 	cp := sources.DebootstrapConveyorPacker{}
 
 	err = cp.Get(context.Background(), b)
-	// clean up tmpfs since assembler isnt called
+	// clean up tmpfs since assembler isn't called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("Debootstrap Get failed: %v", err)
@@ -77,7 +76,7 @@ func TestDebootstrapPacker(t *testing.T) {
 	cp := sources.DebootstrapConveyorPacker{}
 
 	err = cp.Get(context.Background(), b)
-	// clean up tmpfs since assembler isnt called
+	// clean up tmpfs since assembler isn't called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("Debootstrap Get failed: %v", err)

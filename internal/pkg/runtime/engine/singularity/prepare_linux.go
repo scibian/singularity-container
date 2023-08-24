@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -18,9 +18,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/containerd/cgroups"
+	"github.com/ProtonMail/go-crypto/openpgp"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
+	"github.com/sylabs/singularity/internal/pkg/cgroups"
 	fakerootutil "github.com/sylabs/singularity/internal/pkg/fakeroot"
 	"github.com/sylabs/singularity/internal/pkg/instance"
 	"github.com/sylabs/singularity/internal/pkg/plugin"
@@ -42,7 +43,6 @@ import (
 	"github.com/sylabs/singularity/pkg/util/fs/proc"
 	"github.com/sylabs/singularity/pkg/util/namespaces"
 	"github.com/sylabs/singularity/pkg/util/singularityconf"
-	"golang.org/x/crypto/openpgp"
 	"golang.org/x/sys/unix"
 )
 
@@ -189,6 +189,13 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 		e.EngineConfig.SetUnixSocketPair([2]int{-1, -1})
 	}
 
+	// nvidia-container-cli requires additional caps in the starter bounding set.
+	// These are within the capability set for the starter process itself, *not* the capabilities
+	// that will be set on the running container process, which are defined with SetCapabilities above.
+	if e.EngineConfig.GetNvCCLI() {
+		starterConfig.SetNvCCLICaps(true)
+	}
+
 	return nil
 }
 
@@ -200,7 +207,7 @@ func (e *EngineOperations) prepareUserCaps(enforced bool) error {
 
 	e.EngineConfig.OciConfig.SetProcessNoNewPrivileges(true)
 
-	file, err := os.OpenFile(buildcfg.CAPABILITY_FILE, os.O_RDONLY, 0644)
+	file, err := os.OpenFile(buildcfg.CAPABILITY_FILE, os.O_RDONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("while opening capability config file: %s", err)
 	}
@@ -326,7 +333,7 @@ func (e *EngineOperations) prepareRootCaps() error {
 		e.EngineConfig.OciConfig.SetupPrivileged(true)
 		commonCaps = e.EngineConfig.OciConfig.Process.Capabilities.Permitted
 	case "file":
-		file, err := os.OpenFile(buildcfg.CAPABILITY_FILE, os.O_RDONLY, 0644)
+		file, err := os.OpenFile(buildcfg.CAPABILITY_FILE, os.O_RDONLY, 0o644)
 		if err != nil {
 			return fmt.Errorf("while opening capability config file: %s", err)
 		}
@@ -637,6 +644,7 @@ func (e *EngineOperations) prepareContainerConfig(starterConfig *starter.Config)
 
 // prepareInstanceJoinConfig is responsible for getting and
 // applying configuration to join a running instance.
+//nolint:maintidx
 func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Config) error {
 	name := instance.ExtractName(e.EngineConfig.GetImage())
 	file, err := instance.Get(name, instance.SingSubDir)
@@ -892,14 +900,15 @@ func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Conf
 		e.EngineConfig.OciConfig.Linux.Seccomp = instanceEngineConfig.OciConfig.Linux.Seccomp
 	}
 
-	if uid == 0 && !file.UserNs {
-		pid := os.Getppid()
-		path := fmt.Sprintf("/singularity/%d", file.Pid)
-		control, err := cgroups.Load(cgroups.V1, cgroups.StaticPath(path))
-		if err == nil {
-			if err := control.Add(cgroups.Process{Pid: pid}); err != nil {
-				return fmt.Errorf("while adding process to instance cgroups: %s", err)
-			}
+	if file.Cgroup {
+		sylog.Debugf("Adding process to instance cgroup")
+		ppid := os.Getppid()
+		manager, err := cgroups.GetManagerFromPid(file.Pid)
+		if err != nil {
+			return fmt.Errorf("couldn't create cgroup manager: %v", err)
+		}
+		if err := manager.AddProc(ppid); err != nil {
+			return fmt.Errorf("couldn't add process to instance cgroup: %v", err)
 		}
 	}
 
@@ -960,7 +969,7 @@ func (e *EngineOperations) checkSignalPropagation() {
 		// - ENOTTY will also return 0 as process group
 		pgrp, _ = unix.IoctlGetInt(i, unix.TIOCGPGRP)
 		// based on kernel source a 0 value for process group
-		// theorically be set but really not sure it can happen
+		// theoretically be set but really not sure it can happen
 		// with linux tty behavior
 		if pgrp != 0 {
 			break
@@ -1367,25 +1376,41 @@ func (e *EngineOperations) loadImage(path string, writable bool) (*image.Image, 
 		}
 	}
 
-	for _, p := range imgObject.Partitions {
-		switch p.Type {
-		case image.SANDBOX:
-			if !e.EngineConfig.File.AllowContainerDir {
-				return nil, fmt.Errorf("configuration disallows users from running sandbox based containers")
-			}
-		case image.EXT3:
-			if !e.EngineConfig.File.AllowContainerExtfs {
-				return nil, fmt.Errorf("configuration disallows users from running extFS based containers")
-			}
-		case image.SQUASHFS:
-			if !e.EngineConfig.File.AllowContainerSquashfs {
-				return nil, fmt.Errorf("configuration disallows users from running squashFS based containers")
-			}
-		case image.ENCRYPTSQUASHFS:
-			if !e.EngineConfig.File.AllowContainerEncrypted {
-				return nil, fmt.Errorf("configuration disallows users from running encrypted containers")
-			}
+	switch imgObject.Type {
+	// Bare SquashFS
+	case image.SQUASHFS:
+		if !e.EngineConfig.File.AllowContainerSquashfs {
+			return nil, fmt.Errorf("configuration disallows users from running squashFS containers")
 		}
+	// Bare EXT3
+	case image.EXT3:
+		if !e.EngineConfig.File.AllowContainerExtfs {
+			return nil, fmt.Errorf("configuration disallows users from running extFS containers")
+		}
+	// Bare sandbox directory
+	case image.SANDBOX:
+		if !e.EngineConfig.File.AllowContainerDir {
+			return nil, fmt.Errorf("configuration disallows users from running sandbox containers")
+		}
+	// SIF
+	case image.SIF:
+		// Check if SIF contains an encrypted rootfs partition.
+		// We don't support encryption for other partitions at present.
+		encrypted, err := imgObject.HasEncryptedRootFs()
+		if err != nil {
+			return nil, fmt.Errorf("while checking for encrypted root FS: %v", err)
+		}
+		// SIF with encryption
+		if encrypted && !e.EngineConfig.File.AllowContainerEncrypted {
+			return nil, fmt.Errorf("configuration disallows users from running encrypted SIF containers")
+		}
+		// SIF without encryption - regardless of rootfs filesystem type
+		if !encrypted && !e.EngineConfig.File.AllowContainerSIF {
+			return nil, fmt.Errorf("configuration disallows users from running unencrypted SIF containers")
+		}
+	// We shouldn't be able to run anything else, but make sure we don't!
+	default:
+		return nil, fmt.Errorf("unknown image format %d", imgObject.Type)
 	}
 
 	return imgObject, imgErr

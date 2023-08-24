@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -34,19 +34,22 @@ func (c ctx) singularityEnv(t *testing.T) {
 	c.env.ImgCacheDir = imgCacheDir
 
 	// Singularity defines a path by default. See singularityware/singularity/etc/init.
-	var defaultImage = "docker://alpine:3.8"
+	defaultImage := "docker://alpine:3.8"
 
 	// This image sets a custom path.
-	var customImage = "docker://sylabsio/lolcow"
-	var customPath = "/usr/games:" + defaultPath
+	customImage := "docker://sylabsio/lolcow"
+	customPath := "/usr/games:" + defaultPath
 
 	// Append or prepend this path.
-	var partialPath = "/foo"
+	partialPath := "/foo"
 
 	// Overwrite the path with this one.
-	var overwrittenPath = "/usr/bin:/bin"
+	overwrittenPath := "/usr/bin:/bin"
 
-	var tests = []struct {
+	// A path with a trailing comma
+	trailingCommaPath := "/usr/bin:/bin,"
+
+	tests := []struct {
 		name  string
 		image string
 		path  string
@@ -100,6 +103,12 @@ func (c ctx) singularityEnv(t *testing.T) {
 			path:  overwrittenPath,
 			env:   []string{"SINGULARITYENV_PATH=" + overwrittenPath},
 		},
+		{
+			name:  "OverwriteTrailingCommaPath",
+			image: defaultImage,
+			path:  trailingCommaPath,
+			env:   []string{"SINGULARITYENV_PATH=" + trailingCommaPath},
+		},
 	}
 
 	for _, tt := range tests {
@@ -127,7 +136,7 @@ func (c ctx) singularityEnvOption(t *testing.T) {
 	defer cleanCache(t)
 	c.env.ImgCacheDir = imgCacheDir
 
-	var tests = []struct {
+	tests := []struct {
 		name     string
 		image    string
 		envOpt   []string
@@ -290,6 +299,13 @@ func (c ctx) singularityEnvOption(t *testing.T) {
 			matchVal: singularityLibs,
 		},
 		{
+			name:     "TestCustomTrailingCommaPath",
+			image:    c.env.ImagePath,
+			envOpt:   []string{"LD_LIBRARY_PATH=/foo,"},
+			matchEnv: "LD_LIBRARY_PATH",
+			matchVal: "/foo,:" + singularityLibs,
+		},
+		{
 			name:     "TestCustomLdLibraryPath",
 			image:    c.env.ImagePath,
 			envOpt:   []string{"LD_LIBRARY_PATH=/foo"},
@@ -333,7 +349,7 @@ func (c ctx) singularityEnvFile(t *testing.T) {
 	defer cleanCache(t)
 	c.env.ImgCacheDir = imgCacheDir
 
-	var tests = []struct {
+	tests := []struct {
 		name     string
 		image    string
 		envFile  string
@@ -406,6 +422,13 @@ func (c ctx) singularityEnvFile(t *testing.T) {
 			matchEnv: "LD_LIBRARY_PATH",
 			matchVal: "/foo:" + singularityLibs,
 		},
+		{
+			name:     "CustomTrailingCommaPath",
+			image:    c.env.ImagePath,
+			envFile:  "LD_LIBRARY_PATH=/foo,",
+			matchEnv: "LD_LIBRARY_PATH",
+			matchVal: "/foo,:" + singularityLibs,
+		},
 	}
 
 	for _, tt := range tests {
@@ -414,7 +437,7 @@ func (c ctx) singularityEnvFile(t *testing.T) {
 			args = append(args, "--env", strings.Join(tt.envOpt, ","))
 		}
 		if tt.envFile != "" {
-			ioutil.WriteFile(p, []byte(tt.envFile), 0644)
+			ioutil.WriteFile(p, []byte(tt.envFile), 0o644)
 			args = append(args, "--env-file", p)
 		}
 		args = append(args, tt.image, "/bin/sh", "-c", "echo $"+tt.matchEnv)
@@ -446,5 +469,7 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"environment file":         c.singularityEnvFile,
 		"issue 5057":               c.issue5057, // https://github.com/sylabs/hpcng/issues/5057
 		"issue 5426":               c.issue5426, // https://github.com/sylabs/hpcng/issues/5426
+		"issue 43":                 c.issue43,   // https://github.com/sylabs/singularity/issues/43
+		"issue 274":                c.issue274,  // https://github.com/sylabs/singularity/issues/274
 	}
 }

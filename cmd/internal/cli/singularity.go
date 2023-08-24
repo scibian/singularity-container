@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -21,7 +21,6 @@ import (
 
 	ocitypes "github.com/containers/image/v5/types"
 	"github.com/spf13/cobra"
-	scsbuildclient "github.com/sylabs/scs-build-client/client"
 	scskeyclient "github.com/sylabs/scs-key-client/client"
 	scslibclient "github.com/sylabs/scs-library-client/client"
 	"github.com/sylabs/singularity/docs"
@@ -35,7 +34,7 @@ import (
 	"github.com/sylabs/singularity/pkg/syfs"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/singularityconf"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 // cmdInits holds all the init function to be called
@@ -170,7 +169,7 @@ var commonPEMFlag = cmdline.Flag{
 	Value:        &encryptionPEMPath,
 	DefaultValue: "",
 	Name:         "pem-path",
-	Usage:        "enter an path to a PEM formated RSA key for an encrypted container",
+	Usage:        "enter an path to a PEM formatted RSA key for an encrypted container",
 }
 
 // -F|--force
@@ -184,14 +183,24 @@ var commonForceFlag = cmdline.Flag{
 	EnvKeys:      []string{"FORCE"},
 }
 
-// --nohttps
+// --no-https
 var commonNoHTTPSFlag = cmdline.Flag{
 	ID:           "commonNoHTTPSFlag",
 	Value:        &noHTTPS,
 	DefaultValue: false,
+	Name:         "no-https",
+	Usage:        "use http instead of https for docker:// oras:// and library://<hostname>/... URIs",
+	EnvKeys:      []string{"NOHTTPS", "NO_HTTPS"},
+}
+
+// --nohttps (deprecated)
+var commonOldNoHTTPSFlag = cmdline.Flag{
+	ID:           "commonOldNoHTTPSFlag",
+	Value:        &noHTTPS,
+	DefaultValue: false,
 	Name:         "nohttps",
-	Usage:        "do NOT use HTTPS with the docker:// transport (useful for local docker registries without a certificate)",
-	EnvKeys:      []string{"NOHTTPS"},
+	Deprecated:   "use --no-https",
+	Usage:        "use http instead of https for docker:// oras:// and library://<hostname>/... URIs",
 }
 
 // --tmpdir
@@ -244,7 +253,7 @@ func setSylogMessageLevel() {
 	}
 
 	color := true
-	if nocolor || !terminal.IsTerminal(2) {
+	if nocolor || !term.IsTerminal(2) {
 		color = false
 	}
 
@@ -252,12 +261,12 @@ func setSylogMessageLevel() {
 }
 
 // handleRemoteConf will make sure your 'remote.yaml' config file
-// is the correct permission.
+// has the correct permission.
 func handleRemoteConf(remoteConfFile string) {
 	// Only check the permission if it exists.
 	if fs.IsFile(remoteConfFile) {
 		sylog.Debugf("Ensuring file permission of 0600 on %s", remoteConfFile)
-		if err := fs.EnsureFileWithPermission(remoteConfFile, 0600); err != nil {
+		if err := fs.EnsureFileWithPermission(remoteConfFile, 0o600); err != nil {
 			sylog.Fatalf("Unable to correct the permission on %s: %s", remoteConfFile, err)
 		}
 	}
@@ -266,17 +275,17 @@ func handleRemoteConf(remoteConfFile string) {
 // handleConfDir tries to create the user's configuration directory and handles
 // messages and/or errors.
 func handleConfDir(confDir string) {
-	if err := fs.Mkdir(confDir, 0700); err != nil {
+	if err := fs.Mkdir(confDir, 0o700); err != nil {
 		if os.IsExist(err) {
 			sylog.Debugf("%s already exists. Not creating.", confDir)
 			fi, err := os.Stat(confDir)
 			if err != nil {
 				sylog.Fatalf("Failed to retrieve information for %s: %s", confDir, err)
 			}
-			if fi.Mode().Perm() != 0700 {
+			if fi.Mode().Perm() != 0o700 {
 				sylog.Debugf("Enforce permission 0700 on %s", confDir)
 				// enforce permission on user configuration directory
-				if err := os.Chmod(confDir, 0700); err != nil {
+				if err := os.Chmod(confDir, 0o700); err != nil {
 					// best effort as chmod could fail for various reasons (eg: readonly FS)
 					sylog.Warningf("Couldn't enforce permission 0700 on %s: %s", confDir, err)
 				}
@@ -455,7 +464,7 @@ func ExecuteSingularity() {
 	}
 }
 
-// GenBashCompletionFile
+// GenBashCompletion writes the bash completion file to w.
 func GenBashCompletion(w io.Writer) error {
 	Init(false)
 	return singularityCmd.GenBashCompletion(w)
@@ -482,7 +491,7 @@ var VersionCmd = &cobra.Command{
 }
 
 func loadRemoteConf(filepath string) (*remote.Config, error) {
-	f, err := os.OpenFile(filepath, os.O_RDONLY, 0600)
+	f, err := os.OpenFile(filepath, os.O_RDONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("while opening remote config file: %s", err)
 	}
@@ -628,10 +637,10 @@ func getLibraryClientConfig(uri string) (*scslibclient.Config, error) {
 	return currentRemoteEndpoint.LibraryClientConfig(uri)
 }
 
-// getBuilderClientConfig returns client config for build server access.
-// A "" value for uri will return client config for the current endpoint.
-// A specified uri will return client options for that build server.
-func getBuilderClientConfig(uri string) (*scsbuildclient.Config, error) {
+// getBuilderClientConfig returns the base URI and auth token to use for build server access. A ""
+// value for uri will use the current endpoint. A specified uri will return client options for that
+// build server.
+func getBuilderClientConfig(uri string) (baseURI, authToken string, err error) {
 	if currentRemoteEndpoint == nil {
 		var err error
 
@@ -639,7 +648,7 @@ func getBuilderClientConfig(uri string) (*scsbuildclient.Config, error) {
 		// otherwise fall back on regular authtoken and URI behavior
 		currentRemoteEndpoint, err = sylabsRemote()
 		if err != nil {
-			return nil, fmt.Errorf("unable to load remote configuration: %v", err)
+			return "", "", fmt.Errorf("unable to load remote configuration: %v", err)
 		}
 	}
 	if currentRemoteEndpoint == endpoint.DefaultEndpointConfig {
@@ -647,8 +656,4 @@ func getBuilderClientConfig(uri string) (*scsbuildclient.Config, error) {
 	}
 
 	return currentRemoteEndpoint.BuilderClientConfig(uri)
-}
-
-func URI() string {
-	return "https://" + strings.TrimSuffix(currentRemoteEndpoint.URI, "/")
 }

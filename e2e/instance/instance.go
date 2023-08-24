@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,7 +7,6 @@ package instance
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -16,15 +15,23 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
-	"github.com/sylabs/singularity/pkg/util/fs/proc"
-
-	uuid "github.com/satori/go.uuid"
-
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
+	"github.com/sylabs/singularity/pkg/util/fs/proc"
 )
+
+// randomName generates a random name based on a UUID.
+func randomName(t *testing.T) string {
+	t.Helper()
+
+	id, err := uuid.NewRandom()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.String()
+}
 
 type ctx struct {
 	env     e2e.TestEnv
@@ -102,7 +109,7 @@ func (c *ctx) testBasicOptions(t *testing.T) {
 
 	// Create and populate a temporary file.
 	tempFile := filepath.Join(dir, fileName)
-	err = ioutil.WriteFile(tempFile, fileContents, 0644)
+	err = ioutil.WriteFile(tempFile, fileContents, 0o644)
 	err = errors.Wrapf(err, "creating temporary test file %s", tempFile)
 	if err != nil {
 		t.Fatalf("Failed to create file: %+v", err)
@@ -234,7 +241,7 @@ func (c *ctx) testInstanceFromURI(t *testing.T) {
 // and try to start another instance with same name
 func (c *ctx) testGhostInstance(t *testing.T) {
 	// pick up a random name
-	instanceName := uuid.NewV4().String()
+	instanceName := randomName(t)
 	pidfile := filepath.Join(c.env.TestDir, instanceName)
 
 	postFn := func(t *testing.T) {
@@ -301,40 +308,6 @@ func (c *ctx) testGhostInstance(t *testing.T) {
 	)
 }
 
-func (c *ctx) applyCgroupsInstance(t *testing.T) {
-	require.Cgroups(t)
-
-	if !c.profile.In(e2e.RootProfile) {
-		t.Skipf("%s requires %s profile, current profile: %s", t.Name(), e2e.RootProfile, c.profile)
-	}
-
-	// pick up a random name
-	instanceName := uuid.NewV4().String()
-	joinName := fmt.Sprintf("instance://%s", instanceName)
-
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(c.profile),
-		e2e.WithCommand("instance start"),
-		e2e.WithArgs("--apply-cgroups", "testdata/cgroups/deny_device.toml", c.env.ImagePath, instanceName),
-		e2e.ExpectExit(0),
-	)
-
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(c.profile),
-		e2e.WithCommand("exec"),
-		e2e.WithArgs(joinName, "cat", "/dev/null"),
-		e2e.PostRun(func(t *testing.T) {
-			if t.Failed() {
-				return
-			}
-			c.stopInstance(t, instanceName)
-		}),
-		e2e.ExpectExit(1),
-	)
-}
-
 // E2ETests is the main func to trigger the test suite
 func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := &ctx{
@@ -362,7 +335,6 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 				{"CreateManyInstances", c.testCreateManyInstances},
 				{"StopAll", c.testStopAll},
 				{"GhostInstance", c.testGhostInstance},
-				{"ApplyCgroupsInstance", c.applyCgroupsInstance},
 			}
 
 			profiles := []e2e.Profile{

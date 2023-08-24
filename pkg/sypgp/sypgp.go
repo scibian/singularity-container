@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -26,14 +26,14 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"github.com/sylabs/scs-key-client/client"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/interactive"
 	"github.com/sylabs/singularity/pkg/syfs"
 	"github.com/sylabs/singularity/pkg/sylog"
-	"golang.org/x/crypto/openpgp"
-	"golang.org/x/crypto/openpgp/armor"
-	"golang.org/x/crypto/openpgp/packet"
 )
 
 const (
@@ -56,7 +56,7 @@ var (
 
 // KeyExistsError is a type representing an error associated to a specific key.
 type KeyExistsError struct {
-	fingerprint [20]byte
+	fingerprint []byte
 }
 
 // HandleOpt is a type representing option which can be passed to NewHandle.
@@ -154,9 +154,9 @@ func (keyring *Handle) PublicPath() string {
 //
 // TODO(mem): move this function to a common location
 func ensureDirPrivate(dn string) error {
-	mode := os.FileMode(0700)
+	mode := os.FileMode(0o700)
 
-	oldumask := syscall.Umask(0077)
+	oldumask := syscall.Umask(0o077)
 
 	err := os.MkdirAll(dn, mode)
 
@@ -225,14 +225,11 @@ func (keyring *Handle) PathsCheck() error {
 	if err := ensureDirPrivate(keyring.path); err != nil {
 		return err
 	}
-	if err := fs.EnsureFileWithPermission(keyring.SecretPath(), 0600); err != nil {
-		return err
-	}
-	if err := fs.EnsureFileWithPermission(keyring.PublicPath(), 0600); err != nil {
+	if err := fs.EnsureFileWithPermission(keyring.SecretPath(), 0o600); err != nil {
 		return err
 	}
 
-	return nil
+	return fs.EnsureFileWithPermission(keyring.PublicPath(), 0o600)
 }
 
 func loadKeyring(fn string) (openpgp.EntityList, error) {
@@ -306,7 +303,6 @@ func printEntity(w io.Writer, index int, e *openpgp.Entity) {
 	fmt.Fprintf(w, "   F: %0X\n", e.PrimaryKey.Fingerprint)
 	bits, _ := e.PrimaryKey.BitLength()
 	fmt.Fprintf(w, "   L: %d\n", bits)
-
 }
 
 func printEntities(w io.Writer, entities openpgp.EntityList) {
@@ -348,7 +344,7 @@ func (keyring *Handle) PrintPrivKeyring() error {
 // storePrivKeys writes all the private keys in list to the writer w.
 func storePrivKeys(w io.Writer, list openpgp.EntityList) error {
 	for _, e := range list {
-		if err := e.SerializePrivate(w, nil); err != nil {
+		if err := e.SerializePrivateWithoutSigning(w, nil); err != nil {
 			return err
 		}
 	}
@@ -362,7 +358,7 @@ func (keyring *Handle) appendPrivateKey(e *openpgp.Entity) error {
 		return fmt.Errorf("global keyring can't contain private keys")
 	}
 
-	f, err := createOrAppendFile(keyring.SecretPath(), 0600)
+	f, err := createOrAppendFile(keyring.SecretPath(), 0o600)
 	if err != nil {
 		return err
 	}
@@ -384,9 +380,9 @@ func storePubKeys(w io.Writer, list openpgp.EntityList) error {
 
 // appendPubKey appends a public key entity to the local keyring
 func (keyring *Handle) appendPubKey(e *openpgp.Entity) error {
-	mode := os.FileMode(0600)
+	mode := os.FileMode(0o600)
 	if keyring.global {
-		mode = os.FileMode(0644)
+		mode = os.FileMode(0o644)
 	}
 
 	f, err := createOrAppendFile(keyring.PublicPath(), mode)
@@ -400,9 +396,9 @@ func (keyring *Handle) appendPubKey(e *openpgp.Entity) error {
 
 // storePubKeyring overwrites the public keyring with the listed keys
 func (keyring *Handle) storePubKeyring(keys openpgp.EntityList) error {
-	mode := os.FileMode(0600)
+	mode := os.FileMode(0o600)
 	if keyring.global {
-		mode = os.FileMode(0644)
+		mode = os.FileMode(0o644)
 	}
 
 	f, err := createOrTruncateFile(keyring.PublicPath(), mode)
@@ -652,7 +648,7 @@ func formatMROutput(mrString string) (int, []byte, error) {
 func SearchPubkey(ctx context.Context, search string, longOutput bool, opts ...client.Option) error {
 	// If the search term is 8+ hex chars then it's a fingerprint, and
 	// we need to prefix with 0x for the search.
-	var IsFingerprint = regexp.MustCompile(`^[0-9A-F]{8,}$`).MatchString
+	IsFingerprint := regexp.MustCompile(`^[0-9A-F]{8,}$`).MatchString
 	if IsFingerprint(search) {
 		search = "0x" + search
 	}
@@ -670,7 +666,7 @@ func SearchPubkey(ctx context.Context, search string, longOutput bool, opts ...c
 	}
 
 	// set the machine readable output on
-	var options = []string{client.OptionMachineReadable}
+	options := []string{client.OptionMachineReadable}
 	// Retrieve first page of search results from Key Service.
 	keyText, err := c.PKSLookup(ctx, &pd, search, client.OperationIndex, true, false, options)
 	if err != nil {
@@ -733,7 +729,7 @@ func getEncryptionAlgorithmName(n string) (string, error) {
 	return algorithmName, nil
 }
 
-//function to obtain a date format from linux epoch time
+// function to obtain a date format from linux epoch time
 func date(s string) string {
 	if s == "" {
 		return "[ultimate]"
@@ -847,7 +843,6 @@ func formatMROutputLongList(mrString string) (int, []byte, error) {
 
 // FetchPubkey pulls a public key from the Key Service.
 func FetchPubkey(ctx context.Context, fingerprint string, noPrompt bool, opts ...client.Option) (openpgp.EntityList, error) {
-
 	// Decode fingerprint and ensure proper length.
 	var fp []byte
 	fp, err := hex.DecodeString(fingerprint)
@@ -919,7 +914,7 @@ func serializePrivateEntity(e *openpgp.Entity, blockType string) (string, error)
 		return "", err
 	}
 
-	if err = e.SerializePrivate(wr, nil); err != nil {
+	if err = e.SerializePrivateWithoutSigning(wr, nil); err != nil {
 		wr.Close()
 		return "", err
 	}
@@ -939,11 +934,7 @@ func RecryptKey(k *openpgp.Entity, passphrase []byte) error {
 		return err
 	}
 
-	if err := k.PrivateKey.Encrypt(passphrase); err != nil {
-		return err
-	}
-
-	return nil
+	return k.PrivateKey.Encrypt(passphrase)
 }
 
 // ExportPrivateKey Will export a private key into a file (kpath).
@@ -983,7 +974,7 @@ func (keyring *Handle) ExportPrivateKey(kpath string, armor bool) error {
 
 	if !armor {
 		// Export the key to the file
-		err = entityToExport.SerializePrivate(file, nil)
+		err = entityToExport.SerializePrivateWithoutSigning(file, nil)
 	} else {
 		var keyText string
 		keyText, err = serializePrivateEntity(entityToExport, openpgp.PrivateKeyType)
@@ -1039,9 +1030,9 @@ func (keyring *Handle) ExportPubKey(kpath string, armor bool) error {
 	return nil
 }
 
-func findEntityByFingerprint(entities openpgp.EntityList, fingerprint [20]byte) *openpgp.Entity {
+func findEntityByFingerprint(entities openpgp.EntityList, fingerprint []byte) *openpgp.Entity {
 	for _, entity := range entities {
-		if entity.PrimaryKey.Fingerprint == fingerprint {
+		if bytes.Equal(entity.PrimaryKey.Fingerprint, fingerprint) {
 			return entity
 		}
 	}
@@ -1094,11 +1085,7 @@ func (keyring *Handle) importPrivateKey(entity *openpgp.Entity, setNewPassword b
 	}
 
 	// Store the private key
-	if err := keyring.appendPrivateKey(&newEntity); err != nil {
-		return err
-	}
-
-	return nil
+	return keyring.appendPrivateKey(&newEntity)
 }
 
 // importPublicKey imports the specified openpgp Entity, which should
@@ -1114,11 +1101,7 @@ func (keyring *Handle) importPublicKey(entity *openpgp.Entity) error {
 		return &KeyExistsError{fingerprint: entity.PrimaryKey.Fingerprint}
 	}
 
-	if err := keyring.appendPubKey(entity); err != nil {
-		return err
-	}
-
-	return nil
+	return keyring.appendPubKey(entity)
 }
 
 // ImportKey imports one or more keys from the specified file. The keys

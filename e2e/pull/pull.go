@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,6 +8,7 @@
 package pull
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -17,16 +18,13 @@ import (
 
 	"github.com/containerd/containerd/reference"
 	"github.com/containerd/containerd/remotes/docker"
-	"github.com/deislabs/oras/pkg/content"
-	"github.com/deislabs/oras/pkg/context"
-	"github.com/deislabs/oras/pkg/oras"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
 	syoras "github.com/sylabs/singularity/internal/pkg/client/oras"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
 	"golang.org/x/sys/unix"
+	"oras.land/oras-go/pkg/content"
+	"oras.land/oras-go/pkg/oras"
 )
 
 type ctx struct {
@@ -46,6 +44,7 @@ type testStruct struct {
 	pullDir          string
 	imagePath        string
 	expectedImage    string
+	envVars          []string
 }
 
 var tests = []testStruct{
@@ -197,11 +196,32 @@ var tests = []testStruct{
 		force:            true,
 		expectedExitCode: 0,
 	},
+
+	// pulling with library URI containing host name and library argument
+	{
+		desc:             "library URI containing host name and library argument",
+		srcURI:           "library://notlibrary.sylabs.io/library/default/busybox:1.31.1",
+		library:          "https://notlibrary.sylabs.io",
+		expectedExitCode: 255,
+	},
+
+	// pulling with library URI containing host name
+	{
+		desc:             "library URI containing bad host name",
+		srcURI:           "library://notlibrary.sylabs.io/library/default/busybox:1.31.1",
+		expectedExitCode: 255,
+	},
+	{
+		desc:             "library URI containing host name",
+		srcURI:           "library://library.sylabs.io/library/default/busybox:1.31.1",
+		force:            true,
+		expectedExitCode: 0,
+	},
 }
 
 func (c *ctx) imagePull(t *testing.T, tt testStruct) {
 	// We use a string rather than a slice of strings to avoid having an empty
-	// element in the slice, which would cause the command to fail, wihtout
+	// element in the slice, which would cause the command to fail, without
 	// over-complicating the code.
 	argv := ""
 
@@ -231,6 +251,7 @@ func (c *ctx) imagePull(t *testing.T, tt testStruct) {
 		t,
 		e2e.AsSubtest(tt.desc),
 		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithEnv(tt.envVars),
 		e2e.WithCommand("pull"),
 		e2e.WithArgs(strings.Split(argv, " ")...),
 		e2e.ExpectExit(tt.expectedExitCode))
@@ -392,13 +413,12 @@ func checkPullResult(t *testing.T, tt testStruct) {
 // to test the pull validation
 // We can also set the layer mediaType - so we can push images with older media types
 // to verify that they can still be pulled.
-func orasPushNoCheck(file, ref, layerMediaType string) error {
+func orasPushNoCheck(path, ref, layerMediaType string) error {
 	ref = strings.TrimPrefix(ref, "//")
 
 	spec, err := reference.Parse(ref)
 	if err != nil {
-		err = errors.Wrapf(err, "parse OCI reference %s", ref)
-		return fmt.Errorf("unable to parse oci reference: %+v", err)
+		return fmt.Errorf("unable to parse oci reference: %w", err)
 	}
 
 	// Hostname() will panic if there is no '/' in the locator
@@ -415,29 +435,32 @@ func orasPushNoCheck(file, ref, layerMediaType string) error {
 
 	resolver := docker.NewResolver(docker.ResolverOptions{})
 
-	store := content.NewFileStore("")
+	store := content.NewFile("")
 	defer store.Close()
 
-	conf, err := store.Add("$config", syoras.SifConfigMediaTypeV1, "/dev/null")
-	if err != nil {
-		err = errors.Wrap(err, "adding manifest config to file store")
-		return fmt.Errorf("unable to add manifest config to FileStore: %+v", err)
-	}
-	conf.Annotations = nil
+	// Get the filename from path and use it as the name in the file store
+	name := filepath.Base(path)
 
-	// use last element of filepath as file name in annotation
-	fileName := filepath.Base(file)
-	desc, err := store.Add(fileName, layerMediaType, file)
+	desc, err := store.Add(name, layerMediaType, path)
 	if err != nil {
-		err = errors.Wrap(err, "adding manifest SIF file to file store")
-		return fmt.Errorf("unable to add SIF file to FileStore: %+v", err)
+		return fmt.Errorf("unable to add SIF to store: %w", err)
 	}
 
-	descriptors := []ocispec.Descriptor{desc}
+	manifest, manifestDesc, config, configDesc, err := content.GenerateManifestAndConfig(nil, nil, desc)
+	if err != nil {
+		return fmt.Errorf("unable to generate manifest and config: %w", err)
+	}
 
-	if _, err := oras.Push(context.Background(), resolver, spec.String(), store, descriptors, oras.WithConfig(conf)); err != nil {
-		err = errors.Wrap(err, "pushing to oras")
-		return fmt.Errorf("unable to push: %+v", err)
+	if err := store.Load(configDesc, config); err != nil {
+		return fmt.Errorf("unable to load config: %w", err)
+	}
+
+	if err := store.StoreManifest(spec.String(), manifestDesc, manifest); err != nil {
+		return fmt.Errorf("unable to store manifest: %w", err)
+	}
+
+	if _, err := oras.Copy(context.Background(), store, spec.String(), resolver, ""); err != nil {
+		return fmt.Errorf("unable to push: %w", err)
 	}
 
 	return nil
@@ -522,43 +545,43 @@ func (c ctx) testPullUmask(t *testing.T) {
 		{
 			name:       "0022 umask pull",
 			imagePath:  filepath.Join(c.env.TestDir, umask22Image),
-			umask:      0022,
-			expectPerm: 0755,
+			umask:      0o022,
+			expectPerm: 0o755,
 		},
 		{
 			name:       "0077 umask pull",
 			imagePath:  filepath.Join(c.env.TestDir, umask77Image),
-			umask:      0077,
-			expectPerm: 0700,
+			umask:      0o077,
+			expectPerm: 0o700,
 		},
 		{
 			name:       "0027 umask pull",
 			imagePath:  filepath.Join(c.env.TestDir, umask27Image),
-			umask:      0027,
-			expectPerm: 0750,
+			umask:      0o027,
+			expectPerm: 0o750,
 		},
 
-		// With the force flag, and overide the image. The permission will
+		// With the force flag, and override the image. The permission will
 		// reset to 0666 after every test.
 		{
-			name:       "0022 umask pull overide",
+			name:       "0022 umask pull override",
 			imagePath:  filepath.Join(c.env.TestDir, umask22Image),
-			umask:      0022,
-			expectPerm: 0755,
+			umask:      0o022,
+			expectPerm: 0o755,
 			force:      true,
 		},
 		{
-			name:       "0077 umask pull overide",
+			name:       "0077 umask pull override",
 			imagePath:  filepath.Join(c.env.TestDir, umask77Image),
-			umask:      0077,
-			expectPerm: 0700,
+			umask:      0o077,
+			expectPerm: 0o700,
 			force:      true,
 		},
 		{
-			name:       "0027 umask pull overide",
+			name:       "0027 umask pull override",
 			imagePath:  filepath.Join(c.env.TestDir, umask27Image),
-			umask:      0027,
-			expectPerm: 0750,
+			umask:      0o027,
+			expectPerm: 0o750,
 			force:      true,
 		},
 	}
@@ -573,7 +596,7 @@ func (c ctx) testPullUmask(t *testing.T) {
 	}
 
 	// Set a common umask, then reset it back later.
-	oldUmask := unix.Umask(0022)
+	oldUmask := unix.Umask(0o022)
 	defer unix.Umask(oldUmask)
 
 	// TODO: should also check the cache umask.
@@ -589,7 +612,7 @@ func (c ctx) testPullUmask(t *testing.T) {
 			e2e.WithProfile(e2e.UserProfile),
 			e2e.PreRun(func(t *testing.T) {
 				// Reset the file permission after every pull.
-				err := os.Chmod(tc.imagePath, 0666)
+				err := os.Chmod(tc.imagePath, 0o666)
 				if !os.IsNotExist(err) && err != nil {
 					t.Fatalf("failed chmod-ing file: %s", err)
 				}
@@ -629,6 +652,8 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 
 			t.Run("pull", c.testPullCmd)
 			t.Run("pullDisableCache", c.testPullDisableCacheCmd)
+			t.Run("concurrencyConfig", c.testConcurrencyConfig)
+			t.Run("concurrentPulls", c.testConcurrentPulls)
 
 			// Regressions
 			t.Run("issue5808", c.issue5808)

@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/sylabs/singularity/e2e/ecl"
@@ -28,7 +30,7 @@ type imgBuildTests struct {
 }
 
 func (c imgBuildTests) tempDir(t *testing.T, namespace string) (string, func()) {
-	dn, err := fs.MakeTmpDir(c.env.TestDir, namespace+".", 0755)
+	dn, err := fs.MakeTmpDir(c.env.TestDir, namespace+".", 0o755)
 	if err != nil {
 		t.Errorf("failed to create temporary directory: %#v", err)
 	}
@@ -60,12 +62,13 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 		buildSpec   string
 		requireArch string
 	}{
-		{
-			name:      "BusyBox",
-			buildSpec: "../examples/busybox/Singularity",
-			// TODO: example has arch hard coded in download URL
-			requireArch: "amd64",
-		},
+		// Disabled due to frequent download failures of the busybox tgz
+		// {
+		// 	name:      "BusyBox",
+		// 	buildSpec: "../examples/busybox/Singularity",
+		// 	// TODO: example has arch hard coded in download URL
+		// 	requireArch: "amd64",
+		// },
 		{
 			name:       "Debootstrap",
 			dependency: "debootstrap",
@@ -98,17 +101,28 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 			buildSpec: c.env.OrasTestImage,
 		},
 		{
-			name:       "Yum",
-			dependency: "yum",
-			buildSpec:  "../examples/centos/Singularity",
-			// TODO - Centos puts non-amd64 at a different mirror location
-			// need multiple def files to test on other archs
+			name:        "Yum",
+			dependency:  "yum",
+			buildSpec:   "../examples/centos/Singularity",
 			requireArch: "amd64",
 		},
 		{
-			name:       "Zypper",
-			dependency: "zypper",
-			buildSpec:  "../examples/opensuse/Singularity",
+			name:        "YumArm64",
+			dependency:  "yum",
+			buildSpec:   "../examples/centos-arm64/Singularity",
+			requireArch: "arm64",
+		},
+		{
+			name:        "Zypper",
+			dependency:  "zypper",
+			buildSpec:   "../examples/opensuse/Singularity",
+			requireArch: "amd64",
+		},
+		{
+			name:        "ZypperArm64",
+			dependency:  "zypper",
+			buildSpec:   "../examples/opensuse-arm64/Singularity",
+			requireArch: "arm64",
 		},
 	}
 
@@ -166,18 +180,14 @@ func (c imgBuildTests) nonRootBuild(t *testing.T) {
 		args        []string
 		requireArch string
 	}{
-		// TODO: our sif in git repo is amd64 only - add other archs
 		{
-			name:        "local sif",
-			buildSpec:   "testdata/busybox.sif",
-			requireArch: "amd64",
+			name:      "local sif",
+			buildSpec: "testdata/busybox_" + runtime.GOARCH + ".sif",
 		},
-		// TODO: our sif in git repo is amd64 only - add other archs
 		{
-			name:        "local sif to sandbox",
-			buildSpec:   "testdata/busybox.sif",
-			args:        []string{"--sandbox"},
-			requireArch: "amd64",
+			name:      "local sif to sandbox",
+			buildSpec: "testdata/busybox_" + runtime.GOARCH + ".sif",
+			args:      []string{"--sandbox"},
 		},
 		{
 			name:      "library sif",
@@ -216,7 +226,6 @@ func (c imgBuildTests) nonRootBuild(t *testing.T) {
 			e2e.PreRun(func(t *testing.T) {
 				if tc.requireArch != "" {
 					require.Arch(t, tc.requireArch)
-
 				}
 			}),
 
@@ -531,6 +540,7 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 	}
 }
 
+//nolint:maintidx
 func (c imgBuildTests) buildDefinition(t *testing.T) {
 	tmpfile, err := e2e.WriteTempFile(c.env.TestDir, "testFile-", testFileContent)
 	if err != nil {
@@ -837,7 +847,7 @@ func (c *imgBuildTests) ensureImageIsEncrypted(t *testing.T, imgPath string) {
 		e2e.WithArgs(cmdArgs...),
 		e2e.ExpectExit(
 			0,
-			e2e.ExpectOutput(e2e.ContainMatch, "Fstype:    Encrypted squashfs"),
+			e2e.ExpectOutput(e2e.ContainMatch, "Encrypted squashfs"),
 		),
 	)
 }
@@ -1241,7 +1251,225 @@ func (c imgBuildTests) buildWithFingerprint(t *testing.T) {
 			),
 		)
 	}
+}
 
+// buildBindMount checks that we can bind host files/directories during build.
+func (c imgBuildTests) buildBindMount(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	tmpdir, cleanup := c.tempDir(t, "build-local-image")
+	defer cleanup()
+
+	dir, _ := e2e.MakeTempDir(t, tmpdir, "mount", "")
+
+	canaryFile := filepath.Join(dir, "canary")
+	if err := fs.Touch(canaryFile); err != nil {
+		t.Fatalf("while touching %s: %v", canaryFile, err)
+	}
+
+	tests := []struct {
+		name        string
+		buildOption []string
+		buildPost   []string
+		buildTest   []string
+		exit        int
+	}{
+		{
+			name: "Bind test dir to /mnt",
+			buildOption: []string{
+				"--bind", dir + ":/mnt",
+			},
+			buildPost: []string{
+				"cat /mnt/canary",
+			},
+			buildTest: []string{
+				"cat /mnt/canary",
+			},
+			exit: 0,
+		},
+		{
+			name: "Bind test dir to multiple directory",
+			buildOption: []string{
+				"--bind", dir + ":/mnt",
+				"--bind", dir + ":/opt",
+			},
+			buildPost: []string{
+				"cat /mnt/canary",
+				"cat /opt/canary",
+			},
+			buildTest: []string{
+				"cat /mnt/canary",
+				"cat /opt/canary",
+			},
+			exit: 0,
+		},
+		{
+			name: "Bind test dir to /mnt read-only",
+			buildOption: []string{
+				"--bind", dir + ":/mnt:ro",
+			},
+			buildPost: []string{
+				"mkdir /mnt/should_fail",
+			},
+			exit: 255,
+		},
+		{
+			name: "Bind test dir to non-existent image directory",
+			buildOption: []string{
+				"--bind", dir + ":/fake/dir",
+			},
+			buildPost: []string{
+				"cat /mnt/canary",
+			},
+			exit: 255,
+		},
+		{
+			name: "Bind test dir with remote",
+			buildOption: []string{
+				"--bind", dir + ":/mnt",
+				"--remote",
+			},
+			exit: 255,
+		},
+		{
+			name: "Mount test dir to /mnt",
+			buildOption: []string{
+				"--mount", "type=bind,source=" + dir + ",destination=/mnt",
+			},
+			buildPost: []string{
+				"cat /mnt/canary",
+			},
+			buildTest: []string{
+				"cat /mnt/canary",
+			},
+			exit: 0,
+		},
+		{
+			name: "Mount test dir to multiple directory",
+			buildOption: []string{
+				"--mount", "type=bind,source=" + dir + ",destination=/mnt",
+				"--mount", "type=bind,source=" + dir + ",destination=/opt",
+			},
+			buildPost: []string{
+				"cat /mnt/canary",
+				"cat /opt/canary",
+			},
+			buildTest: []string{
+				"cat /mnt/canary",
+				"cat /opt/canary",
+			},
+			exit: 0,
+		},
+		{
+			name: "Mount test dir to /mnt read-only",
+			buildOption: []string{
+				"--mount", "type=bind,source=" + dir + ",destination=/mnt,ro",
+			},
+			buildPost: []string{
+				"mkdir /mnt/should_fail",
+			},
+			exit: 255,
+		},
+		{
+			name: "Mount test dir to non-existent image directory",
+			buildOption: []string{
+				"--mount", "type=bind,source=" + dir + ",destination=/fake/dir",
+			},
+			buildPost: []string{
+				"cat /mnt/canary",
+			},
+			exit: 255,
+		},
+		{
+			name: "Mount test dir with remote",
+			buildOption: []string{
+				"--mount", "type=bind,source=" + dir + ",destination=/mnt",
+				"--remote",
+			},
+			exit: 255,
+		},
+	}
+
+	sandboxImage := filepath.Join(tmpdir, "build-sandbox")
+
+	definition := fmt.Sprintf("Bootstrap: localimage\nFrom: %s", c.env.ImagePath)
+
+	for _, tt := range tests {
+		rawDef := definition
+		if len(tt.buildPost) > 0 {
+			rawDef += fmt.Sprintf("\n%%post\n\t%s", strings.Join(tt.buildPost, "\n"))
+		}
+		if len(tt.buildTest) > 0 {
+			rawDef += fmt.Sprintf("\n%%test\n\t%s", strings.Join(tt.buildTest, "\n"))
+		}
+		defFile := e2e.RawDefFile(t, tmpdir, strings.NewReader(rawDef))
+
+		args := tt.buildOption
+		args = append(args, "-F", "--sandbox", sandboxImage, defFile)
+
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.RootProfile),
+			e2e.WithCommand("build"),
+			e2e.WithArgs(args...),
+			e2e.PostRun(func(t *testing.T) {
+				os.Remove(defFile)
+			}),
+			e2e.ExpectExit(tt.exit),
+		)
+	}
+}
+
+// testWritableTmpfs checks that we can run the build using a writeable tmpfs in the %test step
+func (c imgBuildTests) testWritableTmpfs(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	tmpdir, cleanup := c.tempDir(t, "build-writabletmpfs-test")
+	defer cleanup()
+
+	// Definition will attempt to touch a file in /var/test during %test.
+	// This would fail without a writable tmpfs.
+	definition := fmt.Sprintf("Bootstrap: localimage\nFrom: %s\n%%test\ntouch /var/test\n", c.env.ImagePath)
+
+	defFile := e2e.RawDefFile(t, tmpdir, strings.NewReader(definition))
+	imagePath := filepath.Join(tmpdir, "image-writabletmpfs")
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.RootProfile),
+		e2e.WithCommand("build"),
+		e2e.WithArgs("-F", "--writable-tmpfs", imagePath, defFile),
+		e2e.PostRun(func(t *testing.T) {
+			os.Remove(defFile)
+		}),
+		e2e.ExpectExit(0),
+	)
+}
+
+func (c imgBuildTests) buildLibraryHost(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	tmpdir, cleanup := c.tempDir(t, "build-libraryhost-test")
+	defer cleanup()
+
+	// Library hostname in the From URI
+	// The hostname is invalid, and we should get an error to that effect.
+	definition := "Bootstrap: library\nFrom: library.example.com/test/test/test:latest\n"
+
+	defFile := e2e.RawDefFile(t, tmpdir, strings.NewReader(definition))
+	imagePath := filepath.Join(tmpdir, "image-libaryhost")
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.RootProfile),
+		e2e.WithCommand("build"),
+		e2e.WithArgs("-F", imagePath, defFile),
+		e2e.PostRun(func(t *testing.T) {
+			os.Remove(defFile)
+		}),
+		e2e.ExpectExit(255,
+			e2e.ExpectError(e2e.ContainMatch, "dial tcp: lookup library.example.com: no such host"),
+		),
+	)
 }
 
 // E2ETests is the main func to trigger the test suite
@@ -1261,6 +1489,9 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"non-root build":                  c.nonRootBuild,              // build sifs from non-root
 		"build and update sandbox":        c.buildUpdateSandbox,        // build/update sandbox
 		"fingerprint check":               c.buildWithFingerprint,      // definition file includes fingerprint check
+		"build with bind mount":           c.buildBindMount,            // build image with bind mount
+		"test with writable tmpfs":        c.testWritableTmpfs,         // build image, using writable tmpfs in the test step
+		"library host":                    c.buildLibraryHost,          // build image with hostname in library URI
 		"issue 3848":                      c.issue3848,                 // https://github.com/hpcng/singularity/issues/3848
 		"issue 4203":                      c.issue4203,                 // https://github.com/sylabs/singularity/issues/4203
 		"issue 4407":                      c.issue4407,                 // https://github.com/sylabs/singularity/issues/4407

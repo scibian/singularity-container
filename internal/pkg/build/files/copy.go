@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -10,70 +10,160 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/sylabs/singularity/internal/pkg/util/bin"
+	"github.com/sylabs/singularity/internal/pkg/util/fs"
+	"github.com/sylabs/singularity/pkg/util/archive"
 )
 
 // makeParentDir ensures existence of the expected destination directory for the cp command
-// based on the supplied path and the number of source paths to copy
-func makeParentDir(path string, numSrcPaths int) error {
+// based on the supplied path.
+func makeParentDir(path string) error {
 	_, err := os.Stat(path)
 	if !os.IsNotExist(err) {
 		return nil
 	}
 
-	// if path ends with a trailing '/' or if there are multiple source paths to copy
-	// always ensure the full path exists as a directory because 'cp' is expecting a
-	// dir in these cases
-	if strings.HasSuffix(path, "/") || numSrcPaths > 1 {
-		if err := os.MkdirAll(filepath.Clean(path), 0755); err != nil {
+	// if path ends with a trailing '/' always ensure the full path exists as a directory
+	// because 'cp' is expecting a dir in these cases
+	if strings.HasSuffix(path, "/") {
+		if err := os.MkdirAll(filepath.Clean(path), 0o755); err != nil {
 			return fmt.Errorf("while creating full path: %s", err)
 		}
+		return nil
 	}
 
 	// only make parent directory
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("while creating parent of path: %s", err)
 	}
 
 	return nil
 }
 
-// Copy calls cp with src and dst as its arguments
-// Checks dst and creates parent directories if they do not exist
-// before calling cp.
-// If followLinks is true, the -L flag to cp will follow all symlinks
-// If followLinks is false, the -H flag to cp will only follow links for specified
-// files or files that resolve directly from a glob pattern. It will not follow
-// links found during directory traversal.
-func Copy(src, dst string, followLinks bool) error {
-	// resolve any bash globbing in filepath
-	paths, err := expandPath(src)
+// CopyFromHost should be used to copy files into the rootfs from the host fs.
+// src is a path relative to CWD on the host, or an absolute path on the host.
+// dstRel is a destination path inside dstRootfs.
+// An empty dstRel "" means copy the src file to the same path in the rootfs.
+// All symlinks encountered in the copy will be dereferenced (cp -L behavior).
+func CopyFromHost(src, dstRel, dstRootfs string) error {
+	// resolve any globbing in filepath
+	paths, err := filepath.Glob(src)
 	if err != nil {
-		return fmt.Errorf("while expanding source path with bash: %s: %s", src, err)
+		return fmt.Errorf("while expanding source path: %s: %s", src, err)
+	}
+	if len(paths) == 0 {
+		return fmt.Errorf("no source files found matching: %s", src)
 	}
 
-	if err := makeParentDir(dst, len(paths)); err != nil {
-		return fmt.Errorf("while creating parent dir: %v", err)
+	for _, srcGlobbed := range paths {
+		// If the dstRel is "" then we are copying to the full source path, appended to the rootfs prefix
+		dstRelGlobbed := dstRel
+		if dstRel == "" {
+			dstRelGlobbed = srcGlobbed
+		}
+
+		// Resolve our destination within the container rootfs
+		dstResolved, err := secureJoinKeepSlash(dstRootfs, dstRelGlobbed)
+		if err != nil {
+			return fmt.Errorf("while resolving destination: %s: %s", dstRelGlobbed, err)
+		}
+
+		// Create any parent dirs for dst that don't already exist
+		if err := makeParentDir(dstResolved); err != nil {
+			return fmt.Errorf("while creating parent dir: %v", err)
+		}
+
+		args := []string{"-fLr", srcGlobbed, dstResolved}
+		var output, stderr bytes.Buffer
+		// copy each file into bundle rootfs
+		cp, err := bin.FindBin("cp")
+		if err != nil {
+			return err
+		}
+		copy := exec.Command(cp, args...)
+		copy.Stdout = &output
+		copy.Stderr = &stderr
+		if err := copy.Run(); err != nil {
+			return fmt.Errorf("while copying %s to %s: %v: %s", paths, dstResolved, args, stderr.String())
+		}
+
+	}
+	return nil
+}
+
+// CopyFromStage should be used to copy files into the rootfs from a previous stage.
+// The src and dst are paths relative to the srcRootfs and dstRootfs.
+// An empty dst "" means copy the src file to the same path in the dst rootfs.
+// Symlinks are only dereferenced for the specified source or files that resolve
+// directly from a specified glob pattern. Any additional links inside a directory
+// being copied are not dereferenced.
+func CopyFromStage(src, dst, srcRootfs, dstRootfs string) error {
+	// An absolute path on the host is required for globbing.
+	// Make sure the glob pattern doesn't climb out of the srcRootfs, by making it absolute w.r.t.
+	// the srcRootfs, and cleaning any '../' components that lead above the srcRootfs '/' before we
+	// join it to the srcRootfs path on the host.
+	// We aren't globbing paths containing absolute symlinks properly here as it is happening
+	// in the host fs. However, we re-resolve the results below with securejoin before copying
+	// anything, so we can't copy in host files.
+	if !filepath.IsAbs(src) {
+		src = joinKeepSlash("/", src)
+	}
+	src = path.Clean(src)
+	hostSrc := joinKeepSlash(srcRootfs, src)
+
+	// resolve any bash globbing in filepath
+	paths, err := filepath.Glob(hostSrc)
+	if err != nil {
+		return fmt.Errorf("while expanding source path: %s: %s", src, err)
+	}
+	if len(paths) == 0 {
+		return fmt.Errorf("no source files found matching: %s", src)
 	}
 
-	// set flags for cp
-	args := []string{"-fHr"}
-	if followLinks {
-		args = []string{"-fLr"}
-	}
-	// append file(s) to be copied
-	args = append(args, paths...)
-	// append dst as last arg
-	args = append(args, dst)
+	// We manually dereference first-level src symlinks only.
+	for _, srcGlobbed := range paths {
+		// Now re-resolve the source files after globbing by using securejoin,
+		// so that absolute symlinks are dereferenced relative to the source rootfs,
+		// and the source is enforced to be inside the rootfs.
+		srcGlobbedRel := strings.TrimPrefix(srcGlobbed, srcRootfs)
+		srcResolved, err := secureJoinKeepSlash(srcRootfs, srcGlobbedRel)
+		if err != nil {
+			return fmt.Errorf("while resolving source: %s: %s", srcGlobbedRel, err)
+		}
 
-	var output, stderr bytes.Buffer
-	// copy each file into bundle rootfs
-	copy := exec.Command("/bin/cp", args...)
-	copy.Stdout = &output
-	copy.Stderr = &stderr
-	if err := copy.Run(); err != nil {
-		return fmt.Errorf("while copying %s to %s: %s: %s", paths, dst, err, stderr.String())
+		// If the dst is "" then we are copying to the same path in dstRootfs, as src is in srcRootfs.
+		dstGlobbed := dst
+		if dst == "" {
+			dstGlobbed = srcGlobbedRel
+		}
+		// Resolve the destination path, keeping any final slash
+		dstResolved, err := secureJoinKeepSlash(dstRootfs, dstGlobbed)
+		if err != nil {
+			return fmt.Errorf("while resolving destination: %s: %s", dstGlobbed, err)
+		}
+		// Create any parent dirs for dstResolved that don't already exist.
+		if err := makeParentDir(dstResolved); err != nil {
+			return fmt.Errorf("while creating parent dir: %v", err)
+		}
+
+		// If we are copying into a directory then we must use the original source filename,
+		// for the destination filename, not the one that was resolved out by symlink.
+		// I.E. if copying `/opt/view` to `/opt/` where `/opt/view links-> /opt/.view/abc123`
+		// we want to create `/opt/view` in the dest, not `/opt/abc123`.
+		if fs.IsDir(dstResolved) {
+			_, srcName := path.Split(srcGlobbedRel)
+			dstResolved = path.Join(dstResolved, srcName)
+		}
+
+		err = archive.CopyWithTar(srcResolved, dstResolved)
+		if err != nil {
+			return fmt.Errorf("while copying %s to %s: %s", paths, dstResolved, err)
+		}
+
 	}
 	return nil
 }

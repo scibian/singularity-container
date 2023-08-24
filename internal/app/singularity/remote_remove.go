@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,6 +7,7 @@ package singularity
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/sylabs/singularity/internal/pkg/remote"
@@ -14,17 +15,15 @@ import (
 
 // RemoteRemove deletes a remote endpoint from the configuration
 func RemoteRemove(configFile, name string) (err error) {
-	c := &remote.Config{}
-
 	// opening config file
-	file, err := os.OpenFile(configFile, os.O_RDWR|os.O_CREATE, 0600)
+	file, err := os.OpenFile(configFile, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("while opening remote config file: %s", err)
 	}
 	defer file.Close()
 
 	// read file contents to config struct
-	c, err = remote.ReadFrom(file)
+	c, err := remote.ReadFrom(file)
 	if err != nil {
 		return fmt.Errorf("while parsing remote config data: %s", err)
 	}
@@ -38,7 +37,7 @@ func RemoteRemove(configFile, name string) (err error) {
 		return fmt.Errorf("while truncating remote config file: %s", err)
 	}
 
-	if n, err := file.Seek(0, os.SEEK_SET); err != nil || n != 0 {
+	if n, err := file.Seek(0, io.SeekStart); err != nil || n != 0 {
 		return fmt.Errorf("failed to reset %s cursor: %s", file.Name(), err)
 	}
 

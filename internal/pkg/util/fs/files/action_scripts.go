@@ -1,10 +1,11 @@
-// Copyright (c) 2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
 package files
 
+// ActionScript is the action script content.
 var ActionScript = `#!/bin/sh
 
 declare -r __exported_env__=$(getallenv)
@@ -37,7 +38,7 @@ clear_env() {
     set -o noglob
 
     for e in ${__exported_env__}; do
-        key=$(getenvkey "${e}")
+        key=${e%%=*}
         case "${key}" in
         PWD|HOME|OPTIND|UID|SINGULARITY_APPNAME|SINGULARITY_SHELL)
             ;;
@@ -67,9 +68,9 @@ restore_env() {
     # defined by docker or virtual file above, empty
     # variables are also unset
     for e in ${__exported_env__}; do
-        key=$(getenvkey "${e}")
+        key=${e%%=*}
         if ! test -v "${key}"; then
-            export "$(unescape ${e})"
+            export "${e//'\n'/$IFS}"
         elif test -z "${!key}"; then
             unset "${key}"
         fi
@@ -214,6 +215,7 @@ start)
 esac
 `
 
+// RuntimeVars is the runtime variables script.
 var RuntimeVars = `#!/bin/sh
 if test -n "${SING_USER_DEFINED_PREPEND_PATH:-}"; then
     PATH="${SING_USER_DEFINED_PREPEND_PATH}:${PATH}"

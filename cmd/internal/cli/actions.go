@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -21,7 +21,6 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/client/oci"
 	"github.com/sylabs/singularity/internal/pkg/client/oras"
 	"github.com/sylabs/singularity/internal/pkg/client/shub"
-	"github.com/sylabs/singularity/internal/pkg/remote/endpoint"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
 	"github.com/sylabs/singularity/pkg/sylog"
 )
@@ -44,18 +43,23 @@ func getCacheHandle(cfg cache.Config) *cache.Handle {
 
 // actionPreRun will run replaceURIWithImage and will also do the proper path unsetting
 func actionPreRun(cmd *cobra.Command, args []string) {
-	// backup user PATH
+	// For compatibility - we still set USER_PATH so it will be visible in the
+	// container, and can be used there if needed. USER_PATH is not used by
+	// singularity itself in 3.9+
 	userPath := strings.Join([]string{os.Getenv("PATH"), defaultPath}, ":")
-
 	os.Setenv("USER_PATH", userPath)
 
-	ctx := context.TODO()
+	replaceURIWithImage(cmd.Context(), cmd, args)
 
-	replaceURIWithImage(ctx, cmd, args)
-
-	// set PATH after pulling images to be able to find potential
-	// docker credential helpers outside of standard paths
-	os.Setenv("PATH", defaultPath)
+	// --compat infers other options that give increased OCI / Docker compatibility
+	// Excludes uts/user/net namespaces as these are restrictive for many Singularity
+	// installs.
+	if IsCompat {
+		IsContainAll = true
+		IsWritableTmpfs = true
+		NoInit = true
+		NoUmask = true
+	}
 }
 
 func handleOCI(ctx context.Context, imgCache *cache.Handle, cmd *cobra.Command, pullFrom string) (string, error) {
@@ -75,11 +79,26 @@ func handleOras(ctx context.Context, imgCache *cache.Handle, cmd *cobra.Command,
 }
 
 func handleLibrary(ctx context.Context, imgCache *cache.Handle, pullFrom string) (string, error) {
-	c, err := getLibraryClientConfig(endpoint.SCSDefaultLibraryURI)
+	r, err := library.NormalizeLibraryRef(pullFrom)
 	if err != nil {
 		return "", err
 	}
-	return library.Pull(ctx, imgCache, pullFrom, runtime.GOARCH, tmpDir, c)
+
+	// Default "" = use current remote endpoint
+	var libraryURI string
+	if r.Host != "" {
+		if noHTTPS {
+			libraryURI = "http://" + r.Host
+		} else {
+			libraryURI = "https://" + r.Host
+		}
+	}
+
+	c, err := getLibraryClientConfig(libraryURI)
+	if err != nil {
+		return "", err
+	}
+	return library.Pull(ctx, imgCache, r, runtime.GOARCH, tmpDir, c)
 }
 
 func handleShub(ctx context.Context, imgCache *cache.Handle, pullFrom string) (string, error) {
@@ -143,7 +162,7 @@ func setVM(cmd *cobra.Command) {
 
 	// since --syos is a boolean, it cannot be added to the above list
 	if IsSyOS && !VM {
-		// let the user know that passing --syos implictly enables --vm
+		// let the user know that passing --syos implicitly enables --vm
 		sylog.Warningf("The --syos option requires a virtual machine, automatically enabling --vm option.")
 		cmd.Flags().Set("vm", "true")
 	}

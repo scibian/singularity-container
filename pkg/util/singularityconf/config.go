@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -37,11 +37,13 @@ type File struct {
 	EnableFusemount         bool     `default:"yes" authorized:"yes,no" directive:"enable fusemount"`
 	EnableUnderlay          bool     `default:"yes" authorized:"yes,no" directive:"enable underlay"`
 	MountSlave              bool     `default:"yes" authorized:"yes,no" directive:"mount slave"`
+	AllowContainerSIF       bool     `default:"yes" authorized:"yes,no" directive:"allow container sif"`
+	AllowContainerEncrypted bool     `default:"yes" authorized:"yes,no" directive:"allow container encrypted"`
 	AllowContainerSquashfs  bool     `default:"yes" authorized:"yes,no" directive:"allow container squashfs"`
 	AllowContainerExtfs     bool     `default:"yes" authorized:"yes,no" directive:"allow container extfs"`
 	AllowContainerDir       bool     `default:"yes" authorized:"yes,no" directive:"allow container dir"`
-	AllowContainerEncrypted bool     `default:"yes" authorized:"yes,no" directive:"allow container encrypted"`
 	AlwaysUseNv             bool     `default:"no" authorized:"yes,no" directive:"always use nv"`
+	UseNvCCLI               bool     `default:"no" authorized:"yes,no" directive:"use nvidia-container-cli"`
 	AlwaysUseRocm           bool     `default:"no" authorized:"yes,no" directive:"always use rocm"`
 	SharedLoopDevices       bool     `default:"no" authorized:"yes,no" directive:"shared loop devices"`
 	MaxLoopDevices          uint     `default:"256" directive:"max loop devices"`
@@ -52,15 +54,25 @@ type File struct {
 	LimitContainerOwners    []string `directive:"limit container owners"`
 	LimitContainerGroups    []string `directive:"limit container groups"`
 	LimitContainerPaths     []string `directive:"limit container paths"`
+	AllowNetUsers           []string `directive:"allow net users"`
+	AllowNetGroups          []string `directive:"allow net groups"`
+	AllowNetNetworks        []string `directive:"allow net networks"`
 	RootDefaultCapabilities string   `default:"full" authorized:"full,file,no" directive:"root default capabilities"`
 	MemoryFSType            string   `default:"tmpfs" authorized:"tmpfs,ramfs" directive:"memory fs type"`
 	CniConfPath             string   `directive:"cni configuration path"`
 	CniPluginPath           string   `directive:"cni plugin path"`
+	CryptsetupPath          string   `directive:"cryptsetup path"`
+	GoPath                  string   `directive:"go path"`
+	LdconfigPath            string   `directive:"ldconfig path"`
 	MksquashfsPath          string   `directive:"mksquashfs path"`
 	MksquashfsProcs         uint     `default:"0" directive:"mksquashfs procs"`
 	MksquashfsMem           string   `directive:"mksquashfs mem"`
-	CryptsetupPath          string   `directive:"cryptsetup path"`
+	NvidiaContainerCliPath  string   `directive:"nvidia-container-cli path"`
+	UnsquashfsPath          string   `directive:"unsquashfs path"`
 	ImageDriver             string   `directive:"image driver"`
+	DownloadConcurrency     uint     `default:"3" directive:"download concurrency"`
+	DownloadPartSize        uint     `default:"5242880" directive:"download part size"`
+	DownloadBufferSize      uint     `default:"32768" directive:"download buffer size"`
 }
 
 const TemplateAsset = `# SINGULARITY.CONF
@@ -257,10 +269,51 @@ sessiondir max size = {{ .SessiondirMaxSize }}
 # DEFAULT: yes
 # This feature limits what kind of containers that Singularity will allow
 # users to use (note this does not apply for root).
+#
+# Allow use of unencrypted SIF containers
+allow container sif = {{ if eq .AllowContainerSIF true}}yes{{ else }}no{{ end }}
+#
+# Allow use of encrypted SIF containers
+allow container encrypted = {{ if eq .AllowContainerEncrypted true }}yes{{ else }}no{{ end }}
+#
+# Allow use of non-SIF image formats
 allow container squashfs = {{ if eq .AllowContainerSquashfs true }}yes{{ else }}no{{ end }}
 allow container extfs = {{ if eq .AllowContainerExtfs true }}yes{{ else }}no{{ end }}
 allow container dir = {{ if eq .AllowContainerDir true }}yes{{ else }}no{{ end }}
-allow container encrypted = {{ if eq .AllowContainerEncrypted true }}yes{{ else }}no{{ end }}
+
+# ALLOW NET USERS: [STRING]
+# DEFAULT: NULL
+# Allow specified root administered CNI network configurations to be used by the
+# specified list of users. By default only root may use CNI configuration,
+# except in the case of a fakeroot execution where only 40_fakeroot.conflist
+# is used. This feature only applies when Singularity is running in
+# SUID mode and the user is non-root.
+#allow net users = gmk, singularity
+{{ range $index, $owner := .AllowNetUsers }}
+{{- if eq $index 0 }}allow net users = {{ else }}, {{ end }}{{$owner}}
+{{- end }}
+
+# ALLOW NET GROUPS: [STRING]
+# DEFAULT: NULL
+# Allow specified root administered CNI network configurations to be used by the
+# specified list of users. By default only root may use CNI configuration,
+# except in the case of a fakeroot execution where only 40_fakeroot.conflist
+# is used. This feature only applies when Singularity is running in
+# SUID mode and the user is non-root.
+#allow net groups = group1, singularity
+{{ range $index, $group := .AllowNetGroups }}
+{{- if eq $index 0 }}allow net groups = {{ else }}, {{ end }}{{$group}}
+{{- end }}
+
+# ALLOW NET NETWORKS: [STRING]
+# DEFAULT: NULL
+# Specify the names of CNI network configurations that may be used by users and
+# groups listed in the allow net users / allow net groups directives. Thus feature
+# only applies when Singularity is running in SUID mode and the user is non-root.
+#allow net networks = bridge
+{{ range $index, $group := .AllowNetNetworks }}
+{{- if eq $index 0 }}allow net networks = {{ else }}, {{ end }}{{$group}}
+{{- end }}
 
 # ALWAYS USE NV ${TYPE}: [BOOL]
 # DEFAULT: no
@@ -268,6 +321,14 @@ allow container encrypted = {{ if eq .AllowContainerEncrypted true }}yes{{ else 
 # should be executed implicitly with the --nv option (useful for GPU only 
 # environments). 
 always use nv = {{ if eq .AlwaysUseNv true }}yes{{ else }}no{{ end }}
+
+# USE NVIDIA-NVIDIA-CONTAINER-CLI ${TYPE}: [BOOL]
+# DEFAULT: no
+# EXPERIMENTAL
+# If set to yes, Singularity will attempt to use nvidia-container-cli to setup
+# GPUs within a container when the --nv flag is enabled.
+# If no (default), the legacy binding of entries in nvbliblist.conf will be performed.
+use nvidia-container-cli = {{ if eq .UseNvCCLI true }}yes{{ else }}no{{ end }}
 
 # ALWAYS USE ROCM ${TYPE}: [BOOL]
 # DEFAULT: no
@@ -302,10 +363,36 @@ memory fs type = {{ .MemoryFSType }}
 # Defines path from where CNI executable plugins are stored
 #cni plugin path =
 {{ if ne .CniPluginPath "" }}cni plugin path = {{ .CniPluginPath }}{{ end }}
+
+# CRYPTSETUP PATH: [STRING]
+# DEFAULT: Undefined
+# Path to the cryptsetup executable, used to work with encrypted containers.
+# Must be set to build or run encrypted containers.
+# Executable must be owned by root for security reasons.
+# cryptsetup path =
+{{ if ne .CryptsetupPath "" }}cryptsetup path = {{ .CryptsetupPath }}{{ end }}
+
+# GO PATH: [STRING]
+# DEFAULT: Undefined
+# Path to the go executable, used to compile plugins.
+# If not set, SingularityCE will search $PATH, /usr/local/sbin, /usr/local/bin,
+# /usr/sbin, /usr/bin, /sbin, /bin.
+# go path =
+{{ if ne .GoPath "" }}go path = {{ .GoPath }}{{ end }}
+
+# LDCONFIG PATH: [STRING]
+# DEFAULT: Undefined
+# Path to the ldconfig executable, used to find GPU libraries.
+# Must be set to use --nv / --nvccli.
+# Executable must be owned by root for security reasons.
+# ldconfig path =
+{{ if ne .LdconfigPath "" }}ldconfig path = {{ .LdconfigPath }}{{ end }}
+
 # MKSQUASHFS PATH: [STRING]
 # DEFAULT: Undefined
-# This allows the administrator to specify the location for mksquashfs if it is not
-# installed in a standard system location
+# Path to the mksquashfs executable, used to create SIF and SquashFS containers.
+# If not set, SingularityCE will search $PATH, /usr/local/sbin, /usr/local/bin,
+# /usr/sbin, /usr/bin, /sbin, /bin.
 # mksquashfs path =
 {{ if ne .MksquashfsPath "" }}mksquashfs path = {{ .MksquashfsPath }}{{ end }}
 
@@ -327,14 +414,22 @@ mksquashfs procs = {{ .MksquashfsProcs }}
 # mksquashfs mem = 1G
 {{ if ne .MksquashfsMem "" }}mksquashfs mem = {{ .MksquashfsMem }}{{ end }}
 
-# CRYPTSETUP PATH: [STRING]
+# NVIDIA-CONTAINER-CLI PATH: [STRING]
 # DEFAULT: Undefined
-# This allows the administrator to specify the location of cryptsetup if
-# they wish to use custom location for this installation. If this value
-# is undefined, at runtime singularity falls back to the value that was
-# recorded at build time.
-# cryptsetup path =
-{{ if ne .CryptsetupPath "" }}cryptsetup path = {{ .CryptsetupPath }}{{ end }}
+# Path to the nvidia-container-cli executable, used to find GPU libraries.
+# Must be set to use --nvccli.
+# Executable must be owned by root for security reasons.
+# nvidia-container-cli path =
+{{ if ne .NvidiaContainerCliPath "" }}nvidia-container-cli path = {{ .NvidiaContainerCliPath }}{{ end }}
+
+# UNSQUASHFS PATH: [STRING]
+# DEFAULT: Undefined
+# Path to the unsquashfs executable, used to extract SIF and SquashFS containers
+# If not set, SingularityCE will search $PATH, /usr/local/sbin, /usr/local/bin,
+# /usr/sbin, /usr/bin, /sbin, /bin.
+# unsquashfs path =
+{{ if ne .UnsquashfsPath "" }}unsquashfs path = {{ .UnsquashfsPath }}{{ end }}
+
 # SHARED LOOP DEVICES: [BOOL]
 # DEFAULT: no
 # Allow to share same images associated with loop devices to minimize loop
@@ -350,4 +445,22 @@ shared loop devices = {{ if eq .SharedLoopDevices true }}yes{{ else }}no{{ end }
 # If the driver name specified has not been registered via a plugin installation
 # the run-time will abort.
 image driver = {{ .ImageDriver }}
+
+# DOWNLOAD CONCURRENCY: [UINT]
+# DEFAULT: 3
+# This option specifies how many concurrent streams when downloading (pulling)
+# an image from cloud library.
+download concurrency = {{ .DownloadConcurrency }}
+
+# DOWNLOAD PART SIZE: [UINT]
+# DEFAULT: 5242880
+# This option specifies the size of each part when concurrent downloads are
+# enabled.
+download part size = {{ .DownloadPartSize }}
+
+# DOWNLOAD BUFFER SIZE: [UINT]
+# DEFAULT: 32768
+# This option specifies the transfer buffer size when concurrent downloads
+# are enabled.
+download buffer size = {{ .DownloadBufferSize }}
 `

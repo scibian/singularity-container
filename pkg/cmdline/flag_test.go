@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -13,18 +13,24 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/test"
 )
 
-var testString string
-var testBool bool
-var testStringSlice []string
-var testInt int
-var testUint32 uint32
+var (
+	testString      string
+	testBool        bool
+	testStringSlice []string
+	testStringArray []string
+	testInt         int
+	testUint32      uint32
+	testStringMap   map[string]string
+)
 
 var ttData = []struct {
-	desc            string
-	flag            *Flag
-	cmd             *cobra.Command
-	envValue        string
-	matchValue      string
+	desc       string
+	flag       *Flag
+	cmd        *cobra.Command
+	envValue   string
+	matchValue string
+	// Alternative match to accommodate random map ordering
+	altMatchValue   string
 	expectedFailure bool
 }{
 	{
@@ -47,18 +53,6 @@ var ttData = []struct {
 		},
 		cmd:             parentCmd,
 		expectedFailure: true,
-	},
-	{
-		desc: "excluded flag",
-		flag: &Flag{
-			ID:           "testStringFlag",
-			Value:        &testString,
-			DefaultValue: testString,
-			Name:         "string",
-			Usage:        "a string flag",
-			ExcludedOS:   []string{Linux, Darwin},
-		},
-		cmd: parentCmd,
 	},
 	{
 		desc: "string flag",
@@ -162,6 +156,49 @@ var ttData = []struct {
 		cmd: parentCmd,
 	},
 	{
+		desc: "string map flag",
+		flag: &Flag{
+			ID:           "testStringMapFlag",
+			Value:        &testStringMap,
+			DefaultValue: testStringMap,
+			Name:         "string-map",
+			Usage:        "a string map flag",
+			EnvKeys:      []string{"STRING_MAP"},
+		},
+		cmd:           parentCmd,
+		envValue:      "key1=arg1,key2=arg2",
+		matchValue:    "[key1=arg1,key2=arg2]",
+		altMatchValue: "[key2=arg2,key1=arg1]",
+	},
+	{
+		desc: "string array flag",
+		flag: &Flag{
+			ID:           "testStringArrayFlag",
+			Value:        &testStringArray,
+			DefaultValue: testStringArray,
+			Name:         "string-array",
+			Usage:        "a string array flag",
+			EnvKeys:      []string{"STRING_ARRAY"},
+			StringArray:  true,
+		},
+		cmd:      parentCmd,
+		envValue: "arg1,arg2",
+		// Should not split on commas
+		matchValue: "[\"arg1,arg2\"]",
+	},
+	{
+		desc: "string array flag (short)",
+		flag: &Flag{
+			ID:           "testStringArrayShortFlag",
+			Value:        &testStringArray,
+			DefaultValue: testStringArray,
+			Name:         "string-array-short",
+			ShortHand:    "a",
+			Usage:        "a string array flag (short)",
+		},
+		cmd: parentCmd,
+	},
+	{
 		desc: "int flag",
 		flag: &Flag{
 			ID:           "testIntFlag",
@@ -255,7 +292,9 @@ func TestCmdFlag(t *testing.T) {
 		}
 		if d.envValue != "" {
 			v := d.cmd.Flags().Lookup(d.flag.Name).Value.String()
-			if v != d.matchValue {
+			// We allow matching against an optional altMatchValue, so that we can accommodate
+			// the string forms of both orderings of maps with 2 keys.
+			if v != d.matchValue && (d.altMatchValue == "" || v != d.altMatchValue) {
 				t.Errorf("unexpected value for %s, returned %s instead of %s", d.desc, v, d.matchValue)
 			}
 		}

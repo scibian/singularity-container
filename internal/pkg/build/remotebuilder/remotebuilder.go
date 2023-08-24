@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -12,6 +12,7 @@
 package remotebuilder
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -21,7 +22,6 @@ import (
 	"time"
 
 	golog "github.com/go-log/log"
-	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
 	buildclient "github.com/sylabs/scs-build-client/client"
 	client "github.com/sylabs/scs-library-client/client"
@@ -33,28 +33,28 @@ import (
 
 // RemoteBuilder contains the build request and response
 type RemoteBuilder struct {
-	BuildClient         *buildclient.Client
-	ImagePath           string
-	LibraryURL          string
-	Definition          types.Definition
-	BuilderURL          *url.URL
-	AuthToken           string
-	Force               bool
-	IsDetached          bool
-	BuilderRequirements map[string]string
-	WebURL              string
+	BuildClient *buildclient.Client
+	ImagePath   string
+	LibraryURL  string
+	Definition  types.Definition
+	BuilderURL  *url.URL
+	AuthToken   string
+	Force       bool
+	IsDetached  bool
+	Arch        string
+	WebURL      string
 }
 
 // New creates a RemoteBuilder with the specified details.
 func New(imagePath, libraryURL string, d types.Definition, isDetached, force bool, builderAddr, authToken, buildArch, webURL string) (rb *RemoteBuilder, err error) {
-	bc, err := buildclient.New(&buildclient.Config{
-		BaseURL:   builderAddr,
-		AuthToken: authToken,
-		UserAgent: useragent.Value(),
-		HTTPClient: &http.Client{
+	bc, err := buildclient.NewClient(
+		buildclient.OptBaseURL(builderAddr),
+		buildclient.OptBearerToken(authToken),
+		buildclient.OptUserAgent(useragent.Value()),
+		buildclient.OptHTTPClient(&http.Client{
 			Timeout: 30 * time.Second,
-		},
-	})
+		}),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -67,11 +67,8 @@ func New(imagePath, libraryURL string, d types.Definition, isDetached, force boo
 		Definition:  d,
 		IsDetached:  isDetached,
 		AuthToken:   authToken,
-		// TODO - set RAM requirements, singularity version, etc.
-		BuilderRequirements: map[string]string{
-			"arch": buildArch,
-		},
-		WebURL: webURL,
+		Arch:        buildArch,
+		WebURL:      webURL,
 	}, nil
 }
 
@@ -88,24 +85,21 @@ func (rb *RemoteBuilder) Build(ctx context.Context) (err error) {
 		return fmt.Errorf("invalid library reference: %s", rb.ImagePath)
 	}
 
-	br := buildclient.BuildRequest{
-		LibraryRef:          libraryRef,
-		LibraryURL:          rb.LibraryURL,
-		DefinitionRaw:       rb.Definition.Raw,
-		BuilderRequirements: rb.BuilderRequirements,
-	}
-
-	bi, err := rb.BuildClient.Submit(ctx, br)
+	bi, err := rb.BuildClient.Submit(ctx, bytes.NewReader(rb.Definition.Raw),
+		buildclient.OptBuildLibraryRef(libraryRef),
+		buildclient.OptBuildLibraryPullBaseURL(rb.LibraryURL),
+		buildclient.OptBuildArchitecture(rb.Arch),
+	)
 	if err != nil {
 		return errors.Wrap(err, "failed to post request to remote build service")
 	}
-	sylog.Debugf("Build response - id: %s, libref: %s", bi.ID, bi.LibraryRef)
+	sylog.Debugf("Build response - id: %s, libref: %s", bi.ID(), bi.LibraryRef())
 
 	// If we're doing an detached build, print help on how to download the image
-	libraryRefRaw := strings.TrimPrefix(bi.LibraryRef, "library://")
+	libraryRefRaw := strings.TrimPrefix(bi.LibraryRef(), "library://")
 	if rb.IsDetached {
 		fmt.Printf("Build submitted! Once it is complete, the image can be retrieved by running:\n")
-		fmt.Printf("\tsingularity pull --library %s library://%s\n\n", bi.LibraryURL, libraryRefRaw)
+		fmt.Printf("\tsingularity pull --library %s library://%s\n\n", bi.LibraryURL(), libraryRefRaw)
 		if rb.WebURL != "" {
 			fmt.Printf("Alternatively, you can access it from a browser at:\n\t%s/library/%s\n", rb.WebURL, libraryRefRaw)
 		}
@@ -113,36 +107,35 @@ func (rb *RemoteBuilder) Build(ctx context.Context) (err error) {
 	}
 
 	// We're doing an attached build, stream output and then download the resulting file
-	var outputLogger stdoutLogger
-	err = rb.BuildClient.GetOutput(ctx, bi.ID, outputLogger)
+	err = rb.BuildClient.GetOutput(ctx, bi.ID(), os.Stdout)
 	if err != nil {
 		return errors.Wrap(err, "failed to stream output from remote build service")
 	}
 
 	// Get build status
-	bi, err = rb.BuildClient.GetStatus(ctx, bi.ID)
+	bi, err = rb.BuildClient.GetStatus(ctx, bi.ID())
 	if err != nil {
 		return errors.Wrap(err, "failed to get status from remote build service")
 	}
 
 	// Do not try to download image if not complete or image size is 0
-	if !bi.IsComplete {
+	if !bi.IsComplete() {
 		return errors.New("build has not completed")
 	}
-	if bi.ImageSize <= 0 {
+	if bi.ImageSize() <= 0 {
 		return errors.New("build image size <= 0")
 	}
 
 	// If image destination is local file, pull image.
 	if !strings.HasPrefix(rb.ImagePath, "library://") {
-		f, err := os.OpenFile(rb.ImagePath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0777)
+		f, err := os.OpenFile(rb.ImagePath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o777)
 		if err != nil {
 			return errors.Wrap(err, fmt.Sprintf("unable to open file %s for writing", rb.ImagePath))
 		}
 		defer f.Close()
 
 		c, err := client.NewClient(&client.Config{
-			BaseURL:   bi.LibraryURL,
+			BaseURL:   bi.LibraryURL(),
 			AuthToken: rb.AuthToken,
 			Logger:    (golog.Logger)(sylog.DebugLogger{}),
 		})
@@ -150,29 +143,15 @@ func (rb *RemoteBuilder) Build(ctx context.Context) (err error) {
 			return errors.Wrap(err, fmt.Sprintf("error initializing library client: %v", err))
 		}
 
-		imageRef := library.NormalizeLibraryRef(bi.LibraryRef)
+		imageRef, err := library.NormalizeLibraryRef(bi.LibraryRef())
+		if err != nil {
+			return errors.Wrap(err, fmt.Sprintf("error parsing library reference: %v", err))
+		}
 
-		if err = library.DownloadImageNoProgress(ctx, c, rb.ImagePath, rb.BuilderRequirements["arch"], imageRef); err != nil {
+		if err = library.DownloadImageNoProgress(ctx, c, rb.ImagePath, rb.Arch, imageRef); err != nil {
 			return errors.Wrap(err, "failed to pull image file")
 		}
 	}
 
 	return nil
-}
-
-// stdoutLogger implements the buildclient.OutputReader interface and writes
-// messages to stdout
-type stdoutLogger struct{}
-
-// Read implements the buildclient.OutputReader Read interface, writing messages
-// to the console/terminal
-func (c stdoutLogger) Read(messageType int, msg []byte) (int, error) {
-	// Print to terminal
-	switch messageType {
-	case websocket.TextMessage:
-		fmt.Printf("%s", msg)
-	case websocket.BinaryMessage:
-		fmt.Print("Ignoring binary message")
-	}
-	return len(msg), nil
 }

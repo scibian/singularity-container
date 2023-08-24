@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -107,6 +107,7 @@ func TestCheckLowerUpper(t *testing.T) {
 			expectedSuccess:       false,
 			expectIncompatibleErr: true,
 		},
+		//nolint:misspell
 		{
 			name:                  "LUSTRE mock lower",
 			path:                  "/",
@@ -116,6 +117,7 @@ func TestCheckLowerUpper(t *testing.T) {
 			expectedSuccess:       false,
 			expectIncompatibleErr: true,
 		},
+		//nolint:misspell
 		{
 			name:                  "LUSTRE mock upper",
 			path:                  "/",
@@ -188,8 +190,6 @@ func TestCheckLowerUpper(t *testing.T) {
 				}
 			}
 			t.Errorf("unexpected error for %q: %q instead of %q", tt.name, err, expectedError)
-		} else if err == nil && tt.expectedSuccess {
-			// test PASS without error
 		}
 	}
 }

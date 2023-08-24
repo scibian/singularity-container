@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,18 +8,9 @@ package cmdline
 import (
 	"fmt"
 	"os"
-	"runtime"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-)
-
-// Supported operating systems
-const (
-	// Darwin OS
-	Darwin = "darwin"
-	// Linux OS
-	Linux = "linux"
 )
 
 // Flag holds information about a command flag
@@ -36,7 +27,10 @@ type Flag struct {
 	Required     bool
 	EnvKeys      []string
 	EnvHandler   EnvHandler
-	ExcludedOS   []string
+	// When Value is a []String:
+	// If true, will use pFlag StringArrayVar(P) type, where values are not split on comma.
+	// If false, will use pFlag StringSliceVar(P) type, where a single value is split on commas.
+	StringArray bool
 }
 
 // flagManager manages cobra command flags and store them
@@ -79,19 +73,20 @@ func (m *flagManager) registerFlagForCmd(flag *Flag, cmds ...*cobra.Command) err
 	if flag == nil {
 		return fmt.Errorf("nil flag provided")
 	}
-	for _, os := range flag.ExcludedOS {
-		if os == runtime.GOOS {
-			return nil
-		}
-	}
 	if flag.EnvHandler == nil {
 		flag.EnvHandler = EnvSetValue
 	}
 	switch t := flag.DefaultValue.(type) {
 	case string:
 		m.registerStringVar(flag, cmds)
+	case map[string]string:
+		m.registerStringMapVar(flag, cmds)
 	case []string:
-		m.registerStringSliceVar(flag, cmds)
+		if flag.StringArray {
+			m.registerStringArrayVar(flag, cmds)
+		} else {
+			m.registerStringSliceVar(flag, cmds)
+		}
 	case bool:
 		m.registerBoolVar(flag, cmds)
 	case int:
@@ -123,6 +118,31 @@ func (m *flagManager) registerStringSliceVar(flag *Flag, cmds []*cobra.Command) 
 			c.Flags().StringSliceVarP(flag.Value.(*[]string), flag.Name, flag.ShortHand, flag.DefaultValue.([]string), flag.Usage)
 		} else {
 			c.Flags().StringSliceVar(flag.Value.(*[]string), flag.Name, flag.DefaultValue.([]string), flag.Usage)
+		}
+		m.setFlagOptions(flag, c)
+	}
+	return nil
+}
+
+func (m *flagManager) registerStringArrayVar(flag *Flag, cmds []*cobra.Command) error {
+	for _, c := range cmds {
+		if flag.ShortHand != "" {
+			c.Flags().StringArrayVarP(flag.Value.(*[]string), flag.Name, flag.ShortHand, flag.DefaultValue.([]string), flag.Usage)
+		} else {
+			c.Flags().StringArrayVar(flag.Value.(*[]string), flag.Name, flag.DefaultValue.([]string), flag.Usage)
+		}
+		m.setFlagOptions(flag, c)
+	}
+	return nil
+}
+
+// registerStringArrayCommas uses StringToStringVarP, a variant to allow commas (and a map of string/string)
+func (m *flagManager) registerStringMapVar(flag *Flag, cmds []*cobra.Command) error {
+	for _, c := range cmds {
+		if flag.ShortHand != "" {
+			c.Flags().StringToStringVarP(flag.Value.(*map[string]string), flag.Name, flag.ShortHand, flag.DefaultValue.(map[string]string), flag.Usage)
+		} else {
+			c.Flags().StringToStringVar(flag.Value.(*map[string]string), flag.Name, flag.DefaultValue.(map[string]string), flag.Usage)
 		}
 		m.setFlagOptions(flag, c)
 	}

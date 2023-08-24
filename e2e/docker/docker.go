@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021 Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pkg/errors"
@@ -26,7 +27,7 @@ type ctx struct {
 func (c ctx) testDockerPulls(t *testing.T) {
 	const tmpContainerFile = "test_container.sif"
 
-	tmpPath, err := fs.MakeTmpDir(c.env.TestDir, "docker-", 0755)
+	tmpPath, err := fs.MakeTmpDir(c.env.TestDir, "docker-", 0o755)
 	err = errors.Wrapf(err, "creating temporary directory in %q for docker pull test", c.env.TestDir)
 	if err != nil {
 		t.Fatalf("failed to create temporary directory: %+v", err)
@@ -284,9 +285,9 @@ func (c ctx) testDockerDefFile(t *testing.T) {
 			from:                "centos:7",
 		},
 		{
-			name:                "CentOS_8",
+			name:                "AlmaLinux_8",
 			kernelMajorRequired: 3,
-			from:                "centos:8",
+			from:                "almalinux:8",
 		},
 		{
 			name:                "Ubuntu_1604",
@@ -381,7 +382,7 @@ func (c ctx) testDockerRegistry(t *testing.T) {
 			t,
 			e2e.WithProfile(e2e.RootProfile),
 			e2e.WithCommand("build"),
-			e2e.WithArgs("--nohttps", imagePath, defFile),
+			e2e.WithArgs("--no-https", imagePath, defFile),
 			e2e.PostRun(func(t *testing.T) {
 				defer os.Remove(imagePath)
 				defer os.Remove(defFile)
@@ -397,6 +398,58 @@ func (c ctx) testDockerRegistry(t *testing.T) {
 	}
 }
 
+func (c ctx) testDockerLabels(t *testing.T) {
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "labels-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
+
+	// Test container & set labels
+	// See: https://github.com/sylabs/singularity-test-containers/pull/1
+	imgSrc := "docker://sylabsio/labels"
+	label1 := "LABEL1: 1"
+	label2 := "LABEL2: TWO"
+
+	c.env.RunSingularity(
+		t,
+		e2e.AsSubtest("build"),
+		e2e.WithProfile(e2e.RootProfile),
+		e2e.WithCommand("build"),
+		e2e.WithArgs(imagePath, imgSrc),
+		e2e.ExpectExit(0),
+	)
+
+	verifyOutput := func(t *testing.T, r *e2e.SingularityCmdResult) {
+		output := string(r.Stdout)
+		for _, l := range []string{label1, label2} {
+			if !strings.Contains(output, l) {
+				t.Errorf("Did not find expected label %s in inspect output", l)
+			}
+		}
+	}
+
+	c.env.RunSingularity(
+		t,
+		e2e.AsSubtest("inspect"),
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("inspect"),
+		e2e.WithArgs([]string{"--labels", imagePath}...),
+		e2e.ExpectExit(0, verifyOutput),
+	)
+}
+
+// https://github.com/sylabs/singularity/issues/233
+func (c ctx) testDockerCMDQuotes(t *testing.T) {
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("run"),
+		e2e.WithArgs("docker://sylabsio/issue233"),
+		e2e.ExpectExit(0,
+			e2e.ExpectOutput(e2e.ContainMatch, "Test run"),
+		),
+	)
+}
+
 // E2ETests is the main func to trigger the test suite
 func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := ctx{
@@ -410,5 +463,7 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"pulls":            c.testDockerPulls,
 		"registry":         c.testDockerRegistry,
 		"whiteout symlink": c.testDockerWhiteoutSymlink,
+		"labels":           c.testDockerLabels,
+		"cmd quotes":       c.testDockerCMDQuotes,
 	}
 }

@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,82 +11,101 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"os"
+	"time"
 
 	keyclient "github.com/sylabs/scs-key-client/client"
 	libclient "github.com/sylabs/scs-library-client/client"
+	scslibrary "github.com/sylabs/scs-library-client/client"
 	"github.com/sylabs/singularity/internal/app/singularity"
 	"github.com/sylabs/singularity/internal/pkg/cache"
 	"github.com/sylabs/singularity/internal/pkg/client"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/pkg/sylog"
+	"golang.org/x/term"
 )
 
-var (
-	// ErrLibraryPullUnsigned indicates that the interactive portion of the pull was aborted.
-	ErrLibraryPullUnsigned = errors.New("failed to verify container")
-)
+// ErrLibraryPullUnsigned indicates that the interactive portion of the pull was aborted.
+var ErrLibraryPullUnsigned = errors.New("failed to verify container")
 
 // pull will pull a library image into the cache if directTo="", or a specific file if directTo is set.
-func pull(ctx context.Context, imgCache *cache.Handle, directTo, pullFrom string, arch string, libraryConfig *libclient.Config) (imagePath string, err error) {
-	imageRef := NormalizeLibraryRef(pullFrom)
-
-	sylog.GetLevel()
-
+func pull(ctx context.Context, imgCache *cache.Handle, directTo string, imageRef *libclient.Ref, arch string, libraryConfig *libclient.Config) (string, error) {
 	c, err := libclient.NewClient(libraryConfig)
 	if err != nil {
 		return "", fmt.Errorf("unable to initialize client library: %v", err)
 	}
 
-	libraryImage, err := c.GetImage(ctx, arch, imageRef)
-	if err == libclient.ErrNotFound {
-		return "", fmt.Errorf("image does not exist in the library: %s (%s)", imageRef, arch)
-	}
+	ref := fmt.Sprintf("%s:%s", imageRef.Path, imageRef.Tags[0])
+
+	libraryImage, err := c.GetImage(ctx, arch, ref)
 	if err != nil {
+		if errors.Is(err, libclient.ErrNotFound) {
+			return "", fmt.Errorf("image does not exist in the library: %s (%s)", ref, arch)
+		}
 		return "", err
 	}
 
-	if directTo != "" {
-		sylog.Infof("Downloading library image")
-		if err = DownloadImage(ctx, c, directTo, arch, imageRef, client.ProgressBarCallback(ctx)); err != nil {
-			return "", fmt.Errorf("unable to download image: %v", err)
-		}
-		imagePath = directTo
-
-	} else {
-		cacheEntry, err := imgCache.GetEntry(cache.LibraryCacheType, libraryImage.Hash)
-		if err != nil {
-			return "", fmt.Errorf("unable to check if %v exists in cache: %v", libraryImage.Hash, err)
-		}
-		defer cacheEntry.CleanTmp()
-		if !cacheEntry.Exists {
-			sylog.Infof("Downloading library image")
-
-			if err := DownloadImage(ctx, c, cacheEntry.TmpPath, arch, imageRef, client.ProgressBarCallback(ctx)); err != nil {
-				return "", fmt.Errorf("unable to download image: %v", err)
-			}
-
-			if cacheFileHash, err := libclient.ImageHash(cacheEntry.TmpPath); err != nil {
-				return "", fmt.Errorf("error getting image hash: %v", err)
-			} else if cacheFileHash != libraryImage.Hash {
-				return "", fmt.Errorf("cached file hash(%s) and expected hash(%s) does not match", cacheFileHash, libraryImage.Hash)
-			}
-
-			err = cacheEntry.Finalize()
-			if err != nil {
-				return "", err
-			}
-		} else {
-			sylog.Infof("Using cached image")
-		}
-		imagePath = cacheEntry.Path
+	var progressBar scslibrary.ProgressBar
+	if term.IsTerminal(2) {
+		progressBar = &client.DownloadProgressBar{}
 	}
 
-	return imagePath, nil
+	if directTo != "" {
+		// Download direct to file
+		if err := downloadWrapper(ctx, c, directTo, arch, imageRef, progressBar); err != nil {
+			return "", fmt.Errorf("unable to download image: %v", err)
+		}
+		return directTo, nil
+	}
+
+	cacheEntry, err := imgCache.GetEntry(cache.LibraryCacheType, libraryImage.Hash)
+	if err != nil {
+		return "", fmt.Errorf("unable to check if %v exists in cache: %v", libraryImage.Hash, err)
+	}
+	defer cacheEntry.CleanTmp()
+
+	if !cacheEntry.Exists {
+		if err := downloadWrapper(ctx, c, cacheEntry.TmpPath, arch, imageRef, progressBar); err != nil {
+			return "", fmt.Errorf("unable to download image: %v", err)
+		}
+
+		if cacheFileHash, err := libclient.ImageHash(cacheEntry.TmpPath); err != nil {
+			return "", fmt.Errorf("error getting image hash: %v", err)
+		} else if cacheFileHash != libraryImage.Hash {
+			return "", fmt.Errorf("cached file hash(%s) and expected hash(%s) does not match", cacheFileHash, libraryImage.Hash)
+		}
+
+		if err := cacheEntry.Finalize(); err != nil {
+			return "", err
+		}
+	} else {
+		sylog.Infof("Using cached image")
+	}
+
+	return cacheEntry.Path, nil
+}
+
+// downloadWrapper calls DownloadImage() and outputs download summary if progressBar not specified.
+func downloadWrapper(ctx context.Context, c *scslibrary.Client, imagePath, arch string, libraryRef *scslibrary.Ref, pb scslibrary.ProgressBar) error {
+	sylog.Infof("Downloading library image")
+
+	defer func(t time.Time) {
+		if pb == nil {
+			if fi, err := os.Stat(imagePath); err == nil {
+				// Progress bar interface not specified; output summary to stdout
+				sylog.Infof("Downloaded %d bytes in %v\n", fi.Size(), time.Since(t))
+			}
+		}
+	}(time.Now())
+
+	if err := DownloadImage(ctx, c, imagePath, arch, libraryRef, pb); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Pull will pull a library image to the cache or direct to a temporary file if cache is disabled
-func Pull(ctx context.Context, imgCache *cache.Handle, pullFrom string, arch string, tmpDir string, libraryConfig *libclient.Config) (imagePath string, err error) {
-
+func Pull(ctx context.Context, imgCache *cache.Handle, pullFrom *libclient.Ref, arch string, tmpDir string, libraryConfig *libclient.Config) (imagePath string, err error) {
 	directTo := ""
 
 	if imgCache.IsDisabled() {
@@ -102,8 +121,7 @@ func Pull(ctx context.Context, imgCache *cache.Handle, pullFrom string, arch str
 }
 
 // PullToFile will pull a library image to the specified location, through the cache, or directly if cache is disabled
-func PullToFile(ctx context.Context, imgCache *cache.Handle, pullTo, pullFrom, arch string, tmpDir string, libraryConfig *libclient.Config, co []keyclient.Option) (imagePath string, err error) {
-
+func PullToFile(ctx context.Context, imgCache *cache.Handle, pullTo string, pullFrom *libclient.Ref, arch string, tmpDir string, libraryConfig *libclient.Config, co []keyclient.Option) (imagePath string, err error) {
 	directTo := ""
 	if imgCache.IsDisabled() {
 		directTo = pullTo
@@ -117,7 +135,7 @@ func PullToFile(ctx context.Context, imgCache *cache.Handle, pullTo, pullFrom, a
 
 	if directTo == "" {
 		// mode is before umask if pullTo doesn't exist
-		err = fs.CopyFileAtomic(src, pullTo, 0777)
+		err = fs.CopyFileAtomic(src, pullTo, 0o777)
 		if err != nil {
 			return "", fmt.Errorf("error copying image out of cache: %v", err)
 		}

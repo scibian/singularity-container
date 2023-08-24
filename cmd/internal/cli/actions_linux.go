@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -18,27 +18,28 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
+	"github.com/sylabs/singularity/internal/pkg/image/unpacker"
 	"github.com/sylabs/singularity/internal/pkg/instance"
 	"github.com/sylabs/singularity/internal/pkg/plugin"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci/generate"
 	"github.com/sylabs/singularity/internal/pkg/security"
+	"github.com/sylabs/singularity/internal/pkg/util/bin"
 	"github.com/sylabs/singularity/internal/pkg/util/env"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
+	"github.com/sylabs/singularity/internal/pkg/util/gpu"
 	"github.com/sylabs/singularity/internal/pkg/util/shell/interpreter"
 	"github.com/sylabs/singularity/internal/pkg/util/starter"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
 	imgutil "github.com/sylabs/singularity/pkg/image"
-	"github.com/sylabs/singularity/pkg/image/unpacker"
 	clicallback "github.com/sylabs/singularity/pkg/plugin/callback/cli"
 	singularitycallback "github.com/sylabs/singularity/pkg/plugin/callback/runtime/engine/singularity"
 	"github.com/sylabs/singularity/pkg/runtime/engine/config"
 	singularityConfig "github.com/sylabs/singularity/pkg/runtime/engine/singularity/config"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/capabilities"
-	"github.com/sylabs/singularity/pkg/util/crypt"
+	"github.com/sylabs/singularity/pkg/util/cryptkey"
 	"github.com/sylabs/singularity/pkg/util/fs/proc"
-	"github.com/sylabs/singularity/pkg/util/gpu"
 	"github.com/sylabs/singularity/pkg/util/namespaces"
 	"github.com/sylabs/singularity/pkg/util/rlimit"
 	"github.com/sylabs/singularity/pkg/util/singularityconf"
@@ -105,7 +106,7 @@ func convertImage(filename string, unsquashfsPath string) (tempDir, imageDir str
 
 	// create an inner dir to extract to, so we don't clobber the secure permissions on the tmpDir.
 	imageDir = filepath.Join(tempDir, "root")
-	if err := os.Mkdir(imageDir, 0755); err != nil {
+	if err := os.Mkdir(imageDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("could not create root directory: %s", err)
 	}
 
@@ -166,6 +167,7 @@ func setNoMountFlags(c *singularityConfig.EngineConfig) {
 }
 
 // TODO: Let's stick this in another file so that that CLI is just CLI
+//nolint:maintidx
 func execStarter(cobraCmd *cobra.Command, image string, args []string, name string) {
 	var err error
 
@@ -206,7 +208,7 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 
 	generator.SetProcessArgs(args)
 
-	currMask := syscall.Umask(0022)
+	currMask := syscall.Umask(0o022)
 	if !NoUmask {
 		// Save the current umask, to be set for the process run in the container
 		// https://github.com/hpcng/singularity/issues/5214
@@ -309,67 +311,6 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		}
 	}
 
-	var libs, bins, ipcs []string
-	var gpuConfFile, gpuPlatform string
-	userPath := os.Getenv("USER_PATH")
-
-	if !NoNvidia && (Nvidia || engineConfig.File.AlwaysUseNv) {
-		gpuPlatform = "nv"
-		gpuConfFile = filepath.Join(buildcfg.SINGULARITY_CONFDIR, "nvliblist.conf")
-
-		if engineConfig.File.AlwaysUseNv {
-			Nvidia = true
-			sylog.Verbosef("'always use nv = yes' found in singularity.conf")
-			sylog.Verbosef("binding nvidia files into container")
-		}
-
-		// bind persistenced socket if found
-		ipcs = gpu.NvidiaIpcsPath(userPath)
-		libs, bins, err = gpu.NvidiaPaths(gpuConfFile, userPath)
-
-	} else if !NoRocm && (Rocm || engineConfig.File.AlwaysUseRocm) { // Mount rocm GPU
-		gpuPlatform = "rocm"
-		gpuConfFile = filepath.Join(buildcfg.SINGULARITY_CONFDIR, "rocmliblist.conf")
-
-		if engineConfig.File.AlwaysUseRocm {
-			Rocm = true
-			sylog.Verbosef("'always use rocm = yes' found in singularity.conf")
-			sylog.Verbosef("binding rocm files into container")
-		}
-
-		libs, bins, err = gpu.RocmPaths(gpuConfFile, userPath)
-	}
-
-	if Nvidia || Rocm {
-		if err != nil {
-			sylog.Warningf("Unable to capture %s bind points: %v", gpuPlatform, err)
-		} else {
-			files := make([]string, len(bins)+len(ipcs))
-
-			if len(files) == 0 {
-				sylog.Infof("Could not find any %s files on this host!", gpuPlatform)
-			} else {
-				if IsWritable {
-					sylog.Warningf("%s files may not be bound with --writable", gpuPlatform)
-				}
-				for i, binary := range bins {
-					usrBinBinary := filepath.Join("/usr/bin", filepath.Base(binary))
-					files[i] = strings.Join([]string{binary, usrBinBinary}, ":")
-				}
-				for i, ipc := range ipcs {
-					files[i+len(bins)] = ipc
-				}
-				engineConfig.SetFilesPath(files)
-			}
-			if len(libs) == 0 {
-				sylog.Warningf("Could not find any %s libraries on this host!", gpuPlatform)
-				sylog.Warningf("You may need to manually edit %s", gpuConfFile)
-			} else {
-				engineConfig.SetLibrariesPath(libs)
-			}
-		}
-	}
-
 	// early check for key material before we start engine so we can fail fast if missing
 	// we do not need this check when joining a running instance, just for starting a container
 	if !engineConfig.GetInstanceJoin() {
@@ -393,7 +334,7 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 				sylog.Fatalf("Cannot load key for decryption: %v", err)
 			}
 
-			plaintextKey, err := crypt.PlaintextKey(keyInfo, engineConfig.GetImage())
+			plaintextKey, err := cryptkey.PlaintextKey(keyInfo, engineConfig.GetImage())
 			if err != nil {
 				sylog.Errorf("Cannot decrypt %s: %v", engineConfig.GetImage(), err)
 				sylog.Fatalf("Please check you are providing the correct key for decryption")
@@ -408,10 +349,21 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		img.File.Close()
 	}
 
+	// First get binds from -B/--bind and env var
 	binds, err := singularityConfig.ParseBindPath(strings.Join(BindPaths, ","))
 	if err != nil {
 		sylog.Fatalf("while parsing bind path: %s", err)
 	}
+
+	// Now add binds from one or more --mount and env var.
+	for _, m := range Mounts {
+		bps, err := singularityConfig.ParseMountString(m)
+		if err != nil {
+			sylog.Fatalf("while parsing mount %q: %s", m, err)
+		}
+		binds = append(binds, bps...)
+	}
+
 	engineConfig.SetBindPath(binds)
 	generator.AddProcessEnv("SINGULARITY_BIND", strings.Join(BindPaths, ","))
 
@@ -429,8 +381,13 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 	engineConfig.SetWritableImage(IsWritable)
 	engineConfig.SetNoHome(NoHome)
 	setNoMountFlags(engineConfig)
-	engineConfig.SetNv(Nvidia)
-	engineConfig.SetRocm(Rocm)
+
+	if err := SetGPUConfig(engineConfig); err != nil {
+		// We must fatal on error, as we are checking for correct ownership of nvidia-container-cli,
+		// which is important to maintain security.
+		sylog.Fatalf("while setting GPU configuration: %s", err)
+	}
+
 	engineConfig.SetAddCaps(AddCaps)
 	engineConfig.SetDropCaps(DropCaps)
 	engineConfig.SetConfigurationFile(configurationFile)
@@ -536,7 +493,6 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 	/* if name submitted, run as instance */
 	if name != "" {
 		PidNamespace = true
-		IpcNamespace = true
 		engineConfig.SetInstance(true)
 		engineConfig.SetBootInstance(IsBoot)
 
@@ -613,7 +569,6 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		currentEnv := append(
 			os.Environ(),
 			"SINGULARITY_IMAGE="+engineConfig.GetImage(),
-			"PATH="+os.Getenv("USER_PATH"),
 		)
 
 		content, err := ioutil.ReadFile(SingularityEnvFile)
@@ -628,18 +583,34 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		// --env variables will take precedence over variables
 		// defined by the environment file
 		sylog.Debugf("Setting environment variables from file %s", SingularityEnvFile)
-		SingularityEnv = append(env, SingularityEnv...)
+
+		// Update SingularityEnv with those from file
+		for _, envar := range env {
+			e := strings.SplitN(envar, "=", 2)
+			if len(e) != 2 {
+				sylog.Warningf("Ignore environment variable %q: '=' is missing", envar)
+				continue
+			}
+
+			// Ensure we don't overwrite --env variables with environment file
+			if _, ok := SingularityEnv[e[0]]; ok {
+				sylog.Warningf("Ignore environment variable %s from %s: override from --env", e[0], SingularityEnvFile)
+			} else {
+				SingularityEnv[e[0]] = e[1]
+			}
+		}
 	}
 
 	// process --env and --env-file variables for injection
 	// into the environment by prefixing them with SINGULARITYENV_
-	for _, env := range SingularityEnv {
-		e := strings.SplitN(env, "=", 2)
-		if len(e) != 2 {
-			sylog.Warningf("Ignore environment variable %q: '=' is missing", env)
+	for envName, envValue := range SingularityEnv {
+
+		// We can allow envValue to be empty (explicit set to empty) but not name!
+		if envName == "" {
+			sylog.Warningf("Ignore environment variable %s=%s: variable name missing", envName, envValue)
 			continue
 		}
-		os.Setenv("SINGULARITYENV_"+e[0], e[1])
+		os.Setenv("SINGULARITYENV_"+envName, envValue)
 	}
 
 	// Copy and cache environment
@@ -700,10 +671,9 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		}
 
 		if convert {
-			unsquashfsPath := ""
-			if engineConfig.File.MksquashfsPath != "" {
-				d := filepath.Dir(engineConfig.File.MksquashfsPath)
-				unsquashfsPath = filepath.Join(d, "unsquashfs")
+			unsquashfsPath, err := bin.FindBin("unsquashfs")
+			if err != nil {
+				sylog.Fatalf("while extracting %s: %s", image, err)
 			}
 			sylog.Verbosef("User namespace requested, convert image %s to sandbox", image)
 			sylog.Infof("Converting SIF file to temporary sandbox...")
@@ -803,5 +773,136 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 			starter.LoadOverlayModule(loadOverlay),
 		)
 		sylog.Fatalf("%s", err)
+	}
+}
+
+// SetGPUConfig sets up EngineConfig entries for NV / ROCm usage, if requested.
+func SetGPUConfig(engineConfig *singularityConfig.EngineConfig) error {
+	if engineConfig.File.AlwaysUseNv && !NoNvidia {
+		Nvidia = true
+		sylog.Verbosef("'always use nv = yes' found in singularity.conf")
+	}
+	if engineConfig.File.AlwaysUseRocm && !NoRocm {
+		Rocm = true
+		sylog.Verbosef("'always use rocm = yes' found in singularity.conf")
+	}
+
+	if Nvidia && Rocm {
+		sylog.Warningf("--nv and --rocm cannot be used together. Only --nv will be applied.")
+	}
+
+	if Nvidia {
+		// If nvccli was not enabled by flag or config, drop down to legacy binds immediately
+		if !engineConfig.File.UseNvCCLI && !NvCCLI {
+			return setNVLegacyConfig(engineConfig)
+		}
+
+		// TODO: In privileged fakeroot mode we don't have the correct namespace context to run nvidia-container-cli
+		// from  starter, so fall back to legacy NV handling until that workflow is refactored heavily.
+		fakeRootPriv := IsFakeroot && engineConfig.File.AllowSetuid && (buildcfg.SINGULARITY_SUID_INSTALL == 1)
+		if !fakeRootPriv {
+			return setNvCCLIConfig(engineConfig)
+		}
+		return fmt.Errorf("--fakeroot does not support --nvccli in set-uid installations")
+	}
+
+	if Rocm {
+		return setRocmConfig(engineConfig)
+	}
+	return nil
+}
+
+// setNvCCLIConfig sets up EngineConfig entries for NVIDIA GPU configuration via nvidia-container-cli
+func setNvCCLIConfig(engineConfig *singularityConfig.EngineConfig) (err error) {
+	sylog.Debugf("Using nvidia-container-cli for GPU setup")
+	engineConfig.SetNvCCLI(true)
+
+	if os.Getenv("NVIDIA_VISIBLE_DEVICES") == "" {
+		if IsContained || IsContainAll {
+			// When we use --contain we don't mount the NV devices by default in the nvidia-container-cli flow,
+			// they must be mounted via specifying with`NVIDIA_VISIBLE_DEVICES`. This differs from the legacy
+			// flow which mounts all GPU devices, always... so warn the user.
+			sylog.Warningf("When using nvidia-container-cli with --contain NVIDIA_VISIBLE_DEVICES must be set or no GPUs will be available in container.")
+		} else {
+			// In non-contained mode set NVIDIA_VISIBLE_DEVICES="all" by default, so MIGs are available.
+			// Otherwise there is a difference vs legacy GPU binding. See Issue #471.
+			sylog.Infof("Setting 'NVIDIA_VISIBLE_DEVICES=all' to emulate legacy GPU binding.")
+			os.Setenv("NVIDIA_VISIBLE_DEVICES", "all")
+		}
+	}
+
+	// Pass NVIDIA_ env vars that will be converted to nvidia-container-cli options
+	nvCCLIEnv := []string{}
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "NVIDIA_") {
+			nvCCLIEnv = append(nvCCLIEnv, e)
+		}
+	}
+	engineConfig.SetNvCCLIEnv(nvCCLIEnv)
+
+	if UserNamespace && !IsWritable {
+		return fmt.Errorf("nvidia-container-cli requires --writable with user namespace/fakeroot")
+	}
+	if !IsWritable && !IsWritableTmpfs {
+		sylog.Infof("Setting --writable-tmpfs (required by nvidia-container-cli)")
+		IsWritableTmpfs = true
+	}
+
+	return nil
+}
+
+// setNvLegacyConfig sets up EngineConfig entries for NVIDIA GPU configuration via direct binds of configured bins/libs.
+func setNVLegacyConfig(engineConfig *singularityConfig.EngineConfig) error {
+	sylog.Debugf("Using legacy binds for nv GPU setup")
+	engineConfig.SetNvLegacy(true)
+	gpuConfFile := filepath.Join(buildcfg.SINGULARITY_CONFDIR, "nvliblist.conf")
+	// bind persistenced socket if found
+	ipcs, err := gpu.NvidiaIpcsPath()
+	if err != nil {
+		sylog.Warningf("While finding nv ipcs: %v", err)
+	}
+	libs, bins, err := gpu.NvidiaPaths(gpuConfFile)
+	if err != nil {
+		sylog.Warningf("While finding nv bind points: %v", err)
+	}
+	setGPUBinds(engineConfig, libs, bins, ipcs, "nv")
+	return nil
+}
+
+// setRocmConfig sets up EngineConfig entries for ROCm GPU configuration via direct binds of configured bins/libs.
+func setRocmConfig(engineConfig *singularityConfig.EngineConfig) error {
+	sylog.Debugf("Using rocm GPU setup")
+	engineConfig.SetRocm(true)
+	gpuConfFile := filepath.Join(buildcfg.SINGULARITY_CONFDIR, "rocmliblist.conf")
+	libs, bins, err := gpu.RocmPaths(gpuConfFile)
+	if err != nil {
+		sylog.Warningf("While finding ROCm bind points: %v", err)
+	}
+	setGPUBinds(engineConfig, libs, bins, []string{}, "nv")
+	return nil
+}
+
+// setGPUBinds sets EngineConfig entries to bind the provided list of libs, bins, ipc files.
+func setGPUBinds(engineConfig *singularityConfig.EngineConfig, libs, bins, ipcs []string, gpuPlatform string) {
+	files := make([]string, len(bins)+len(ipcs))
+	if len(files) == 0 {
+		sylog.Warningf("Could not find any %s files on this host!", gpuPlatform)
+	} else {
+		if IsWritable {
+			sylog.Warningf("%s files may not be bound with --writable", gpuPlatform)
+		}
+		for i, binary := range bins {
+			usrBinBinary := filepath.Join("/usr/bin", filepath.Base(binary))
+			files[i] = strings.Join([]string{binary, usrBinBinary}, ":")
+		}
+		for i, ipc := range ipcs {
+			files[i+len(bins)] = ipc
+		}
+		engineConfig.SetFilesPath(files)
+	}
+	if len(libs) == 0 {
+		sylog.Warningf("Could not find any %s libraries on this host!", gpuPlatform)
+	} else {
+		engineConfig.SetLibrariesPath(libs)
 	}
 }

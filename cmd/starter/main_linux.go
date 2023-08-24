@@ -1,16 +1,16 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
 package main
 
-/*
-#include "c/message.c"
-#include "c/capability.c"
-#include "c/setns.c"
-#include "c/starter.c"
-*/
+// #cgo CFLAGS: -I${SRCDIR}/../../builddir
+// #include <config.h>
+// #include "c/message.c"
+// #include "c/capability.c"
+// #include "c/setns.c"
+// #include "c/starter.c"
 import "C"
 
 import (
@@ -20,7 +20,6 @@ import (
 	"github.com/sylabs/singularity/internal/app/starter"
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine"
 	starterConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/config/starter"
-	_ "github.com/sylabs/singularity/internal/pkg/util/goversion"
 	"github.com/sylabs/singularity/internal/pkg/util/mainthread"
 	"github.com/sylabs/singularity/pkg/sylog"
 

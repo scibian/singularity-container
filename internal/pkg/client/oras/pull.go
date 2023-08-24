@@ -25,7 +25,7 @@ func pull(ctx context.Context, imgCache *cache.Handle, directTo, pullFrom string
 
 	if directTo != "" {
 		sylog.Infof("Downloading oras image")
-		if err := DownloadImage(directTo, pullFrom, ociAuth); err != nil {
+		if err := DownloadImage(ctx, directTo, pullFrom, ociAuth); err != nil {
 			return "", fmt.Errorf("unable to Download Image: %v", err)
 		}
 		imagePath = directTo
@@ -39,7 +39,7 @@ func pull(ctx context.Context, imgCache *cache.Handle, directTo, pullFrom string
 		if !cacheEntry.Exists {
 			sylog.Infof("Downloading oras image")
 
-			if err := DownloadImage(cacheEntry.TmpPath, pullFrom, ociAuth); err != nil {
+			if err := DownloadImage(ctx, cacheEntry.TmpPath, pullFrom, ociAuth); err != nil {
 				return "", fmt.Errorf("unable to Download Image: %v", err)
 			}
 			if cacheFileHash, err := ImageHash(cacheEntry.TmpPath); err != nil {
@@ -64,7 +64,6 @@ func pull(ctx context.Context, imgCache *cache.Handle, directTo, pullFrom string
 
 // Pull will pull an oras image to the cache or direct to a temporary file if cache is disabled
 func Pull(ctx context.Context, imgCache *cache.Handle, pullFrom, tmpDir string, ociAuth *ocitypes.DockerAuthConfig) (imagePath string, err error) {
-
 	directTo := ""
 
 	if imgCache.IsDisabled() {
@@ -81,7 +80,6 @@ func Pull(ctx context.Context, imgCache *cache.Handle, pullFrom, tmpDir string, 
 
 // PullToFile will pull an oras image to the specified location, through the cache, or directly if cache is disabled
 func PullToFile(ctx context.Context, imgCache *cache.Handle, pullTo, pullFrom, tmpDir string, ociAuth *ocitypes.DockerAuthConfig) (imagePath string, err error) {
-
 	directTo := ""
 	if imgCache.IsDisabled() {
 		directTo = pullTo
@@ -95,7 +93,7 @@ func PullToFile(ctx context.Context, imgCache *cache.Handle, pullTo, pullFrom, t
 
 	if directTo == "" {
 		// mode is before umask if pullTo doesn't exist
-		err = fs.CopyFileAtomic(src, pullTo, 0777)
+		err = fs.CopyFileAtomic(src, pullTo, 0o777)
 		if err != nil {
 			return "", fmt.Errorf("error copying image out of cache: %v", err)
 		}

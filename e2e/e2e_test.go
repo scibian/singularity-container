@@ -1,9 +1,9 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
-// +build e2e_test
+//go:build e2e_test
 
 package e2e
 
@@ -27,7 +27,7 @@ import (
 func TestE2E(t *testing.T) {
 	targetCoverageFilePath := os.Getenv("SINGULARITY_E2E_COVERAGE")
 	if targetCoverageFilePath != "" {
-		logFile, err := os.OpenFile(targetCoverageFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+		logFile, err := os.OpenFile(targetCoverageFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
 		if err != nil {
 			log.Fatalf("failed to create log file: %s", err)
 		}

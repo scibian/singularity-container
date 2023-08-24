@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -109,7 +109,7 @@ func (s *stage) runPostScript(configFile, sessionResolv, sessionHosts string) er
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Dir = "/"
-		cmd.Env = currentEnvNoSingularity()
+		cmd.Env = currentEnvNoSingularity([]string{"NV", "NVCCLI", "ROCM", "BINDPATH", "MOUNT"})
 
 		sylog.Infof("Running post scriptlet")
 		return cmd.Run()
@@ -135,7 +135,7 @@ func (s *stage) runTestScript(configFile, sessionResolv, sessionHosts string) er
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Dir = "/"
-		cmd.Env = currentEnvNoSingularity()
+		cmd.Env = currentEnvNoSingularity([]string{"NV", "NVCCLI", "ROCM", "BINDPATH", "MOUNT", "WRITABLE_TMPFS"})
 
 		sylog.Infof("Running testscript")
 		return cmd.Run()
@@ -162,6 +162,9 @@ func (s *stage) copyFilesFrom(b *Build) error {
 			return err
 		}
 
+		srcRootfsPath := b.stages[stageIndex].b.RootfsPath
+		dstRootfsPath := s.b.RootfsPath
+
 		sylog.Debugf("Copying files from stage: %s", args[1])
 
 		// iterate through filetransfers
@@ -171,18 +174,9 @@ func (s *stage) copyFilesFrom(b *Build) error {
 				sylog.Warningf("Attempt to copy file with no name, skipping.")
 				continue
 			}
-			// dest = source if not specified
-			if transfer.Dst == "" {
-				transfer.Dst = transfer.Src
-			}
-
 			// copy each file into bundle rootfs
-			// prepend appropriate bundle path to supplied paths
-			// copying between stages should not follow symlinks
-			transfer.Src = files.AddPrefix(b.stages[stageIndex].b.RootfsPath, transfer.Src)
-			transfer.Dst = files.AddPrefix(s.b.RootfsPath, transfer.Dst)
 			sylog.Infof("Copying %v to %v", transfer.Src, transfer.Dst)
-			if err := files.Copy(transfer.Src, transfer.Dst, false); err != nil {
+			if err := files.CopyFromStage(transfer.Src, transfer.Dst, srcRootfsPath, dstRootfsPath); err != nil {
 				return err
 			}
 		}
@@ -208,15 +202,9 @@ func (s *stage) copyFiles() error {
 			sylog.Warningf("Attempt to copy file with no name, skipping.")
 			continue
 		}
-		// dest = source if not specified
-		if transfer.Dst == "" {
-			transfer.Dst = transfer.Src
-		}
 		// copy each file into bundle rootfs
-		// copying from host to container should follow symlinks
-		transfer.Dst = files.AddPrefix(s.b.RootfsPath, transfer.Dst)
 		sylog.Infof("Copying %v to %v", transfer.Src, transfer.Dst)
-		if err := files.Copy(transfer.Src, transfer.Dst, true); err != nil {
+		if err := files.CopyFromHost(transfer.Src, transfer.Dst, s.b.RootfsPath); err != nil {
 			return err
 		}
 	}

@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -88,6 +88,7 @@ func createValidCfgFile(t *testing.T) string {
 	return path
 }
 
+//nolint:maintidx
 func TestRemoteAdd(t *testing.T) {
 	test.DropPrivilege(t)
 	defer test.ResetPrivilege(t)
@@ -104,6 +105,7 @@ func TestRemoteAdd(t *testing.T) {
 		remoteName string
 		uri        string
 		global     bool
+		insecure   bool
 		shallPass  bool
 	}{
 		{
@@ -163,7 +165,7 @@ func TestRemoteAdd(t *testing.T) {
 			shallPass:  false,
 		},
 		{
-			name:       "8: valid config gile; invalid remote name; invalid URI; local",
+			name:       "8: valid config file; valid remote name; invalid URI; local",
 			cfgfile:    validCfgFile,
 			remoteName: validRemoteName,
 			uri:        invalidURI,
@@ -171,7 +173,7 @@ func TestRemoteAdd(t *testing.T) {
 			shallPass:  true,
 		},
 		{
-			// This test checks both RemoteAdd() and RemoteRemove(), we stil
+			// This test checks both RemoteAdd() and RemoteRemove(), we still
 			// have a separate test for corner cases in the context of
 			// RemoveRemove().
 			name:       "9: valid config file; valid remote name; valid URI; local",
@@ -341,6 +343,15 @@ func TestRemoteAdd(t *testing.T) {
 			global:     false,
 			shallPass:  true,
 		},
+		{
+			name:       "30: valid config file; valid remote name; valid URI; local; insecure",
+			cfgfile:    validCfgFile,
+			remoteName: validRemoteName,
+			uri:        validURI,
+			global:     false,
+			insecure:   true,
+			shallPass:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -366,7 +377,7 @@ func TestRemoteAdd(t *testing.T) {
 				remote.SystemConfigPath = tt.cfgfile
 			}
 
-			err := RemoteAdd(tt.cfgfile, tt.remoteName, tt.uri, tt.global)
+			err := RemoteAdd(tt.cfgfile, tt.remoteName, tt.uri, tt.global, tt.insecure)
 			if tt.shallPass == true && err != nil {
 				restoreSysConfig()
 				t.Fatalf("valid case failed: %s\n", err)

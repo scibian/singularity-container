@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -19,10 +19,11 @@ import (
 	"github.com/sylabs/singularity/pkg/build/types"
 	buildtypes "github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/util/slice"
 	"golang.org/x/sys/unix"
 )
 
-// ConvertOciToSIf will convert an OCI source into a SIF using the build routines
+// ConvertOciToSIF will convert an OCI source into a SIF using the build routines
 func ConvertOciToSIF(ctx context.Context, imgCache *cache.Handle, image, cachedImgPath, tmpDir string, noHTTPS, noCleanUp bool, authConf *ocitypes.DockerAuthConfig) error {
 	if imgCache == nil {
 		return fmt.Errorf("image cache is undefined")
@@ -89,7 +90,7 @@ func createStageFile(source string, b *types.Bundle, warnMsg string) (string, er
 }
 
 func createScript(path string, content []byte) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0755)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
 	if err != nil {
 		return fmt.Errorf("failed to create script: %s", err)
 	}
@@ -137,12 +138,21 @@ func getSectionScriptArgs(name string, script string, s types.Script) ([]string,
 	return args, nil
 }
 
-func currentEnvNoSingularity() []string {
+// currentEnvNoSingularity returns the current environment, minus any SINGULARITY_ vars,
+// but allowing those specified in the permitted slice. E.g. 'NV' in the permitted slice
+// will pass through `SINGULARITY_NV`, but strip out `SINGULARITY_OTHERVAR`.
+func currentEnvNoSingularity(permitted []string) []string {
 	envs := make([]string, 0)
 
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, env.SingularityPrefix) {
 			envs = append(envs, e)
+		} else {
+			envKey := strings.SplitN(e, "=", 2)
+			if slice.ContainsString(permitted, strings.TrimPrefix(envKey[0], env.SingularityPrefix)) {
+				sylog.Debugf("Passing through env var %s to singularity", e)
+				envs = append(envs, e)
+			}
 		}
 	}
 

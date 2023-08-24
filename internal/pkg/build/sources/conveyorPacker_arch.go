@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -15,39 +15,109 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"syscall"
 
+	"github.com/sylabs/singularity/internal/pkg/util/bin"
+	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/namespaces"
 )
 
 const (
-	pacmanConfURL = "https://git.archlinux.org/svntogit/packages.git/plain/trunk/pacman.conf?h=packages/pacman"
+	pacmanConfURL = "https://github.com/archlinux/svntogit-packages/raw/master/pacman/trunk/pacman.conf"
 )
 
-var (
-	// Default list of packages to install when bootstrapping arch
-	// As of 2019-10-06 there is a base metapackage instead of a base group
-	// https://www.archlinux.org/news/base-group-replaced-by-mandatory-base-package-manual-intervention-required/
-	instList = []string{"base"}
-)
+// Default list of packages to install when bootstrapping arch
+// As of 2019-10-06 there is a base metapackage instead of a base group
+// https://www.archlinux.org/news/base-group-replaced-by-mandatory-base-package-manual-intervention-required/
+var instList = []string{"base"}
 
 // ArchConveyorPacker only needs to hold the conveyor to have the needed data to pack
 type ArchConveyorPacker struct {
 	b *types.Bundle
 }
 
+// prepareFakerootEnv prepares a build environment to
+// make fakeroot working with pacstrap.
+func (cp *ArchConveyorPacker) prepareFakerootEnv(ctx context.Context) (func(), error) {
+	truePath, err := bin.FindBin("true")
+	if err != nil {
+		return nil, fmt.Errorf("while searching true command: %s", err)
+	}
+	mountPath, err := bin.FindBin("mount")
+	if err != nil {
+		return nil, fmt.Errorf("while searching mount command: %s", err)
+	}
+	umountPath, err := bin.FindBin("umount")
+	if err != nil {
+		return nil, fmt.Errorf("while searching umount command: %s", err)
+	}
+
+	devs := []string{
+		"/dev/null",
+		"/dev/random",
+		"/dev/urandom",
+		"/dev/zero",
+	}
+
+	devPath := filepath.Join(cp.b.RootfsPath, "dev")
+	if err := os.Mkdir(devPath, 0o755); err != nil {
+		return nil, fmt.Errorf("while creating %s: %s", devPath, err)
+	}
+	procPath := filepath.Join(cp.b.RootfsPath, "proc")
+	if err := os.Mkdir(procPath, 0o755); err != nil {
+		return nil, fmt.Errorf("while creating %s: %s", procPath, err)
+	}
+
+	umountFn := func() {
+		syscall.Unmount(mountPath, syscall.MNT_DETACH)
+		syscall.Unmount(umountPath, syscall.MNT_DETACH)
+		syscall.Unmount(procPath, syscall.MNT_DETACH)
+		for _, d := range devs {
+			path := filepath.Join(cp.b.RootfsPath, d)
+			syscall.Unmount(path, syscall.MNT_DETACH)
+		}
+	}
+
+	// bind /bin/true on top of mount/umount command so
+	// pacstrap wouldn't fail while preparing chroot
+	// environment
+	if err := syscall.Mount(truePath, mountPath, "", syscall.MS_BIND, ""); err != nil {
+		return umountFn, fmt.Errorf("while mounting %s to %s: %s", truePath, mountPath, err)
+	}
+	if err := syscall.Mount(truePath, umountPath, "", syscall.MS_BIND, ""); err != nil {
+		return umountFn, fmt.Errorf("while mounting %s to %s: %s", truePath, umountPath, err)
+	}
+	if err := syscall.Mount("/proc", procPath, "", syscall.MS_BIND, ""); err != nil {
+		return umountFn, fmt.Errorf("while mounting /proc to %s: %s", procPath, err)
+	}
+
+	// mount required block devices
+	for _, p := range devs {
+		rootfsPath := filepath.Join(cp.b.RootfsPath, p)
+		if err := fs.Touch(rootfsPath); err != nil {
+			return umountFn, fmt.Errorf("while creating %s: %s", rootfsPath, err)
+		}
+		if err := syscall.Mount(p, rootfsPath, "", syscall.MS_BIND, ""); err != nil {
+			return umountFn, fmt.Errorf("while mounting %s to %s: %s", p, rootfsPath, err)
+		}
+	}
+
+	return umountFn, nil
+}
+
 // Get just stores the source
 func (cp *ArchConveyorPacker) Get(ctx context.Context, b *types.Bundle) (err error) {
 	cp.b = b
 
-	//check for pacstrap on system
-	pacstrapPath, err := exec.LookPath("pacstrap")
+	// check for pacstrap on system
+	pacstrapPath, err := bin.FindBin("pacstrap")
 	if err != nil {
 		return fmt.Errorf("pacstrap is not in PATH: %v", err)
 	}
 
-	//make sure architecture is supported
+	// make sure architecture is supported
 	if arch := runtime.GOARCH; arch != `amd64` {
 		return fmt.Errorf("%v architecture is not supported", arch)
 	}
@@ -80,7 +150,7 @@ func (cp *ArchConveyorPacker) Get(ctx context.Context, b *types.Bundle) (err err
 		return fmt.Errorf("while pacstrapping: %v", err)
 	}
 
-	//Pacman package signing setup
+	// Pacman package signing setup
 	cmd := exec.Command("arch-chroot", cp.b.RootfsPath, "/bin/sh", "-c", "haveged -w 1024; pacman-key --init; pacman-key --populate archlinux")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -88,7 +158,7 @@ func (cp *ArchConveyorPacker) Get(ctx context.Context, b *types.Bundle) (err err
 		return fmt.Errorf("while setting up package signing: %v", err)
 	}
 
-	//Clean up haveged
+	// Clean up haveged
 	cmd = exec.Command("arch-chroot", cp.b.RootfsPath, "pacman", "-Rs", "--noconfirm", "haveged")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -126,14 +196,9 @@ func (cp *ArchConveyorPacker) getPacConf(pacmanConfURL string) (pacConf string, 
 	}
 	defer resp.Body.Close()
 
-	bytesWritten, err := io.Copy(pacConfFile, resp.Body)
+	_, err = io.Copy(pacConfFile, resp.Body)
 	if err != nil {
 		return
-	}
-
-	//Simple check to make sure file received is the correct size
-	if bytesWritten != resp.ContentLength {
-		return "", fmt.Errorf("file received is not the right size. supposed to be: %v actually: %v", resp.ContentLength, bytesWritten)
 	}
 
 	return pacConfFile.Name(), nil
@@ -147,7 +212,7 @@ func (cp *ArchConveyorPacker) insertBaseEnv() (err error) {
 }
 
 func (cp *ArchConveyorPacker) insertRunScript() (err error) {
-	err = ioutil.WriteFile(filepath.Join(cp.b.RootfsPath, "/.singularity.d/runscript"), []byte("#!/bin/sh\n"), 0755)
+	err = ioutil.WriteFile(filepath.Join(cp.b.RootfsPath, "/.singularity.d/runscript"), []byte("#!/bin/sh\n"), 0o755)
 	if err != nil {
 		return
 	}

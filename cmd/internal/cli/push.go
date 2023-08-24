@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,9 +7,7 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
@@ -81,8 +79,6 @@ var PushCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
 	Args:                  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.TODO()
-
 		file, dest := args[0], args[1]
 
 		transport, ref := uri.Split(dest)
@@ -107,20 +103,24 @@ var PushCmd = &cobra.Command{
 				sylog.Fatalf("Unable to get keyserver client configuration: %v", err)
 			}
 
+			feURL, err := currentRemoteEndpoint.GetURL()
+			if err != nil {
+				sylog.Fatalf("Unable to find remote web URI %v", err)
+			}
+
 			pushSpec := singularity.LibraryPushSpec{
 				SourceFile:    file,
 				DestRef:       dest,
 				Description:   pushDescription,
 				AllowUnsigned: unsignedPush,
-				FrontendURI:   URI(),
+				FrontendURI:   feURL,
 			}
 
-			err = singularity.LibraryPush(ctx, pushSpec, lc, co)
+			err = singularity.LibraryPush(cmd.Context(), pushSpec, lc, co)
 			if err == singularity.ErrLibraryUnsigned {
 				fmt.Printf("TIP: You can push unsigned images with 'singularity push -U %s'.\n", file)
 				fmt.Printf("TIP: Learn how to sign your own containers by using 'singularity help sign'\n\n")
 				sylog.Fatalf("Unable to upload container: unable to verify signature")
-				os.Exit(3)
 			} else if err != nil {
 				sylog.Fatalf("Unable to push image to library: %v", err)
 			}
@@ -133,7 +133,7 @@ var PushCmd = &cobra.Command{
 				sylog.Fatalf("Unable to make docker oci credentials: %s", err)
 			}
 
-			if err := oras.UploadImage(file, ref, ociAuth); err != nil {
+			if err := oras.UploadImage(cmd.Context(), file, ref, ociAuth); err != nil {
 				sylog.Fatalf("Unable to push image to oci registry: %v", err)
 			}
 			sylog.Infof("Upload complete")

@@ -95,7 +95,7 @@ func createIndexFile(t *testing.T, dir string, sum string) {
 	if jsonErr != nil {
 		t.Fatalf("cannot unmarshal JSON: %s\n", jsonErr)
 	}
-	err := ioutil.WriteFile(path, data, 0664)
+	err := ioutil.WriteFile(path, data, 0o664)
 	if err != nil {
 		t.Fatalf("cannot create index file: %s\n", err)
 	}
@@ -119,7 +119,7 @@ func createDummyOCICache(t *testing.T) (string, string) {
 	sum := sha256.New()
 	sumFilename := hex.EncodeToString(sum.Sum(nil))
 	path := filepath.Join(shaPath, sumFilename)
-	err = os.MkdirAll(shaPath, 0755)
+	err = os.MkdirAll(shaPath, 0o755)
 	if err != nil {
 		os.RemoveAll(dir)
 		t.Fatalf("cannot create cache directory: %s\n", err)
@@ -358,7 +358,7 @@ func TestImageNameAndImageSHA(t *testing.T) {
 
 		testName = "ImageSHA - " + tt.name
 		t.Run(testName, func(t *testing.T) {
-			_, err := ImageSHA(context.Background(), tt.uri, tt.ctx)
+			_, err := ImageDigest(context.Background(), tt.uri, tt.ctx)
 			if tt.shouldPass == true && err != nil {
 				t.Fatal("test expected to succeeded but failed")
 			}
@@ -380,7 +380,7 @@ func TestNewImageSource(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ctx       context.Context
+		ctx       context.Context //nolint:containedctx
 		sys       *types.SystemContext
 		shallPass bool
 	}{

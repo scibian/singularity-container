@@ -22,8 +22,10 @@ type ctx struct {
 	passphraseInput []e2e.SingularityConsoleOp
 }
 
-const imgURL = "library://sylabs/tests/unsigned:1.0.0"
-const imgName = "testImage.sif"
+const (
+	imgURL  = "library://sylabs/tests/unsigned:1.0.0"
+	imgName = "testImage.sif"
+)
 
 func (c ctx) singularitySignHelpOption(t *testing.T) {
 	c.env.KeyringDir = c.keyringDir
@@ -57,6 +59,7 @@ func (c *ctx) prepareImage(t *testing.T) (string, func(*testing.T)) {
 	}
 }
 
+//nolint:dupl
 func (c ctx) singularitySignIDOption(t *testing.T) {
 	imgPath, cleanup := c.prepareImage(t)
 	defer cleanup(t)
@@ -137,6 +140,7 @@ func (c ctx) singularitySignAllOption(t *testing.T) {
 	}
 }
 
+//nolint:dupl
 func (c ctx) singularitySignGroupIDOption(t *testing.T) {
 	imgPath, cleanup := c.prepareImage(t)
 	defer cleanup(t)

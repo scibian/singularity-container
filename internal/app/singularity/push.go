@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -13,21 +13,21 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	keyclient "github.com/sylabs/scs-key-client/client"
 	"github.com/sylabs/scs-library-client/client"
-	"github.com/sylabs/sif/pkg/sif"
+	"github.com/sylabs/sif/v2/pkg/sif"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/vbauerster/mpb/v4"
 	"github.com/vbauerster/mpb/v4/decor"
+	"golang.org/x/term"
 )
 
-var (
-	// ErrLibraryUnsigned indicated that the image intended to be used is
-	// not signed, nor has an override for requiring a signature been provided
-	ErrLibraryUnsigned = errors.New("image is not signed")
-)
+// ErrLibraryUnsigned indicated that the image intended to be used is
+// not signed, nor has an override for requiring a signature been provided
+var ErrLibraryUnsigned = errors.New("image is not signed")
 
 // LibraryPushSpec describes how a source image file should be pushed to a library server
 type LibraryPushSpec struct {
@@ -81,8 +81,12 @@ func (c *progressCallback) Finish() {
 // LibraryPush will upload an image file according to the provided LibraryPushSpec
 // Before uploading, the image will be checked for a valid signature unless AllowUnsigned is true
 func LibraryPush(ctx context.Context, pushSpec LibraryPushSpec, libraryConfig *client.Config, co []keyclient.Option) error {
-	if _, err := os.Stat(pushSpec.SourceFile); os.IsNotExist(err) {
-		return fmt.Errorf("unable to open: %v: %v", pushSpec.SourceFile, err)
+	fi, err := os.Stat(pushSpec.SourceFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("unable to open: %v: %v", pushSpec.SourceFile, err)
+		}
+		return err
 	}
 
 	arch, err := sifArch(pushSpec.SourceFile)
@@ -106,9 +110,13 @@ func LibraryPush(ctx context.Context, pushSpec LibraryPushSpec, libraryConfig *c
 	}
 
 	// split library ref into components
-	r, err := client.Parse(pushSpec.DestRef)
+	r, err := client.ParseAmbiguous(pushSpec.DestRef)
 	if err != nil {
 		return fmt.Errorf("error parsing destination: %v", err)
+	}
+
+	if r.Host != "" && r.Host != libraryClient.BaseURL.Host {
+		return errors.New("push to location other than current remote is not supported")
 	}
 
 	// open image for uploading
@@ -118,8 +126,22 @@ func LibraryPush(ctx context.Context, pushSpec LibraryPushSpec, libraryConfig *c
 	}
 	defer f.Close()
 
-	resp, err := libraryClient.UploadImage(ctx, f, r.Host+r.Path, arch, r.Tags, pushSpec.Description, &progressCallback{})
-	if err != nil {
+	var progressBar client.UploadCallback
+	if !term.IsTerminal(2) {
+		sylog.Infof("Uploading %d bytes\n", fi.Size())
+	} else {
+		progressBar = &progressCallback{}
+	}
+
+	var resp *client.UploadImageComplete
+
+	defer func(t time.Time) {
+		if err == nil && resp != nil && progressBar == nil {
+			sylog.Infof("Uploaded %d bytes in %v\n", fi.Size(), time.Since(t))
+		}
+	}(time.Now())
+
+	if resp, err = libraryClient.UploadImage(ctx, f, r.Path, arch, r.Tags, pushSpec.Description, progressBar); err != nil {
 		return err
 	}
 
@@ -140,11 +162,13 @@ func LibraryPush(ctx context.Context, pushSpec LibraryPushSpec, libraryConfig *c
 }
 
 func sifArch(filename string) (string, error) {
-	fimg, err := sif.LoadContainer(filename, true)
+	f, err := sif.LoadContainerFromPath(filename, sif.OptLoadWithFlag(os.O_RDONLY))
 	if err != nil {
-		return "", fmt.Errorf("unable to open: %v: %v", filename, err)
+		return "", fmt.Errorf("unable to open: %v: %w", filename, err)
 	}
-	arch := sif.GetGoArch(string(fimg.Header.Arch[:sif.HdrArchLen-1]))
+	defer f.UnloadContainer()
+
+	arch := f.PrimaryArch()
 	if arch == "unknown" {
 		return arch, fmt.Errorf("unknown architecture in SIF file")
 	}

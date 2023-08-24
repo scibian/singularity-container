@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -50,7 +50,6 @@ type OCIConveyorPacker struct {
 
 // Get downloads container information from the specified source
 func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err error) {
-
 	cp.b = b
 
 	policy := &signature.Policy{Default: []signature.PolicyRequirement{signature.NewPRInsecureAcceptAnything()}}
@@ -59,7 +58,7 @@ func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err er
 		return err
 	}
 
-	// DockerInsecureSkipTLSVerify is set only if --nohttps is specified to honor
+	// DockerInsecureSkipTLSVerify is set only if --no-https is specified to honor
 	// configuration from /etc/containers/registries.conf because DockerInsecureSkipTLSVerify
 	// can have three possible values true/false and undefined, so we left it as undefined instead
 	// of forcing it to false in order to delegate decision to /etc/containers/registries.conf:
@@ -185,6 +184,11 @@ func (cp *OCIConveyorPacker) Pack(ctx context.Context) (*sytypes.Bundle, error) 
 		return nil, fmt.Errorf("while inserting oci config: %v", err)
 	}
 
+	err = cp.insertOCILabels()
+	if err != nil {
+		return nil, fmt.Errorf("while inserting oci labels: %v", err)
+	}
+
 	return cp.b, nil
 }
 
@@ -208,7 +212,6 @@ func (cp *OCIConveyorPacker) getConfig(ctx context.Context) (imgspecv1.ImageConf
 	if err != nil {
 		return imgspecv1.ImageConfig{}, err
 	}
-
 	return imgSpec.Config, nil
 }
 
@@ -234,7 +237,7 @@ func (cp *OCIConveyorPacker) extractArchive(src string, dst string) error {
 	defer f.Close()
 
 	r := bufio.NewReader(f)
-	header, err := r.Peek(10) //read a few bytes without consuming
+	header, err := r.Peek(10) // read a few bytes without consuming
 	if err != nil {
 		return err
 	}
@@ -279,7 +282,7 @@ func (cp *OCIConveyorPacker) extractArchive(src string, dst string) error {
 		// if its a dir and it doesn't exist create it
 		case tar.TypeDir:
 			if _, err := os.Stat(target); err != nil {
-				if err := os.MkdirAll(target, 0755); err != nil {
+				if err := os.MkdirAll(target, 0o755); err != nil {
 					return err
 				}
 			}
@@ -324,7 +327,9 @@ func (cp *OCIConveyorPacker) insertRunScript() (err error) {
 	}
 
 	if len(cp.imgConfig.Entrypoint) > 0 {
-		_, err = f.WriteString("OCI_ENTRYPOINT='" + shell.ArgsQuoted(cp.imgConfig.Entrypoint) + "'\n")
+		_, err = f.WriteString("OCI_ENTRYPOINT='" +
+			shell.EscapeSingleQuotes(shell.ArgsQuoted(cp.imgConfig.Entrypoint)) +
+			"'\n")
 		if err != nil {
 			return
 		}
@@ -336,7 +341,9 @@ func (cp *OCIConveyorPacker) insertRunScript() (err error) {
 	}
 
 	if len(cp.imgConfig.Cmd) > 0 {
-		_, err = f.WriteString("OCI_CMD='" + shell.ArgsQuoted(cp.imgConfig.Cmd) + "'\n")
+		_, err = f.WriteString("OCI_CMD='" +
+			shell.EscapeSingleQuotes(shell.ArgsQuoted(cp.imgConfig.Cmd)) +
+			"'\n")
 		if err != nil {
 			return
 		}
@@ -391,7 +398,7 @@ exec "$@"
 
 	f.Sync()
 
-	err = os.Chmod(cp.b.RootfsPath+"/.singularity.d/runscript", 0755)
+	err = os.Chmod(cp.b.RootfsPath+"/.singularity.d/runscript", 0o755)
 	if err != nil {
 		return
 	}
@@ -432,12 +439,26 @@ func (cp *OCIConveyorPacker) insertEnv() (err error) {
 
 	f.Sync()
 
-	err = os.Chmod(cp.b.RootfsPath+"/.singularity.d/env/10-docker2singularity.sh", 0755)
+	err = os.Chmod(cp.b.RootfsPath+"/.singularity.d/env/10-docker2singularity.sh", 0o755)
 	if err != nil {
 		return
 	}
 
 	return nil
+}
+
+func (cp *OCIConveyorPacker) insertOCILabels() (err error) {
+	labels := cp.imgConfig.Labels
+	var text []byte
+
+	// make new map into json
+	text, err = json.MarshalIndent(labels, "", "\t")
+	if err != nil {
+		return err
+	}
+
+	err = ioutil.WriteFile(filepath.Join(cp.b.RootfsPath, "/.singularity.d/labels.json"), []byte(text), 0o644)
+	return err
 }
 
 // CleanUp removes any tmpfs owned by the conveyorPacker on the filesystem

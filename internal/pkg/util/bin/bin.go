@@ -1,90 +1,124 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
-// Package bin provides access to system binaries
+// Package bin provides access to external binaries
 package bin
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sync"
 
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
+	"github.com/sylabs/singularity/internal/pkg/util/env"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/singularityconf"
 )
 
-var (
-	// errCryptsetupNotFound is returned when cryptsetup is not found
-	errCryptsetupNotFound = errors.New("cryptsetup not found")
-
-	cache struct {
-		sync.Once
-		cryptsetup string
-		err        error
+// FindBin returns the path to the named binary, or an error if it is not found.
+func FindBin(name string) (path string, err error) {
+	switch name {
+	// Basic system executables that we assume are always on PATH
+	case "true", "mkfs.ext3", "cp", "rm", "dd":
+		return findOnPath(name)
+	// Bootstrap related executables that we assume are on PATH
+	case "mount", "mknod", "debootstrap", "pacstrap", "dnf", "yum", "rpm", "curl", "uname", "zypper", "SUSEConnect", "rpmkeys":
+		return findOnPath(name)
+	// Configurable executables that are found at build time, can be overridden
+	// in singularity.conf. If config value is "" will look on PATH.
+	case "unsquashfs", "mksquashfs", "go":
+		return findFromConfigOrPath(name)
+	// distro provided setUID executables that are used in the fakeroot flow to setup subuid/subgid mappings
+	case "newuidmap", "newgidmap":
+		return findOnPath(name)
+	// cryptsetup & nvidia-container-cli paths must be explicitly specified
+	// They are called as root from the RPC server in a setuid install, so this
+	// limits to sysadmin controlled paths.
+	// ldconfig is invoked by nvidia-container-cli, so must be trusted also.
+	case "cryptsetup", "ldconfig", "nvidia-container-cli":
+		return findFromConfigOnly(name)
 	}
-)
-
-// Cryptsetup looks for the "cryptsetup" program returning the absolute
-// path to it. If the cryptsetup program is not available, this function
-// returns a non-nil error.
-func Cryptsetup() (string, error) {
-	cache.Do(func() {
-		cfgpath := buildcfg.SINGULARITY_CONF_FILE
-		cache.cryptsetup, cache.err = cryptsetup(cfgpath)
-		sylog.Debugf("Using cryptsetup at %q", cache.cryptsetup)
-	})
-
-	return cache.cryptsetup, cache.err
+	return "", fmt.Errorf("unknown executable name %q", name)
 }
 
-// cryptsetup checks that cryptsetup is available in the location
-// specified in the configuration file, falling back to the build time
-// value if necessary.
-//
-// This function is the test-friendly version of Cryptsetup above.
-func cryptsetup(cfgpath string) (string, error) {
-	// this is the value determined at build time; if it's empty,
-	// cryptsetup was not available for this platform at build time.
-	if buildcfg.CRYPTSETUP_PATH == "" {
-		return "", errCryptsetupNotFound
+// findOnPath performs a simple search on PATH for the named executable, returning its full path.
+// env.DefaultPath` is appended to PATH to ensure standard locations are searched. This
+// is necessary as some distributions don't include sbin on user PATH etc.
+func findOnPath(name string) (path string, err error) {
+	oldPath := os.Getenv("PATH")
+	defer os.Setenv("PATH", oldPath)
+	os.Setenv("PATH", oldPath+":"+env.DefaultPath)
+
+	path, err = exec.LookPath(name)
+	if err != nil {
+		sylog.Debugf("Found %q at %q", name, path)
 	}
+	return path, err
+}
 
-	path := ""
-
-	if cfg := singularityconf.GetCurrentConfig(); cfg != nil {
-		path = cfg.CryptsetupPath
-	} else {
-		cfg, err := singularityconf.Parse(cfgpath)
+// findFromConfigOrPath retrieves the path to an executable from singularity.conf,
+// or searches PATH if not set there.
+func findFromConfigOrPath(name string) (path string, err error) {
+	cfg := singularityconf.GetCurrentConfig()
+	if cfg == nil {
+		cfg, err = singularityconf.Parse(buildcfg.SINGULARITY_CONF_FILE)
 		if err != nil {
 			return "", errors.Wrap(err, "unable to parse singularity configuration file")
 		}
-		path = cfg.CryptsetupPath
+	}
+
+	switch name {
+	case "go":
+		path = cfg.GoPath
+	case "mksquashfs":
+		path = cfg.MksquashfsPath
+	case "unsquashfs":
+		path = cfg.UnsquashfsPath
+	default:
+		return "", fmt.Errorf("unknown executable name %q", name)
 	}
 
 	if path == "" {
-		if buildcfg.CRYPTSETUP_PATH == "" {
-			return "", errors.New("unable to obtain path to cryptsetup program")
-		}
+		return findOnPath(name)
+	}
 
-		path = buildcfg.CRYPTSETUP_PATH
-	} else {
-		switch fi, err := os.Stat(path); {
-		case err != nil:
-			return "", errors.Wrapf(err, "unable to stat %s", path)
+	sylog.Debugf("Using %q at %q (from singularity.conf)", name, path)
 
-		case fi.IsDir():
-			// configuration entry is a directory, append binary
-			// name
-			path = filepath.Join(path, "cryptsetup")
+	// Use lookPath with the absolute path to confirm it is accessible & executable
+	return exec.LookPath(path)
+}
+
+// findFromConfigOnly retrieves the path to an executable from singularity.conf.
+// If it's not set there we error.
+func findFromConfigOnly(name string) (path string, err error) {
+	cfg := singularityconf.GetCurrentConfig()
+	if cfg == nil {
+		cfg, err = singularityconf.Parse(buildcfg.SINGULARITY_CONF_FILE)
+		if err != nil {
+			return "", errors.Wrap(err, "unable to parse singularity configuration file")
 		}
 	}
 
-	// at this point we have an absolute path one way or the other,
-	// use exec.LookPath to verify it's an executable.
+	switch name {
+	case "cryptsetup":
+		path = cfg.CryptsetupPath
+	case "ldconfig":
+		path = cfg.LdconfigPath
+	case "nvidia-container-cli":
+		path = cfg.NvidiaContainerCliPath
+	default:
+		return "", fmt.Errorf("unknown executable name %q", name)
+	}
+
+	if path == "" {
+		return "", fmt.Errorf("path to %q not set in singularity.conf", name)
+	}
+
+	sylog.Debugf("Using %q at %q (from singularity.conf)", name, path)
+
+	// Use lookPath with the absolute path to confirm it is accessible & executable
 	return exec.LookPath(path)
 }

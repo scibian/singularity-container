@@ -21,12 +21,11 @@ import (
 	"net"
 	"runtime"
 
-	"github.com/j-keck/arping"
 	"github.com/vishvananda/netlink"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
-	"github.com/containernetworking/cni/pkg/types/current"
+	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
 
 	"github.com/containernetworking/plugins/pkg/ip"
@@ -34,10 +33,6 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
 	"github.com/containernetworking/plugins/pkg/utils/sysctl"
-)
-
-const (
-	IPv4InterfaceArpProxySysctlTemplate = "net.ipv4.conf.%s.proxy_arp"
 )
 
 type NetConf struct {
@@ -208,14 +203,6 @@ func createMacvlan(conf *NetConf, ifName string, netns ns.NetNS) (*current.Inter
 	}
 
 	err = netns.Do(func(_ ns.NetNS) error {
-		// TODO: duplicate following lines for ipv6 support, when it will be added in other places
-		ipv4SysctlValueName := fmt.Sprintf(IPv4InterfaceArpProxySysctlTemplate, tmpName)
-		if _, err := sysctl.Sysctl(ipv4SysctlValueName, "1"); err != nil {
-			// remove the newly added link and ignore errors, because we already are in a failed state
-			_ = netlink.LinkDel(mv)
-			return fmt.Errorf("failed to set proxy_arp on newly added interface %q: %v", tmpName, err)
-		}
-
 		err := ip.RenameLink(tmpName, ifName)
 		if err != nil {
 			_ = netlink.LinkDel(mv)
@@ -269,7 +256,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}()
 
 	// Assume L2 interface only
-	result := &current.Result{CNIVersion: cniVersion, Interfaces: []*current.Interface{macvlanInterface}}
+	result := &current.Result{
+		CNIVersion: current.ImplementedSpecVersion,
+		Interfaces: []*current.Interface{macvlanInterface},
+	}
 
 	if isLayer3 {
 		// run the IPAM plugin and get back the config to apply
@@ -304,19 +294,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 		}
 
 		err = netns.Do(func(_ ns.NetNS) error {
+			_, _ = sysctl.Sysctl(fmt.Sprintf("net/ipv4/conf/%s/arp_notify", args.IfName), "1")
+
 			if err := ipam.ConfigureIface(args.IfName, result); err != nil {
 				return err
-			}
-
-			contVeth, err := net.InterfaceByName(args.IfName)
-			if err != nil {
-				return fmt.Errorf("failed to look up %q: %v", args.IfName, err)
-			}
-
-			for _, ipc := range result.IPs {
-				if ipc.Version == "4" {
-					_ = arping.GratuitousArpOverIface(ipc.Address.IP, *contVeth)
-				}
 			}
 			return nil
 		})
@@ -376,6 +357,17 @@ func cmdDel(args *skel.CmdArgs) error {
 		}
 		return nil
 	})
+
+	if err != nil {
+		//  if NetNs is passed down by the Cloud Orchestration Engine, or if it called multiple times
+		// so don't return an error if the device is already removed.
+		// https://github.com/kubernetes/kubernetes/issues/43014#issuecomment-287164444
+		_, ok := err.(ns.NSPathNotExistErr)
+		if ok {
+			return nil
+		}
+		return err
+	}
 
 	return err
 }

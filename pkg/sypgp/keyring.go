@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -13,9 +13,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/sylabs/scs-key-client/client"
 	"github.com/sylabs/singularity/pkg/sylog"
-	"golang.org/x/crypto/openpgp"
 )
 
 // PublicKeyRing retrieves the Singularity public KeyRing.
@@ -27,7 +27,7 @@ func PublicKeyRing() (openpgp.KeyRing, error) {
 // the openpgp.KeyRing interface.
 type hybridKeyRing struct {
 	local openpgp.KeyRing // Local keyring.
-	ctx   context.Context // Context, for use when retrieving keys remotely.
+	ctx   context.Context //nolint:containedctx // Context, for use when retrieving keys remotely.
 	c     *client.Client  // Keyserver client.
 }
 
@@ -54,7 +54,7 @@ func NewHybridKeyRing(ctx context.Context, opts ...client.Option) (openpgp.KeyRi
 }
 
 // KeysById returns the set of keys that have the given key id.
-//nolint:golint  // golang/x/crypto uses Id instead of ID so we have to too
+//nolint:revive  // golang/x/crypto uses Id instead of ID so we have to too
 func (kr *hybridKeyRing) KeysById(id uint64) []openpgp.Key {
 	if keys := kr.local.KeysById(id); len(keys) > 0 {
 		return keys
@@ -71,7 +71,7 @@ func (kr *hybridKeyRing) KeysById(id uint64) []openpgp.Key {
 
 // KeysByIdUsage returns the set of keys with the given id that also meet the key usage given by
 // requiredUsage. The requiredUsage is expressed as the bitwise-OR of packet.KeyFlag* values.
-//nolint:golint  // golang/x/crypto uses Id instead of ID so we have to too
+//nolint:revive  // golang/x/crypto uses Id instead of ID so we have to too
 func (kr *hybridKeyRing) KeysByIdUsage(id uint64, requiredUsage byte) []openpgp.Key {
 	if keys := kr.local.KeysByIdUsage(id, requiredUsage); len(keys) > 0 {
 		return keys
@@ -116,7 +116,7 @@ func NewMultiKeyRing(keyrings ...openpgp.KeyRing) openpgp.KeyRing {
 }
 
 // KeysById returns the set of keys that have the given key id.
-//nolint:golint  // golang/x/crypto uses Id instead of ID so we have to too
+//nolint:revive  // golang/x/crypto uses Id instead of ID so we have to too
 func (mkr *multiKeyRing) KeysById(id uint64) []openpgp.Key {
 	for _, kr := range mkr.keyrings {
 		if keys := kr.KeysById(id); len(keys) > 0 {
@@ -128,7 +128,7 @@ func (mkr *multiKeyRing) KeysById(id uint64) []openpgp.Key {
 
 // KeysByIdUsage returns the set of keys with the given id that also meet the key usage given by
 // requiredUsage. The requiredUsage is expressed as the bitwise-OR of packet.KeyFlag* values.
-//nolint:golint  // golang/x/crypto uses Id instead of ID so we have to too
+//nolint:revive  // golang/x/crypto uses Id instead of ID so we have to too
 func (mkr *multiKeyRing) KeysByIdUsage(id uint64, requiredUsage byte) []openpgp.Key {
 	for _, kr := range mkr.keyrings {
 		if keys := kr.KeysByIdUsage(id, requiredUsage); len(keys) > 0 {

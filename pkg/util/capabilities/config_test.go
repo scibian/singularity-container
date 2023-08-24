@@ -61,13 +61,10 @@ func TestReadFromWriteTo(t *testing.T) {
 		var r bytes.Buffer
 
 		_, err := ReadFrom(&r)
-
 		if err != nil {
 			t.Errorf("unexpected failure running %s test: %s", t.Name(), err)
 		}
-
 	})
-
 }
 
 type capTest struct {
@@ -78,6 +75,7 @@ type capTest struct {
 	caps []string
 }
 
+//nolint:dupl
 func TestAddUserCaps(t *testing.T) {
 	testsPass := []capTest{
 		{
@@ -178,6 +176,7 @@ func TestAddUserCaps(t *testing.T) {
 	})
 }
 
+//nolint:dupl
 func TestAddGroupCaps(t *testing.T) {
 	testsPass := []capTest{
 		{
@@ -278,6 +277,7 @@ func TestAddGroupCaps(t *testing.T) {
 	})
 }
 
+//nolint:dupl
 func TestDropUserCaps(t *testing.T) {
 	testsPass := []capTest{
 		{
@@ -394,6 +394,7 @@ func TestDropUserCaps(t *testing.T) {
 	}
 }
 
+//nolint:dupl
 func TestDropGroupCaps(t *testing.T) {
 	testsPass := []capTest{
 		{
@@ -600,8 +601,6 @@ func TestCheckCaps(t *testing.T) {
 			if !reflect.DeepEqual(uGroup, test.unauthorized) {
 				t.Errorf("returned incorrect unauthorized group caps:\n\thave: %v\n\twant: %v", test.unauthorized, uGroup)
 			}
-
 		})
 	}
-
 }

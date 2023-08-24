@@ -9,12 +9,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/sylabs/singularity/internal/pkg/image/unpacker"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/image"
-	"github.com/sylabs/singularity/pkg/image/unpacker"
 )
 
-// SquashfsPacker holds the locations of where to pack from and to, aswell as image offset info
+// SquashfsPacker holds the locations of where to pack from and to, as well as image offset info
 type SquashfsPacker struct {
 	srcfile string
 	b       *types.Bundle

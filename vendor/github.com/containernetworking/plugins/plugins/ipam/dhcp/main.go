@@ -26,12 +26,49 @@ import (
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
-	"github.com/containernetworking/cni/pkg/types/current"
+	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
 )
 
 const defaultSocketPath = "/run/cni/dhcp.sock"
+
+// The top-level network config - IPAM plugins are passed the full configuration
+// of the calling plugin, not just the IPAM section.
+type NetConf struct {
+	types.NetConf
+	IPAM *IPAMConfig `json:"ipam"`
+}
+
+type IPAMConfig struct {
+	types.IPAM
+	DaemonSocketPath string `json:"daemonSocketPath"`
+	// When requesting IP from DHCP server, carry these options for management purpose.
+	// Some fields have default values, and can be override by setting a new option with the same name at here.
+	ProvideOptions []ProvideOption `json:"provide"`
+	// When requesting IP from DHCP server, claiming these options are necessary. Options are necessary unless `optional`
+	// is set to `false`.
+	// To override default requesting fields, set `skipDefault` to `false`.
+	// If an field is not optional, but the server failed to provide it, error will be raised.
+	RequestOptions []RequestOption `json:"request"`
+}
+
+// DHCPOption represents a DHCP option. It can be a number, or a string defined in manual dhcp-options(5).
+// Note that not all DHCP options are supported at all time. Error will be raised if unsupported options are used.
+type DHCPOption string
+
+type ProvideOption struct {
+	Option DHCPOption `json:"option"`
+
+	Value           string `json:"value"`
+	ValueFromCNIArg string `json:"fromArg"`
+}
+
+type RequestOption struct {
+	SkipDefault bool `json:"skipDefault"`
+
+	Option DHCPOption `json:"option"`
+}
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
@@ -40,20 +77,22 @@ func main() {
 		var socketPath string
 		var broadcast bool
 		var timeout time.Duration
+		var resendMax time.Duration
 		daemonFlags := flag.NewFlagSet("daemon", flag.ExitOnError)
 		daemonFlags.StringVar(&pidfilePath, "pidfile", "", "optional path to write daemon PID to")
 		daemonFlags.StringVar(&hostPrefix, "hostprefix", "", "optional prefix to host root")
 		daemonFlags.StringVar(&socketPath, "socketpath", "", "optional dhcp server socketpath")
 		daemonFlags.BoolVar(&broadcast, "broadcast", false, "broadcast DHCP leases")
 		daemonFlags.DurationVar(&timeout, "timeout", 10*time.Second, "optional dhcp client timeout duration")
+		daemonFlags.DurationVar(&resendMax, "resendmax", resendDelayMax, "optional dhcp client resend max duration")
 		daemonFlags.Parse(os.Args[2:])
 
 		if socketPath == "" {
 			socketPath = defaultSocketPath
 		}
 
-		if err := runDaemon(pidfilePath, hostPrefix, socketPath, timeout, broadcast); err != nil {
-			log.Printf(err.Error())
+		if err := runDaemon(pidfilePath, hostPrefix, socketPath, timeout, resendMax, broadcast); err != nil {
+			log.Print(err.Error())
 			os.Exit(1)
 		}
 	} else {
@@ -69,7 +108,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	result := &current.Result{}
+	result := &current.Result{CNIVersion: current.ImplementedSpecVersion}
 	if err := rpcCall("DHCP.Allocate", args, result); err != nil {
 		return err
 	}
@@ -86,8 +125,6 @@ func cmdDel(args *skel.CmdArgs) error {
 }
 
 func cmdCheck(args *skel.CmdArgs) error {
-	// TODO: implement
-	//return fmt.Errorf("not implemented")
 	// Plugin must return result in same version as specified in netconf
 	versionDecoder := &version.ConfigDecoder{}
 	//confVersion, err := versionDecoder.Decode(args.StdinData)
@@ -96,7 +133,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 		return err
 	}
 
-	result := &current.Result{}
+	result := &current.Result{CNIVersion: current.ImplementedSpecVersion}
 	if err := rpcCall("DHCP.Allocate", args, result); err != nil {
 		return err
 	}
@@ -104,16 +141,8 @@ func cmdCheck(args *skel.CmdArgs) error {
 	return nil
 }
 
-type SocketPathConf struct {
-	DaemonSocketPath string `json:"daemonSocketPath,omitempty"`
-}
-
-type TempNetConf struct {
-	IPAM SocketPathConf `json:"ipam,omitempty"`
-}
-
 func getSocketPath(stdinData []byte) (string, error) {
-	conf := TempNetConf{}
+	conf := NetConf{}
 	if err := json.Unmarshal(stdinData, &conf); err != nil {
 		return "", fmt.Errorf("error parsing socket path conf: %v", err)
 	}

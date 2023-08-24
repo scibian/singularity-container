@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -79,7 +79,7 @@ type SendFuseFdArgs struct {
 	Fds    []int
 }
 
-// OpenFuseFdArgs defines the arguments to open and send a fuse file descriptor.
+// OpenSendFuseFdArgs defines the arguments to open and send a fuse file descriptor.
 type OpenSendFuseFdArgs struct {
 	Socket int
 }
@@ -128,6 +128,13 @@ type WriteFileArgs struct {
 	Filename string
 	Data     []byte
 	Perm     os.FileMode
+}
+
+// NvCCLIArgs defines the arguments to NvCCLI.
+type NvCCLIArgs struct {
+	Flags      []string
+	RootFsPath string
+	UserNS     bool
 }
 
 // FileInfo returns FileInfo interface to be passed as RPC argument.

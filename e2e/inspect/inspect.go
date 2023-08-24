@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -30,6 +30,7 @@ const (
 	containerTesterDEF = "testdata/inspecter_container.def"
 )
 
+//nolint:maintidx
 func (c ctx) singularityInspect(t *testing.T) {
 	testDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "inspect-", "")
 	defer cleanup(t)
@@ -108,7 +109,7 @@ func (c ctx) singularityInspect(t *testing.T) {
 		{
 			name:      "label_E2E",
 			insType:   "--labels",
-			compareFn: compareLabel("E2E", "AWSOME", ""),
+			compareFn: compareLabel("E2E", "AWESOME", ""),
 		},
 		{
 			name:      "label_HI",
@@ -118,7 +119,7 @@ func (c ctx) singularityInspect(t *testing.T) {
 		{
 			name:      "label_e2e",
 			insType:   "--labels",
-			compareFn: compareLabel("e2e", "awsome", ""),
+			compareFn: compareLabel("e2e", "awesome", ""),
 		},
 		{
 			name:      "label_hi",

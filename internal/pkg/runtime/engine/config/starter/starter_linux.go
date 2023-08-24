@@ -14,21 +14,21 @@ package starter
 */
 // #cgo CFLAGS: -I../../../../../../cmd/starter/c/include
 import "C"
+
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"unsafe"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/sylabs/singularity/internal/pkg/util/bin"
+	"github.com/sylabs/singularity/internal/pkg/util/env"
+	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/capabilities"
 )
-
-const searchPath = "/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin:/usr/local/sbin"
 
 // SConfig is an alias for *C.struct_starterConfig
 // (see cmd/starter/c/include/starter.h) introduced for convenience.
@@ -147,7 +147,7 @@ func (c *Config) SetWorkingDirectoryFd(fd int) {
 // KeepFileDescriptor adds a file descriptor to an array of file
 // descriptors that starter will keep open. All files opened during
 // stage 1 will be shared with starter process. Once stage 1 returns,
-// all file descriptor whichs are not listed here will be closed.
+// all file descriptors which are not listed here will be closed.
 func (c *Config) KeepFileDescriptor(fd int) error {
 	if c.config.starter.numfds >= C.MAX_STARTER_FDS {
 		return fmt.Errorf("maximum number of kept file descriptors reached")
@@ -155,6 +155,17 @@ func (c *Config) KeepFileDescriptor(fd int) error {
 	c.config.starter.fds[c.config.starter.numfds] = C.int(fd)
 	c.config.starter.numfds++
 	return nil
+}
+
+// SetNvCCLICaps sets the flag to tell starter container setup
+// to configure a bounding capabilities set that will permit execution of
+// nvidia-container-cli
+func (c *Config) SetNvCCLICaps(enabled bool) {
+	if enabled {
+		c.config.starter.nvCCLICaps = C.true
+	} else {
+		c.config.starter.nvCCLICaps = C.false
+	}
 }
 
 // SetHybridWorkflow sets the flag to tell starter container setup
@@ -254,15 +265,20 @@ func (c *Config) AddGIDMappings(gids []specs.LinuxIDMapping) error {
 }
 
 func setNewIDMapPath(command string, pathPointer unsafe.Pointer) error {
-	os.Setenv("PATH", searchPath)
-	defer os.Unsetenv("PATH")
-
-	path, err := exec.LookPath(command)
+	path, err := bin.FindBin(command)
 	if err != nil {
 		return fmt.Errorf(
 			"%s was not found in PATH (%s), required with fakeroot and unprivileged installation",
-			command, searchPath,
+			command, env.DefaultPath,
 		)
+	}
+
+	if !fs.IsOwner(path, 0) {
+		return fmt.Errorf("%s must be owned by the root user to setup fakeroot ID mappings in an unprivileged installation", path)
+	}
+
+	if !fs.IsSuid(path) {
+		return fmt.Errorf("%s must be setuid root to setup fakeroot ID mappings in an unprivileged installation", path)
 	}
 
 	lpath := len(path)

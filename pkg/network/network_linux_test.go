@@ -1,9 +1,9 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
-// +build integration_test
+//go:build integration_test
 
 package network
 
@@ -35,7 +35,7 @@ var confFiles = []struct {
 		name: "test-bridge",
 		file: "00_test-bridge.conflist",
 		content: `{
-			"cniVersion": "0.4.0",
+			"cniVersion": "1.0.0",
 			"name": "test-bridge",
 			"plugins": [
 				{
@@ -66,7 +66,7 @@ var confFiles = []struct {
 		name: "test-badbridge",
 		file: "10_badbridge.conflist",
 		content: `{
-			"cniVersion": "0.4.0",
+			"cniVersion": "1.0.0",
 			"name": "test-badbridge",
 			"plugins": [
 				{
@@ -80,7 +80,7 @@ var confFiles = []struct {
 		name: "test-bridge-iprange",
 		file: "20_bridge_iprange.conflist",
 		content: `{
-			"cniVersion": "0.4.0",
+			"cniVersion": "1.0.0",
 			"name": "test-bridge-iprange",
 			"plugins": [
 				{
@@ -127,7 +127,7 @@ func TestGetAllNetworkConfigList(t *testing.T) {
 	}
 	defer os.Remove(emptyDir)
 
-	var testCNIPath = []struct {
+	testCNIPath := []struct {
 		name           string
 		cniPath        *CNIPath
 		success        bool
@@ -189,7 +189,7 @@ func TestGetAllNetworkConfigList(t *testing.T) {
 }
 
 func testSetArgs(setup *Setup, t *testing.T) {
-	var testArgs = []struct {
+	testArgs := []struct {
 		desc    string
 		args    []string
 		success bool
@@ -293,11 +293,11 @@ func testSetArgs(setup *Setup, t *testing.T) {
 func TestNewSetup(t *testing.T) {
 	test.EnsurePrivilege(t)
 
-	var cniPath = &CNIPath{
+	cniPath := &CNIPath{
 		Conf:   defaultCNIConfPath,
 		Plugin: defaultCNIPluginPath,
 	}
-	var testSetup = []struct {
+	testSetup := []struct {
 		desc     string
 		networks []string
 		id       string
@@ -479,7 +479,7 @@ func testHTTPPortmap(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdo
 	if eth != "eth0" {
 		return fmt.Errorf("unexpected interface %s", eth)
 	}
-	conn, err := net.Dial("tcp", ":31080")
+	conn, err := net.Dial("tcp", "127.0.0.1:31080")
 	if err != nil {
 		return err
 	}
@@ -517,7 +517,7 @@ func testBadBridge(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout
 func TestAddDelNetworks(t *testing.T) {
 	test.EnsurePrivilege(t)
 
-	// centos 6 doesn't support brigde/veth, only macvlan
+	// centos 6 doesn't support bridge/veth, only macvlan
 	// just skip tests on centos 6, rhel 6
 	b, err := ioutil.ReadFile("/etc/system-release-cpe")
 	if err == nil {
@@ -530,7 +530,7 @@ func TestAddDelNetworks(t *testing.T) {
 		}
 	}
 
-	var cniPath = &CNIPath{
+	cniPath := &CNIPath{
 		Conf:   defaultCNIConfPath,
 		Plugin: defaultCNIPluginPath,
 	}
@@ -624,7 +624,7 @@ func TestMain(m *testing.M) {
 	for _, conf := range confFiles {
 		testNetworks = append(testNetworks, conf.name)
 		path := filepath.Join(defaultCNIConfPath, conf.file)
-		if err := ioutil.WriteFile(path, []byte(conf.content), 0644); err != nil {
+		if err := ioutil.WriteFile(path, []byte(conf.content), 0o644); err != nil {
 			os.RemoveAll(defaultCNIConfPath)
 			os.Exit(1)
 		}

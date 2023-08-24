@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -18,6 +18,15 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/pkg/sylog"
 )
+
+func getHypervisorArgs(sifImage, bzImage, initramfs, singAction, cliExtra string) []string {
+	// Setup some needed variables
+	appendArgs := fmt.Sprintf("root=/dev/ram0 console=ttyS0 quiet singularity_action=%s singularity_arguments=\"%s\"", singAction, cliExtra)
+
+	args := []string{"/usr/libexec/qemu-kvm", "-cpu", "host", "-smp", VMCPU, "-enable-kvm", "-device", "virtio-rng-pci", "-display", "none", "-realtime", "mlock=on", "-hda", sifImage, "-serial", "stdio", "-kernel", bzImage, "-initrd", initramfs, "-m", VMRAM, "-append", appendArgs}
+
+	return args
+}
 
 func execVM(cmd *cobra.Command, image string, args []string) {
 	// SIF image we are running
@@ -77,12 +86,11 @@ func startVM(sifImage, singAction, cliExtra string, isInternal bool) error {
 	}
 
 	err := cmd.Run()
-
 	if err != nil {
 		sylog.Debugf("Hypervisor exit code: %v\n", err)
 
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			//Program exited with non-zero return code
+			// Program exited with non-zero return code
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 				sylog.Debugf("Process exited with non-zero return code: %d\n", status.ExitStatus())
 				return nil

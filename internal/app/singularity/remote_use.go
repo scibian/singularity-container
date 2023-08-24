@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,6 +8,7 @@ package singularity
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/sylabs/singularity/internal/pkg/remote"
@@ -15,7 +16,7 @@ import (
 
 func syncSysConfig(cUsr *remote.Config) error {
 	// opening system config file
-	f, err := os.OpenFile(remote.SystemConfigPath, os.O_RDONLY, 0600)
+	f, err := os.OpenFile(remote.SystemConfigPath, os.O_RDONLY, 0o600)
 	if err != nil && os.IsNotExist(err) {
 		return nil
 	} else if err != nil {
@@ -30,18 +31,11 @@ func syncSysConfig(cUsr *remote.Config) error {
 	}
 
 	// sync cUsr with system config cSys
-	if err := cUsr.SyncFrom(cSys); err != nil {
-		return err
-	}
-
-	return nil
-
+	return cUsr.SyncFrom(cSys)
 }
 
 // RemoteUse sets remote to use
 func RemoteUse(usrConfigFile, name string, global, exclusive bool) (err error) {
-	c := &remote.Config{}
-
 	if exclusive {
 		if os.Getuid() != 0 {
 			return fmt.Errorf("unable to set endpoint as exclusive: not root user")
@@ -51,9 +45,9 @@ func RemoteUse(usrConfigFile, name string, global, exclusive bool) (err error) {
 	}
 
 	// system config should be world readable
-	perm := os.FileMode(0600)
+	perm := os.FileMode(0o600)
 	if global {
-		perm = os.FileMode(0644)
+		perm = os.FileMode(0o644)
 	}
 
 	// opening config file
@@ -64,7 +58,7 @@ func RemoteUse(usrConfigFile, name string, global, exclusive bool) (err error) {
 	defer file.Close()
 
 	// read file contents to config struct
-	c, err = remote.ReadFrom(file)
+	c, err := remote.ReadFrom(file)
 	if err != nil {
 		return fmt.Errorf("while parsing remote config data: %s", err)
 	}
@@ -84,7 +78,7 @@ func RemoteUse(usrConfigFile, name string, global, exclusive bool) (err error) {
 		return fmt.Errorf("while truncating remote config file: %s", err)
 	}
 
-	if n, err := file.Seek(0, os.SEEK_SET); err != nil || n != 0 {
+	if n, err := file.Seek(0, io.SeekStart); err != nil || n != 0 {
 		return fmt.Errorf("failed to reset %s cursor: %s", file.Name(), err)
 	}
 
