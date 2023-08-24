@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -27,7 +27,7 @@ var (
 	NetworkArgs        []string
 	DNS                string
 	Security           []string
-	CgroupsPath        string
+	CgroupsTOMLFile    string
 	VMRAM              string
 	VMCPU              string
 	VMIP               string
@@ -45,9 +45,11 @@ var (
 	IsContainAll    bool
 	IsWritable      bool
 	IsWritableTmpfs bool
+	SIFFUSE         bool
 	Nvidia          bool
 	NvCCLI          bool
 	Rocm            bool
+	NoEval          bool
 	NoHome          bool
 	NoInit          bool
 	NoNvidia        bool
@@ -69,6 +71,18 @@ var (
 	NoPrivs   bool
 	AddCaps   string
 	DropCaps  string
+
+	BlkioWeight       int
+	BlkioWeightDevice []string
+	CPUShares         int
+	CPUs              string // decimal
+	CPUSetCPUs        string
+	CPUSetMems        string
+	Memory            string // bytes
+	MemoryReservation string // bytes
+	MemorySwap        string // bytes
+	OomKillDisable    bool
+	PidsLimit         int
 )
 
 // --app
@@ -244,7 +258,7 @@ var actionSecurityFlag = cmdline.Flag{
 // --apply-cgroups
 var actionApplyCgroupsFlag = cmdline.Flag{
 	ID:           "actionApplyCgroupsFlag",
-	Value:        &CgroupsPath,
+	Value:        &CgroupsTOMLFile,
 	DefaultValue: "",
 	Name:         "apply-cgroups",
 	Usage:        "apply cgroups from file for container processes (root only)",
@@ -353,7 +367,7 @@ var actionCompatFlag = cmdline.Flag{
 	Value:        &IsCompat,
 	DefaultValue: false,
 	Name:         "compat",
-	Usage:        "apply settings for increased OCI/Docker compatibility. Infers --containall, --no-init, --no-umask, --writable-tmpfs.",
+	Usage:        "apply settings for increased OCI/Docker compatibility. Infers --containall, --no-init, --no-umask, --no-eval, --writable-tmpfs.",
 	EnvKeys:      []string{"COMPAT"},
 }
 
@@ -446,7 +460,7 @@ var actionNoMountFlag = cmdline.Flag{
 	Value:        &NoMount,
 	DefaultValue: []string{},
 	Name:         "no-mount",
-	Usage:        "disable one or more mount xxx options set in singularity.conf",
+	Usage:        "disable one or more 'mount xxx' options set in singularity.conf, specify absolute destination path to disable a 'bind path' entry",
 	EnvKeys:      []string{"NO_MOUNT"},
 }
 
@@ -636,12 +650,142 @@ var actionEnvFileFlag = cmdline.Flag{
 
 // --no-umask
 var actionNoUmaskFlag = cmdline.Flag{
-	ID:           " actionNoUmask",
+	ID:           "actionNoUmask",
 	Value:        &NoUmask,
 	DefaultValue: false,
 	Name:         "no-umask",
 	Usage:        "do not propagate umask to the container, set default 0022 umask",
 	EnvKeys:      []string{"NO_UMASK"},
+}
+
+// --no-eval
+var actionNoEvalFlag = cmdline.Flag{
+	ID:           "actionNoEval",
+	Value:        &NoEval,
+	DefaultValue: false,
+	Name:         "no-eval",
+	Usage:        "do not shell evaluate env vars or OCI container CMD/ENTRYPOINT/ARGS",
+	EnvKeys:      []string{"NO_EVAL"},
+}
+
+// --blkio-weight
+var actionBlkioWeightFlag = cmdline.Flag{
+	ID:           "actionBlkioWeight",
+	Value:        &BlkioWeight,
+	DefaultValue: 0,
+	Name:         "blkio-weight",
+	Usage:        "Block IO relative weight in range 10-1000, 0 to disable",
+	EnvKeys:      []string{"BLKIO_WEIGHT"},
+}
+
+// --blkio-weight-device
+var actionBlkioWeightDeviceFlag = cmdline.Flag{
+	ID:           "actionBlkioWeightDevice",
+	Value:        &BlkioWeightDevice,
+	DefaultValue: []string{},
+	Name:         "blkio-weight-device",
+	Usage:        "Device specific block IO relative weight",
+	EnvKeys:      []string{"BLKIO_WEIGHT_DEVICE"},
+}
+
+// --cpu-shares
+var actionCPUSharesFlag = cmdline.Flag{
+	ID:           "actionCPUShares",
+	Value:        &CPUShares,
+	DefaultValue: -1,
+	Name:         "cpu-shares",
+	Usage:        "CPU shares for container",
+	EnvKeys:      []string{"CPU_SHARES"},
+}
+
+// --cpus
+var actionCPUsFlag = cmdline.Flag{
+	ID:           "actionCPUs",
+	Value:        &CPUs,
+	DefaultValue: "",
+	Name:         "cpus",
+	Usage:        "Number of CPUs available to container",
+	EnvKeys:      []string{"CPU_SHARES"},
+}
+
+// --cpuset-cpus
+var actionCPUsetCPUsFlag = cmdline.Flag{
+	ID:           "actionCPUsetCPUs",
+	Value:        &CPUSetCPUs,
+	DefaultValue: "",
+	Name:         "cpuset-cpus",
+	Usage:        "List of host CPUs available to container",
+	EnvKeys:      []string{"CPUSET_CPUS"},
+}
+
+// --cpuset-mems
+var actionCPUsetMemsFlag = cmdline.Flag{
+	ID:           "actionCPUsetMems",
+	Value:        &CPUSetMems,
+	DefaultValue: "",
+	Name:         "cpuset-mems",
+	Usage:        "List of host memory nodes available to container",
+	EnvKeys:      []string{"CPUSET_MEMS"},
+}
+
+// --memory
+var actionMemoryFlag = cmdline.Flag{
+	ID:           "actionMemory",
+	Value:        &Memory,
+	DefaultValue: "",
+	Name:         "memory",
+	Usage:        "Memory limit in bytes",
+	EnvKeys:      []string{"MEMORY"},
+}
+
+// --memory-reservation
+var actionMemoryReservationFlag = cmdline.Flag{
+	ID:           "actionMemoryReservation",
+	Value:        &MemoryReservation,
+	DefaultValue: "",
+	Name:         "memory-reservation",
+	Usage:        "Memory soft limit in bytes",
+	EnvKeys:      []string{"MEMORY_RESERVATION"},
+}
+
+// --memory-swap
+var actionMemorySwapFlag = cmdline.Flag{
+	ID:           "actionMemorySwap",
+	Value:        &MemorySwap,
+	DefaultValue: "",
+	Name:         "memory-swap",
+	Usage:        "Swap limit, use -1 for unlimited swap",
+	EnvKeys:      []string{"MEMORY_SWAP"},
+}
+
+// --oom-kill-disable
+var actionOomKillDisableFlag = cmdline.Flag{
+	ID:           "oomKillDisable",
+	Value:        &OomKillDisable,
+	DefaultValue: false,
+	Name:         "oom-kill-disable",
+	Usage:        "Disable OOM killer",
+	EnvKeys:      []string{"OOM_KILL_DISABLE"},
+}
+
+// --pids-limit
+var actionPidsLimitFlag = cmdline.Flag{
+	ID:           "actionPidsLimit",
+	Value:        &PidsLimit,
+	DefaultValue: 0,
+	Name:         "pids-limit",
+	Usage:        "Limit number of container PIDs, use -1 for unlimited",
+	EnvKeys:      []string{"PIDS_LIMIT"},
+}
+
+// --sif-fuse
+var actionSIFFUSEFlag = cmdline.Flag{
+	ID:           "actionSIFFUSE",
+	Value:        &SIFFUSE,
+	DefaultValue: false,
+	Name:         "sif-fuse",
+	Usage:        "attempt FUSE mount of SIF (unprivileged / user namespace only) (experimental)",
+	EnvKeys:      []string{"SIF_FUSE"},
 }
 
 func init() {
@@ -722,5 +866,18 @@ func init() {
 		cmdManager.RegisterFlagForCmd(&actionEnvFlag, actionsInstanceCmd...)
 		cmdManager.RegisterFlagForCmd(&actionEnvFileFlag, actionsInstanceCmd...)
 		cmdManager.RegisterFlagForCmd(&actionNoUmaskFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionNoEvalFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionBlkioWeightFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionBlkioWeightDeviceFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionCPUSharesFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionCPUsFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionCPUsetCPUsFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionCPUsetMemsFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionMemoryFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionMemoryReservationFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionMemorySwapFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionOomKillDisableFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionPidsLimitFlag, actionsInstanceCmd...)
+		cmdManager.RegisterFlagForCmd(&actionSIFFUSEFlag, actionsCmd...)
 	})
 }

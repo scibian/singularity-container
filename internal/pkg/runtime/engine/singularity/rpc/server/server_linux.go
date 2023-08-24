@@ -1,4 +1,6 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,7 +9,6 @@ package server
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"runtime"
 	"strconv"
@@ -339,7 +340,12 @@ func (t *Methods) SendFuseFd(arguments *args.SendFuseFdArgs, reply *int) error {
 	defer unix.Close(usernsFd)
 
 	rights := unix.UnixRights(append(arguments.Fds, usernsFd)...)
-	return unix.Sendmsg(arguments.Socket, nil, rights, nil, 0)
+	// The second parameter here was added as a workaround after
+	//  the following change to golang.org/x/sys/unix which removed
+	//  that value as a default:
+	//     https://go-review.googlesource.com/c/sys/+/412497
+	err = unix.Sendmsg(arguments.Socket, []byte{0}, rights, nil, 0)
+	return err
 }
 
 // OpenSendFuseFd open a new /dev/fuse file descriptor and send it
@@ -352,7 +358,7 @@ func (t *Methods) OpenSendFuseFd(arguments *args.OpenSendFuseFdArgs, reply *int)
 	*reply = fd
 
 	rights := unix.UnixRights(fd)
-	return unix.Sendmsg(arguments.Socket, nil, rights, nil, 0)
+	return unix.Sendmsg(arguments.Socket, []byte{0}, rights, nil, 0)
 }
 
 // Symlink performs a symlink with the specified arguments.
@@ -362,12 +368,20 @@ func (t *Methods) Symlink(arguments *args.SymlinkArgs, reply *int) error {
 
 // ReadDir performs a readdir with the specified arguments.
 func (t *Methods) ReadDir(arguments *args.ReadDirArgs, reply *args.ReadDirReply) error {
-	files, err := ioutil.ReadDir(arguments.Dir)
-	for i, file := range files {
-		files[i] = args.FileInfo(file)
+	files, err := os.ReadDir(arguments.Dir)
+	if err != nil {
+		return err
 	}
+
+	for i, file := range files {
+		files[i], err = args.DirEntry(file)
+		if err != nil {
+			return err
+		}
+	}
+
 	reply.Files = files
-	return err
+	return nil
 }
 
 // Chown performs a chown with the specified arguments.

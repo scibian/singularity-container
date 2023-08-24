@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,7 +8,6 @@ package fs
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -279,7 +278,7 @@ func Touch(path string) error {
 // basedir exists, so it's the caller's responsibility to create
 // it before calling it.
 func MakeTmpDir(basedir, pattern string, mode os.FileMode) (string, error) {
-	name, err := ioutil.TempDir(basedir, pattern)
+	name, err := os.MkdirTemp(basedir, pattern)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary directory: %s", err)
 	}
@@ -294,7 +293,7 @@ func MakeTmpDir(basedir, pattern string, mode os.FileMode) (string, error) {
 // basedir exists, so it's the caller's responsibility to create
 // it before calling it.
 func MakeTmpFile(basedir, pattern string, mode os.FileMode) (*os.File, error) {
-	f, err := ioutil.TempFile(basedir, pattern)
+	f, err := os.CreateTemp(basedir, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary file: %s", err)
 	}
@@ -397,7 +396,13 @@ func CopyFileAtomic(from, to string, mode os.FileMode) (err error) {
 	return nil
 }
 
-// IsWritable returns true of the file that is passed in
+// IsReadable returns true if the file that is passed in
+// is readable by the user (note: uid is checked, not euid).
+func IsReadable(path string) bool {
+	return unix.Access(path, unix.R_OK) == nil
+}
+
+// IsWritable returns true if the file that is passed in
 // is writable by the user (note: uid is checked, not euid).
 func IsWritable(path string) bool {
 	return unix.Access(path, unix.W_OK) == nil
@@ -473,9 +478,9 @@ func ForceRemoveAll(path string) error {
 }
 
 // PermWalk is similar to filepath.Walk - but:
-//   1. The skipDir checks are removed (we never want to skip anything here)
-//   2. Our walk will call walkFn on a directory *before* attempting to look
-//      inside that directory.
+//  1. The skipDir checks are removed (we never want to skip anything here)
+//  2. Our walk will call walkFn on a directory *before* attempting to look
+//     inside that directory.
 func PermWalk(root string, walkFn filepath.WalkFunc) error {
 	info, err := os.Lstat(root)
 	if err != nil {
@@ -521,11 +526,11 @@ func permWalk(path string, info os.FileInfo, walkFn filepath.WalkFunc) error {
 }
 
 // PermWalkRaiseError is similar to filepath.Walk - but:
-//   1. The skipDir checks are removed (we never want to skip anything here)
-//   2. Our walk will call walkFn on a directory *before* attempting to look
-//      inside that directory.
-//   3. We back out of the recursion at the *first* error... we don't attempt
-//      to go through as much as we can.
+//  1. The skipDir checks are removed (we never want to skip anything here)
+//  2. Our walk will call walkFn on a directory *before* attempting to look
+//     inside that directory.
+//  3. We back out of the recursion at the *first* error... we don't attempt
+//     to go through as much as we can.
 func PermWalkRaiseError(root string, walkFn filepath.WalkFunc) error {
 	info, err := os.Lstat(root)
 	if err != nil {

@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -6,6 +6,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -97,23 +98,31 @@ func NewClient(cfg *Config) (*Client, error) {
 	return c, nil
 }
 
-// newRequest returns a new Request given a method, path (relative or
-// absolute), rawQuery, and (optional) body.
-func (c *Client) newRequest(method, path, rawQuery string, body io.Reader) (*http.Request, error) {
-	u := c.BaseURL.ResolveReference(&url.URL{
-		Path:     path,
-		RawQuery: rawQuery,
-	})
-	r, err := http.NewRequest(method, u.String(), body)
+// newRequestWithURL returns a new Request given a method, url, and (optional) body.
+func (c *Client) newRequestWithURL(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	r, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
+
 	if v := c.AuthToken; v != "" {
-		r.Header.Set("Authorization", fmt.Sprintf("BEARER %s", v))
+		if err := (bearerTokenCredentials{authToken: v}).ModifyRequest(r); err != nil {
+			return nil, err
+		}
 	}
+
 	if v := c.UserAgent; v != "" {
 		r.Header.Set("User-Agent", v)
 	}
 
 	return r, nil
+}
+
+// newRequest returns a new Request given a method, relative path, rawQuery, and (optional) body.
+func (c *Client) newRequest(ctx context.Context, method, path, rawQuery string, body io.Reader) (*http.Request, error) {
+	u := c.BaseURL.ResolveReference(&url.URL{
+		Path:     path,
+		RawQuery: rawQuery,
+	})
+	return c.newRequestWithURL(ctx, method, u.String(), body)
 }

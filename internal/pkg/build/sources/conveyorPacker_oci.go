@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,16 +9,17 @@ package sources
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/docker"
@@ -37,6 +38,85 @@ import (
 	"github.com/sylabs/singularity/pkg/sylog"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
 )
+
+type ociRunscriptData struct {
+	PrependCmd        string
+	PrependEntrypoint string
+}
+
+const ociRunscript = `
+# When SINGULARITY_NO_EVAL set, use OCI compatible behavior that does
+# not evaluate resolved CMD / ENTRYPOINT / ARGS through the shell, and
+# does not modify expected quoting behavior of args.
+if [ -n "$SINGULARITY_NO_EVAL" ]; then
+	# ENTRYPOINT only - run entrypoint plus args
+	if [ -z "$OCI_CMD" ] && [ -n "$OCI_ENTRYPOINT" ]; then
+		{{.PrependEntrypoint}}
+		exec "$@"
+	fi
+
+	# CMD only - run CMD or override with args
+	if [ -n "$OCI_CMD" ] && [ -z "$OCI_ENTRYPOINT" ]; then
+		if [ $# -eq 0 ]; then
+			{{.PrependCmd}}
+			:
+		fi
+		exec "$@"
+	fi
+
+	# ENTRYPOINT and CMD - run ENTRYPOINT with CMD as default args
+	# override with user provided args
+	if [ $# -gt 0 ]; then
+		{{.PrependEntrypoint}}
+		:
+	else
+		{{.PrependCmd}}
+		{{.PrependEntrypoint}}
+		:
+	fi
+	exec "$@"
+fi
+
+# Standard Singularity behavior evaluates CMD / ENTRYPOINT / ARGS
+# combination through shell before exec, and requires special quoting
+# due to concatenation of CMDLINE_ARGS.
+CMDLINE_ARGS=""
+# prepare command line arguments for evaluation
+for arg in "$@"; do
+		CMDLINE_ARGS="${CMDLINE_ARGS} \"$arg\""
+done
+
+# ENTRYPOINT only - run entrypoint plus args
+if [ -z "$OCI_CMD" ] && [ -n "$OCI_ENTRYPOINT" ]; then
+	if [ $# -gt 0 ]; then
+		SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT} ${CMDLINE_ARGS}"
+	else
+		SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT}"
+	fi
+fi
+
+# CMD only - run CMD or override with args
+if [ -n "$OCI_CMD" ] && [ -z "$OCI_ENTRYPOINT" ]; then
+	if [ $# -gt 0 ]; then
+		SINGULARITY_OCI_RUN="${CMDLINE_ARGS}"
+	else
+		SINGULARITY_OCI_RUN="${OCI_CMD}"
+	fi
+fi
+
+# ENTRYPOINT and CMD - run ENTRYPOINT with CMD as default args
+# override with user provided args
+if [ $# -gt 0 ]; then
+	SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT} ${CMDLINE_ARGS}"
+else
+	SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT} ${OCI_CMD}"
+fi
+
+# Evaluate shell expressions first and set arguments accordingly,
+# then execute final command as first container process
+eval "set ${SINGULARITY_OCI_RUN}"
+exec "$@"
+`
 
 // OCIConveyorPacker holds stuff that needs to be packed into the bundle
 type OCIConveyorPacker struct {
@@ -101,7 +181,7 @@ func (cp *OCIConveyorPacker) Get(ctx context.Context, b *sytypes.Bundle) (err er
 			cp.srcRef, err = ociarchive.ParseReference(ref)
 		} else {
 			// As non-root we need to do a dumb tar extraction first
-			tmpDir, err := ioutil.TempDir(b.TmpDir, "temp-oci-")
+			tmpDir, err := os.MkdirTemp(b.TmpDir, "temp-oci-")
 			if err != nil {
 				return fmt.Errorf("could not create temporary oci directory: %v", err)
 			}
@@ -195,7 +275,7 @@ func (cp *OCIConveyorPacker) Pack(ctx context.Context) (*sytypes.Bundle, error) 
 func (cp *OCIConveyorPacker) fetch(ctx context.Context) error {
 	// cp.srcRef contains the cache source reference
 	_, err := copy.Image(ctx, cp.policyCtx, cp.tmpfsRef, cp.srcRef, &copy.Options{
-		ReportWriter: ioutil.Discard,
+		ReportWriter: io.Discard,
 		SourceCtx:    cp.sysCtx,
 	})
 	return err
@@ -354,44 +434,34 @@ func (cp *OCIConveyorPacker) insertRunScript() (err error) {
 		}
 	}
 
-	_, err = f.WriteString(`CMDLINE_ARGS=""
-# prepare command line arguments for evaluation
-for arg in "$@"; do
-    CMDLINE_ARGS="${CMDLINE_ARGS} \"$arg\""
-done
+	// prependCmd is a set of shell commands necessary to prepend each CMD entry to $@
+	prependCmd := ""
+	for i := len(cp.imgConfig.Cmd) - 1; i >= 0; i-- {
+		prependCmd = prependCmd + fmt.Sprintf("set -- '%s' \"$@\"\n", shell.EscapeSingleQuotes(cp.imgConfig.Cmd[i]))
+	}
+	// prependCmd is a set of shell commands necessary to prepend each ENTRYPOINT entry to $@
+	prependEP := ""
+	for i := len(cp.imgConfig.Entrypoint) - 1; i >= 0; i-- {
+		prependEP = prependEP + fmt.Sprintf("set -- '%s' \"$@\"\n", shell.EscapeSingleQuotes(cp.imgConfig.Entrypoint[i]))
+	}
 
-# ENTRYPOINT only - run entrypoint plus args
-if [ -z "$OCI_CMD" ] && [ -n "$OCI_ENTRYPOINT" ]; then
-    if [ $# -gt 0 ]; then
-        SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT} ${CMDLINE_ARGS}"
-    else
-        SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT}"
-    fi
-fi
+	data := ociRunscriptData{
+		PrependCmd:        prependCmd,
+		PrependEntrypoint: prependEP,
+	}
 
-# CMD only - run CMD or override with args
-if [ -n "$OCI_CMD" ] && [ -z "$OCI_ENTRYPOINT" ]; then
-    if [ $# -gt 0 ]; then
-        SINGULARITY_OCI_RUN="${CMDLINE_ARGS}"
-    else
-        SINGULARITY_OCI_RUN="${OCI_CMD}"
-    fi
-fi
+	tmpl, err := template.New("runscript").Parse(ociRunscript)
+	if err != nil {
+		return fmt.Errorf("while parsing runscript template: %w", err)
+	}
 
-# ENTRYPOINT and CMD - run ENTRYPOINT with CMD as default args
-# override with user provided args
-if [ $# -gt 0 ]; then
-    SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT} ${CMDLINE_ARGS}"
-else
-    SINGULARITY_OCI_RUN="${OCI_ENTRYPOINT} ${OCI_CMD}"
-fi
+	var runscript bytes.Buffer
+	err = tmpl.Execute(&runscript, data)
+	if err != nil {
+		return fmt.Errorf("while generating runscript template: %w", err)
+	}
 
-# Evaluate shell expressions first and set arguments accordingly,
-# then execute final command as first container process
-eval "set ${SINGULARITY_OCI_RUN}"
-exec "$@"
-
-`)
+	_, err = f.WriteString(runscript.String())
 	if err != nil {
 		return
 	}
@@ -457,7 +527,7 @@ func (cp *OCIConveyorPacker) insertOCILabels() (err error) {
 		return err
 	}
 
-	err = ioutil.WriteFile(filepath.Join(cp.b.RootfsPath, "/.singularity.d/labels.json"), []byte(text), 0o644)
+	err = os.WriteFile(filepath.Join(cp.b.RootfsPath, "/.singularity.d/labels.json"), []byte(text), 0o644)
 	return err
 }
 

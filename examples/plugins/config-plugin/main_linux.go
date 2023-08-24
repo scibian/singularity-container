@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,7 +7,6 @@ package main
 
 import (
 	"log"
-	"path/filepath"
 
 	"github.com/sylabs/singularity/internal/pkg/cgroups"
 	pluginapi "github.com/sylabs/singularity/pkg/plugin"
@@ -44,17 +43,11 @@ func callbackCgroups(common *config.Common) {
 		},
 	}
 
-	path, err := filepath.Abs("test-cgroups")
+	data, err := cfg.MarshalJSON()
 	if err != nil {
-		sylog.Errorf("Could not get cgroups path: %s", path)
+		sylog.Errorf("While Marshalling cgroups config to JSON: %s", err)
+		return
 	}
-	err = cgroups.PutConfig(cfg, path)
-	if err != nil {
-		log.Printf("Put c error: %v", err)
-	}
-	if path := c.GetCgroupsPath(); path != "" {
-		sylog.Infof("Old cgroups path: %s", path)
-	}
-	sylog.Infof("Setting cgroups path to %s", path)
-	c.SetCgroupsPath(path)
+	sylog.Infof("Overriding cgroups config")
+	c.SetCgroupsJSON(data)
 }

@@ -14,7 +14,6 @@ import (
 	"debug/elf"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,7 +152,7 @@ func unsquashfsSandboxCmd(unsquashfs string, dest string, filename string, filte
 
 	// create the sandbox temporary directory
 	tmpdir := filepath.Dir(dest)
-	rootfs, err := ioutil.TempDir(tmpdir, "tmp-rootfs-")
+	rootfs, err := os.MkdirTemp(tmpdir, "tmp-rootfs-")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chroot directory: %s", err)
 	}
@@ -191,7 +190,6 @@ func unsquashfsSandboxCmd(unsquashfs string, dest string, filename string, filte
 	// which will detect automatically depending of the configuration
 	// what workflow it could use
 	args := []string{
-		"-q",
 		"exec",
 		"--no-home",
 		"--no-nv",
@@ -224,7 +222,7 @@ func unsquashfsSandboxCmd(unsquashfs string, dest string, filename string, filte
 		if err := os.MkdirAll(rootfsDir, 0o700); err != nil {
 			return nil, fmt.Errorf("while creating %s: %s", rootfsDir, err)
 		}
-		if err := ioutil.WriteFile(rootfsFile, []byte(""), 0o600); err != nil {
+		if err := os.WriteFile(rootfsFile, []byte(""), 0o600); err != nil {
 			return nil, fmt.Errorf("while creating %s: %s", rootfsFile, err)
 		}
 		// Simple read-only bind, dest in container same as source on host
@@ -240,7 +238,7 @@ func unsquashfsSandboxCmd(unsquashfs string, dest string, filename string, filte
 		if err := os.MkdirAll(rootfsDir, 0o700); err != nil {
 			return nil, fmt.Errorf("while creating %s: %s", rootfsDir, err)
 		}
-		if err := ioutil.WriteFile(rootfsFile, []byte(""), 0o600); err != nil {
+		if err := os.WriteFile(rootfsFile, []byte(""), 0o600); err != nil {
 			return nil, fmt.Errorf("while creating %s: %s", rootfsFile, err)
 		}
 		// Read only bind, dest in container may not match source on host due
@@ -282,6 +280,7 @@ func unsquashfsSandboxCmd(unsquashfs string, dest string, filename string, filte
 	cmd.Dir = "/"
 	cmd.Env = []string{
 		fmt.Sprintf("LD_LIBRARY_PATH=%s", strings.Join(libraryPath, string(os.PathListSeparator))),
+		fmt.Sprintf("SINGULARITY_DEBUG=%s", os.Getenv("SINGULARITY_DEBUG")),
 	}
 
 	return cmd, nil

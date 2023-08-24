@@ -64,6 +64,7 @@ struct starterConfig *sconfig;
 /* Socket process communication */
 int rpc_socket[2] = {-1, -1};
 int master_socket[2] = {-1, -1};
+int cleanup_socket[2] = {-1, -1};
 
 /* set Go execution call after init function returns */
 enum goexec goexecute;
@@ -621,8 +622,9 @@ static void set_mappings_external(const char *name, char *cmdpath, pid_t pid, ch
     }
 
     /* scary !? it's fine as it's never called by setuid context */
-    if ( system(cmd) < 0 ) {
-        fatalf("'%s' execution failed", cmd);
+    debugf("Executing '%s'", cmd);
+    if ( system(cmd) != 0 ) {
+        fatalf("'%s' execution failed. Check that '%s' is setuid root, or has required capabilities.\n", name, name);
     }
 
     free(cmd);
@@ -1289,17 +1291,45 @@ __attribute__((constructor)) static void init(void) {
     /* retrieve engine configuration from environment variables */
     read_engine_config(&sconfig->engine);
 
+    // Unpriv host cleanup in calling namespaces for SIF FUSE mount
+    if ( getenv("CLEANUP_HOST") != NULL ) {
+        // FUSE SIF mount isn't supported in setuid flow at present.
+        // We should never have a CleanupHost process in setuid mode - enforce this.
+        if ( sconfig->starter.isSuid ) {
+           fatalf("CleanupHost process requested in setuid mode. Not permitted.\n");
+        }
+        debugf("Create socketpair for cleanup communication channel\n");
+            if ( socketpair(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0, cleanup_socket) < 0 ) {
+                fatalf("Failed to create communication socket: %s\n", strerror(errno));
+            }
+        process = fork();
+        if ( process == 0 ) {
+            // Close master end of cleanup socket
+            close(cleanup_socket[0]);
+        
+            set_parent_death_signal(SIGTERM);
+            verbosef("Spawn CleanupHost\n");
+            goexecute = CLEANUP_HOST;
+            return;
+        } else {
+            // In master - Close child end of cleanup socket
+            close(cleanup_socket[1]);
+        }
+    } else {
+        debugf("CleanupHost not requested\n");
+    }
+
     /* cleanup environment variables */
     cleanenv();
 
     /* fix I/O streams to point to /dev/null if they are closed */
     fix_streams();
 
-    /* save opened file descriptors that won't be closed when stage 1 exits */
-    master_fds = list_fd();
-
     /* set an invalid value for check */
     sconfig->starter.workingDirectoryFd = -1;
+
+    /* save opened file descriptors that won't be closed when stage 1 exits */
+    master_fds = list_fd();
 
     /*
      *  CLONE_FILES will share file descriptors opened during stage 1,

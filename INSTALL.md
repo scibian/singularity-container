@@ -19,9 +19,11 @@ sudo apt-get update
 sudo apt-get install -y \
     build-essential \
     libseccomp-dev \
+    libglib2.0-dev \
     pkg-config \
     squashfs-tools \
-    cryptsetup
+    cryptsetup \
+    runc
 ```
 
 On CentOS/RHEL:
@@ -32,9 +34,14 @@ sudo yum groupinstall -y 'Development Tools'
 # Install RPM packages for dependencies
 sudo yum install -y \
     libseccomp-devel \
+    glib2-devel \
     squashfs-tools \
-    cryptsetup
+    cryptsetup \
+    runc
 ```
+
+_Note - `runc` can be ommitted if you will not use the `singularity oci`
+commands._
 
 ## Install Go
 
@@ -49,7 +56,7 @@ _**NOTE:** if you are updating Go from a older version, make sure you remove
 `/usr/local/go` before reinstalling it._
 
 ```sh
-export VERSION=1.18.1 OS=linux ARCH=amd64  # change this as you need
+export VERSION=1.19.5 OS=linux ARCH=amd64  # change this as you need
 
 wget -O /tmp/go${VERSION}.${OS}-${ARCH}.tar.gz \
   https://dl.google.com/go/go${VERSION}.${OS}-${ARCH}.tar.gz
@@ -100,17 +107,18 @@ repository to a specific location.
 Clone the repository with `git` in a location of your choice:
 
 ```sh
-git clone https://github.com/sylabs/singularity.git
+git clone --recurse-submodules https://github.com/sylabs/singularity.git
 cd singularity
 ```
 
-By default your clone will be on the `master` branch which is where development
+By default your clone will be on the `main` branch which is where development
 of SingularityCE happens. To build a specific version of SingularityCE, check
 out a [release tag](https://github.com/sylabs/singularity/tags) before
-compiling. E.g. to build the 3.9.9 release checkout the `v3.9.9` tag:
+compiling. E.g. to build the 3.10.5 release checkout the
+`v3.10.5` tag:
 
 ```sh
-git checkout v3.9.9
+git checkout --recurse-submodules v3.10.5
 ```
 
 ## Compiling SingularityCE
@@ -161,7 +169,7 @@ build and install the RPM like this:
 <!-- markdownlint-disable MD013 -->
 
 ```sh
-export VERSION=3.9.9  # this is the singularity version, change as you need
+export VERSION=3.10.5  # this is the singularity version, change as you need
 
 # Fetch the source
 wget https://github.com/sylabs/singularity/releases/download/v${VERSION}/singularity-ce-${VERSION}.tar.gz
@@ -175,7 +183,7 @@ rm -rf ~/rpmbuild singularity-ce-${VERSION}*.tar.gz
 
 <!-- markdownlint-enable MD013 -->
 
-Alternatively, to build an RPM from the latest master you can
+Alternatively, to build an RPM from the latest main you can
 [clone the repo as detailed above](#clone-the-repo). Then use the `rpm` make
 target to build SingularityCE as an rpm package:
 

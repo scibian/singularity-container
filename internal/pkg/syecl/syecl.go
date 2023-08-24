@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +37,7 @@ type EclConfig struct {
 }
 
 // Execgroup describes an execution group, the main unit of configuration:
+//
 //	TagName: a descriptive identifier
 //	ListMode: whether the execgroup follows a whitelist, whitestrict or blacklist model
 //		whitelist: one or more KeyFP's present and verified,
@@ -55,7 +55,7 @@ type Execgroup struct {
 // LoadConfig opens an ECL config file and unmarshals it into structures
 func LoadConfig(confPath string) (ecl EclConfig, err error) {
 	// read in the ECL config file
-	b, err := ioutil.ReadFile(confPath)
+	b, err := os.ReadFile(confPath)
 	if err != nil {
 		return
 	}
@@ -72,7 +72,7 @@ func PutConfig(ecl EclConfig, confPath string) (err error) {
 		return
 	}
 
-	return ioutil.WriteFile(confPath, data, 0o644)
+	return os.WriteFile(confPath, data, 0o644)
 }
 
 // ValidateConfig makes sure paths from configs are fully resolved and that

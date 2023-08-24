@@ -27,7 +27,7 @@
 
 Summary: Application and environment virtualization
 Name: singularity-ce
-Version: 3.9.9
+Version: 3.10.5
 Release: 1%{?dist}
 # See LICENSE.md for first party code (BSD-3-Clause and LBNL BSD)
 # See LICENSE_THIRD_PARTY.md for incorporated code (ASL 2.0)
@@ -35,32 +35,40 @@ Release: 1%{?dist}
 # License identifiers taken from: https://fedoraproject.org/wiki/Licensing
 License: BSD-3-Clause and LBNL BSD and ASL 2.0
 URL: https://www.sylabs.io/singularity/
-Source: %{name}-3.9.9.tar.gz
+Source: %{name}-3.10.5.tar.gz
 ExclusiveOS: linux
 
 BuildRequires: git
 BuildRequires: gcc
 BuildRequires: make
 BuildRequires: libseccomp-devel
+BuildRequires: glib2-devel
+BuildRequires: cryptsetup
+
+Requires: cryptsetup
+Requires: glib2
+Requires: runc
 %if "%{_target_vendor}" == "suse"
 Requires: squashfs
+Requires: libseccomp2
 %else
 Requires: squashfs-tools
+Requires: libseccomp
 %endif
-BuildRequires: cryptsetup
 
 # there's no golang for ppc64, just ppc64le
 ExcludeArch: ppc64
 
 Provides: %{name}-runtime
-Obsoletes: %{name}-runtime
+
+# Conflicts with non-CE packages
 Conflicts: singularity
+# Conflicts with Apptainer, which installs the `/usr/bin/singularity` compatibility executable
+Conflicts: apptainer
+# Conflicts with SingularityPRO basic packaging (not other variants).
 Conflicts: singularitypro24
-Conflicts: singularitypro24-runtime
 Conflicts: singularitypro25
-Conflicts: singularitypro25-runtime
 Conflicts: singularitypro26
-Conflicts: singularitypro26-runtime
 Conflicts: singularitypro31
 Conflicts: singularitypro35
 Conflicts: singularitypro37
@@ -91,7 +99,7 @@ mkdir -p "$GOPATH"
 
 # Extract the source
 tar -xf "%SOURCE0"
-cd %{name}-3.9.9
+cd %{name}-3.10.5
 
 # Not all of these parameters currently have an effect, but they might be
 #  used someday.  They are the same parameters as in the configure macro.
@@ -116,7 +124,7 @@ make -C builddir old_config=
 cd %{name}-%{version}
 
 export GOPATH=$PWD/gopath
-cd %{name}-3.9.9
+cd %{name}-3.10.5
 
 make -C builddir DESTDIR=$RPM_BUILD_ROOT install
 
@@ -126,6 +134,7 @@ make -C builddir DESTDIR=$RPM_BUILD_ROOT install
 %{_bindir}/run-singularity
 %dir %{_libexecdir}/singularity
 %{_libexecdir}/singularity/bin/starter
+%{_libexecdir}/singularity/bin/conmon
 %{_libexecdir}/singularity/cni/*
 %dir %{_sysconfdir}/singularity
 %config(noreplace) %{_sysconfdir}/singularity/*.conf
@@ -142,13 +151,13 @@ make -C builddir DESTDIR=$RPM_BUILD_ROOT install
 %dir %{_localstatedir}/singularity/mnt
 %dir %{_localstatedir}/singularity/mnt/session
 %{_mandir}/man1/singularity*
-%license %{name}-%{version}/%{name}-3.9.9/LICENSE.md
-%license %{name}-%{version}/%{name}-3.9.9/LICENSE_THIRD_PARTY.md
-%license %{name}-%{version}/%{name}-3.9.9/LICENSE_DEPENDENCIES.md
-%doc %{name}-%{version}/%{name}-3.9.9/README.md
-%doc %{name}-%{version}/%{name}-3.9.9/CHANGELOG.md
-%doc %{name}-%{version}/%{name}-3.9.9/CONTRIBUTING.md
-%doc %{name}-%{version}/%{name}-3.9.9/CONTRIBUTORS.md
+%license %{name}-%{version}/%{name}-3.10.5/LICENSE.md
+%license %{name}-%{version}/%{name}-3.10.5/LICENSE_THIRD_PARTY.md
+%license %{name}-%{version}/%{name}-3.10.5/LICENSE_DEPENDENCIES.md
+%doc %{name}-%{version}/%{name}-3.10.5/README.md
+%doc %{name}-%{version}/%{name}-3.10.5/CHANGELOG.md
+%doc %{name}-%{version}/%{name}-3.10.5/CONTRIBUTING.md
+%doc %{name}-%{version}/%{name}-3.10.5/CONTRIBUTORS.md
 
 %changelog
 

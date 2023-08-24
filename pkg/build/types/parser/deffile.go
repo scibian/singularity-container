@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"reflect"
@@ -53,15 +52,14 @@ func IsInvalidSectionError(err error) bool {
 // that designated by a line starting with %
 //
 // Scanner behavior:
-//     1. The *first* time `s.Text()` is non-nil (which can be after infinitely many calls to
-//        `s.Scan()`), that text is *guaranteed* to be the header, unless the header doesn't exist.
-//		  In that case it returns the first section it finds.
-//     2. The next `n` times that `s.Text()` is non-nil (again, each could take many calls to
-//        `s.Scan()`), that text is guaranteed to be one specific section of the definition file.
-//     3. Once the input buffer is completely scanned, `s.Text()` will either be nil or non-nil
-//        (in which case `s.Text()` contains the last section found of the input buffer) *and*
-//        `s.Err()` will be non-nil with an `bufio.ErrFinalToken` returned. This is where scanning can completely halt.
-//
+//  1. The *first* time `s.Text()` is non-nil (which can be after infinitely many calls to
+//     `s.Scan()`), that text is *guaranteed* to be the header, unless the header doesn't exist.
+//     In that case it returns the first section it finds.
+//  2. The next `n` times that `s.Text()` is non-nil (again, each could take many calls to
+//     `s.Scan()`), that text is guaranteed to be one specific section of the definition file.
+//  3. Once the input buffer is completely scanned, `s.Text()` will either be nil or non-nil
+//     (in which case `s.Text()` contains the last section found of the input buffer) *and*
+//     `s.Err()` will be non-nil with an `bufio.ErrFinalToken` returned. This is where scanning can completely halt.
 func scanDefinitionFile(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	inSection := false
 	var retbuf bytes.Buffer
@@ -419,7 +417,7 @@ func doHeader(h string, d *types.Definition) error {
 // and parse it into a Definition struct or return error if
 // the definition file has a bad section.
 func ParseDefinitionFile(r io.Reader) (d types.Definition, err error) {
-	d.Raw, err = ioutil.ReadAll(r)
+	d.Raw, err = io.ReadAll(r)
 	if err != nil {
 		return d, fmt.Errorf("while attempting to read in definition: %v", err)
 	}
@@ -451,7 +449,7 @@ func ParseDefinitionFile(r io.Reader) (d types.Definition, err error) {
 func All(r io.Reader) ([]types.Definition, error) {
 	var stages []types.Definition
 
-	raw, err := ioutil.ReadAll(r)
+	raw, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("while attempting to read in definition: %v", err)
 	}

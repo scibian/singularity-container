@@ -159,12 +159,15 @@ func (e *EngineOperations) CreateContainer(context.Context, int, net.Conn) error
 // set the return value to 0 for mknod and mknodat syscalls. It
 // allows build bootstrap like yum to work with fakeroot.
 func fakerootSeccompProfile() *specs.LinuxSeccomp {
+	zero := uint(0)
 	syscalls := []specs.LinuxSyscall{
 		{
-			Names:  []string{"mknod", "mknodat"},
-			Action: specs.ActErrno,
+			Names:    []string{"mknod", "mknodat"},
+			Action:   specs.ActErrno,
+			ErrnoRet: &zero,
 		},
 	}
+
 	return &specs.LinuxSeccomp{
 		DefaultAction: specs.ActAllow,
 		Syscalls:      syscalls,
@@ -234,7 +237,7 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 	}
 
 	if seccomp.Enabled() {
-		if err := seccomp.LoadSeccompConfig(fakerootSeccompProfile(), false, 0); err != nil {
+		if err := seccomp.LoadSeccompConfig(fakerootSeccompProfile(), false); err != nil {
 			sylog.Warningf("Could not apply seccomp filter, some bootstrap may not work correctly")
 		}
 	} else {
@@ -254,32 +257,53 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 // not need them for wait4 and kill syscalls.
 func (e *EngineOperations) MonitorContainer(pid int, signals chan os.Signal) (syscall.WaitStatus, error) {
 	var status syscall.WaitStatus
+	waitStatus := make(chan syscall.WaitStatus, 1)
+	waitError := make(chan error, 1)
+
+	go func() {
+		sylog.Debugf("Waiting for container process %d", pid)
+		_, err := syscall.Wait4(pid, &status, 0, nil)
+		sylog.Debugf("Wait for process %d complete with status %v, error %v", pid, status, err)
+		waitStatus <- status
+		waitError <- err
+	}()
 
 	for {
-		s := <-signals
-		switch s {
-		case syscall.SIGCHLD:
-			if wpid, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); err != nil {
-				return status, fmt.Errorf("error while waiting child: %s", err)
-			} else if wpid != pid {
-				continue
+		select {
+		case s := <-signals:
+			// Signal received
+			switch s {
+			case syscall.SIGCHLD:
+				// Our go routine waiting for the container pid will handle container exit.
+				break
+			case syscall.SIGURG:
+				// Ignore SIGURG, which is used for non-cooperative goroutine
+				// preemption starting with Go 1.14. For more information, see
+				// https://github.com/golang/go/issues/24543.
+				break
+			default:
+				if err := syscall.Kill(pid, s.(syscall.Signal)); err != nil {
+					return status, fmt.Errorf("interrupted by signal %s", s.String())
+				}
 			}
-			return status, nil
-		case syscall.SIGURG:
-			// Ignore SIGURG, which is used for non-cooperative goroutine
-			// preemption starting with Go 1.14. For more information, see
-			// https://github.com/golang/go/issues/24543.
-			break
-		default:
-			if err := syscall.Kill(pid, s.(syscall.Signal)); err != nil {
-				return status, fmt.Errorf("interrupted by signal %s", s.String())
+		case ws := <-waitStatus:
+			// Container process exited
+			we := <-waitError
+			if we != nil {
+				return ws, fmt.Errorf("error while waiting for child: %w", we)
 			}
+			return ws, we
 		}
 	}
 }
 
 // CleanupContainer does nothing for the fakeroot engine.
 func (e *EngineOperations) CleanupContainer(context.Context, error, syscall.WaitStatus) error {
+	return nil
+}
+
+// CleanupHost does nothing for the fakeroot engine.
+func (e *EngineOperations) CleanupHost(ctx context.Context) error {
 	return nil
 }
 

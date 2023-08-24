@@ -146,7 +146,10 @@ func getRefDigest(ctx context.Context, ref types.ImageReference, sys *types.Syst
 	if err != nil {
 		return "", err
 	}
-	digest = fmt.Sprintf("%x", sha256.Sum256(man))
+	// Match the sha256.<digest> format we are using in the library cache also.
+	// Previously we didn't include the algorithm, but we should, in case
+	// alternatives are introduced.
+	digest = fmt.Sprintf("sha256.%x", sha256.Sum256(man))
 	sylog.Debugf("GetManifest digest for %s is %s", transports.ImageName(ref), digest)
 	return digest, nil
 }
@@ -157,7 +160,10 @@ func getDockerRefDigest(ctx context.Context, ref types.ImageReference, sys *type
 	if err != nil {
 		return "", err
 	}
-	digest = d.Encoded()
+	// Match the sha256.<digest> format we are using in the library cache also.
+	// Previously we didn't include the algorithm, but we should, in case
+	// alternatives are introduced.
+	digest = d.Algorithm().String() + "." + d.Encoded()
 	sylog.Debugf("docker.GetDigest digest for %s is %s", transports.ImageName(ref), digest)
 	return digest, nil
 }

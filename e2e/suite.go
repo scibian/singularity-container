@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019,2022 Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022 Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,7 +9,6 @@ package e2e
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -82,7 +81,7 @@ func Run(t *testing.T) {
 	}
 
 	// Make temp dir for tests
-	name, err := ioutil.TempDir("", "stest.")
+	name, err := os.MkdirTemp("", "stest.")
 	if err != nil {
 		log.Fatalf("failed to create temporary directory: %v", err)
 	}
@@ -99,6 +98,20 @@ func Run(t *testing.T) {
 		log.Fatalf("failed to chmod temporary directory: %v", err)
 	}
 	testenv.TestDir = name
+
+	// Make shared cache dirs for privileged and unpriviliged E2E tests.
+	// Individual tests that depend on specific ordered cache behavior, or
+	// directly test the cache, should override the TestEnv values within the
+	// specific test.
+	privCacheDir, cleanPrivCache := e2e.MakeCacheDir(t, testenv.TestDir)
+	testenv.PrivCacheDir = privCacheDir
+	defer e2e.Privileged(func(t *testing.T) {
+		cleanPrivCache(t)
+	})
+
+	unprivCacheDir, cleanUnprivCache := e2e.MakeCacheDir(t, testenv.TestDir)
+	testenv.UnprivCacheDir = unprivCacheDir
+	defer cleanUnprivCache(t)
 
 	// e2e tests need to run in a somehow agnostic environment, so we
 	// don't use environment of user executing tests in order to not
@@ -148,13 +161,24 @@ func Run(t *testing.T) {
 	// If you need the test image, add the call at the top of your
 	// own test.
 
-	testenv.TestRegistry = "localhost:5000"
-	testenv.OrasTestImage = fmt.Sprintf("oras://%s/oras_test_sif:latest", testenv.TestRegistry)
+	if os.Getenv("SINGULARITY_E2E_NO_PID_NS") != "" {
+		// e2e tests that will run in a mount namespace only
+		// They do not currently require the OCI registry instance.
+		suite := testhelper.NewSuite(t, testenv)
+		suite.AddGroup("CGROUPS", cgroups.E2ETests)
+		suite.AddGroup("OCI", oci.E2ETests)
+		suite.Run()
+		return
+	}
+
+	// e2e tests that will run in a mount and PID namespace are below
 
 	// Because tests are parallelized, and PrepRegistry temporarily masks
 	// the Singularity instance directory we *must* now call it before we
 	// start running tests which could use instance and oci functionality.
 	// See: https://github.com/hpcng/singularity/issues/5744
+	testenv.TestRegistry = "localhost:5000"
+	testenv.OrasTestImage = fmt.Sprintf("oras://%s/oras_test_sif:latest", testenv.TestRegistry)
 	t.Run("PrepRegistry", func(t *testing.T) {
 		e2e.PrepRegistry(t, testenv)
 	})
@@ -163,15 +187,10 @@ func Run(t *testing.T) {
 	defer e2e.KillRegistry(t, testenv)
 
 	suite := testhelper.NewSuite(t, testenv)
-
-	// RunE2ETests by functionality.
-	//
-	// Please keep this list sorted.
 	suite.AddGroup("ACTIONS", actions.E2ETests)
 	suite.AddGroup("BUILDCFG", e2ebuildcfg.E2ETests)
 	suite.AddGroup("BUILD", imgbuild.E2ETests)
 	suite.AddGroup("CACHE", cache.E2ETests)
-	suite.AddGroup("CGROUPS", cgroups.E2ETests)
 	suite.AddGroup("CMDENVVARS", cmdenvvars.E2ETests)
 	suite.AddGroup("CONFIG", config.E2ETests)
 	suite.AddGroup("DELETE", delete.E2ETests)
@@ -183,7 +202,6 @@ func Run(t *testing.T) {
 	suite.AddGroup("INSPECT", inspect.E2ETests)
 	suite.AddGroup("INSTANCE", instance.E2ETests)
 	suite.AddGroup("KEY", key.E2ETests)
-	suite.AddGroup("OCI", oci.E2ETests)
 	suite.AddGroup("OVERLAY", overlay.E2ETests)
 	suite.AddGroup("PLUGIN", plugin.E2ETests)
 	suite.AddGroup("PULL", pull.E2ETests)
@@ -195,6 +213,5 @@ func Run(t *testing.T) {
 	suite.AddGroup("SIGN", sign.E2ETests)
 	suite.AddGroup("VERIFY", verify.E2ETests)
 	suite.AddGroup("VERSION", version.E2ETests)
-
 	suite.Run()
 }

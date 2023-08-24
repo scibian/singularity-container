@@ -8,6 +8,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -127,6 +128,15 @@ func (c *Client) UploadImage(ctx context.Context, r io.ReadSeeker, path, arch st
 	}
 
 	c.Logger.Logf("Image hash computed as %s", imageHash)
+
+	if err := c.ociUploadImage(ctx, r, fileSize, strings.TrimPrefix(path, "library://"), arch, tags, description, "sha256."+imageHash, callback); err == nil {
+		return nil, nil
+	} else if !errors.Is(err, errOCIDownloadNotSupported) {
+		// Return OCI upload error or fallback to legacy download
+		return nil, err
+	}
+
+	c.Logger.Log("Fallback to (legacy) library upload")
 
 	// Find or create entity
 	entity, err := c.getEntity(ctx, entityName)
@@ -268,10 +278,10 @@ func (c *Client) postFile(ctx context.Context, fileSize int64, imageID string, c
 	c.Logger.Logf("postFile calling %s", postURL)
 
 	// Make an upload request
-	req, _ := c.newRequest(http.MethodPost, postURL, "", callback.GetReader())
+	req, _ := c.newRequest(ctx, http.MethodPost, postURL, "", callback.GetReader())
 	// Content length is required by the API
 	req.ContentLength = fileSize
-	res, err := c.HTTPClient.Do(req.WithContext(ctx))
+	res, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error uploading file to server: %s", err.Error())
 	}
@@ -473,7 +483,7 @@ func (c *Client) legacyPostFileV2(ctx context.Context, fileSize int64, imageID s
 	// parse presigned URL to determine if we need to send sha256 checksum
 	useSHA256Checksum := remoteSHA256ChecksumSupport(parsedURL)
 
-	req, err := http.NewRequest(http.MethodPut, presignedURL, callback.GetReader())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, callback.GetReader())
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %v", err)
 	}
@@ -485,7 +495,7 @@ func (c *Client) legacyPostFileV2(ctx context.Context, fileSize int64, imageID s
 		req.Header.Set("x-amz-content-sha256", metadata["sha256sum"])
 	}
 
-	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	resp, err := c.HTTPClient.Do(req)
 	callback.Finish()
 	if err != nil {
 		return nil, fmt.Errorf("error uploading image: %v", err)
@@ -561,7 +571,7 @@ func (c *Client) multipartUploadPart(ctx context.Context, partNumber int, m *upl
 	}
 
 	// send request to S3
-	req, err := http.NewRequest(http.MethodPut, res.Data.PresignedURL, io.LimitReader(callback.GetReader(), m.Size))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, res.Data.PresignedURL, io.LimitReader(callback.GetReader(), m.Size))
 	if err != nil {
 		return "", fmt.Errorf("error creating request: %v", err)
 	}
@@ -572,7 +582,7 @@ func (c *Client) multipartUploadPart(ctx context.Context, partNumber int, m *upl
 		req.Header.Add("x-amz-content-sha256", chunkHash)
 	}
 
-	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		c.Logger.Logf("Failure uploading to presigned URL: %v", err)
 		return "", err

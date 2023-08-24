@@ -1,5 +1,7 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
 // Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -108,8 +110,28 @@ func (c *ctx) singularityKeySearch(t *testing.T) {
 			stdout: "^Showing 1 results",
 		},
 		{
+			name:   "key search -u https://keys.openpgp.org 0x<key fingerprint>",
+			args:   []string{"search", "-u", "https://keys.openpgp.org", "0x7605BC2716168DF057D6C600ACEEC62C8BD91BEE"},
+			stdout: "^Showing 1 results",
+		},
+		{
+			name:   "key search -u https://keys.openpgp.org <key fingerprint>",
+			args:   []string{"search", "-u", "https://keys.openpgp.org", "7605BC2716168DF057D6C600ACEEC62C8BD91BEE"},
+			stdout: "^Showing 1 results",
+		},
+		{
+			name:   "key search <key with at least two emails>",
+			args:   []string{"search", "-u", "https://keys.openpgp.org", "dwd@fnal.gov"},
+			stdout: "\n  .*@",
+		},
+		{
+			name:   "key search -l <key with at least two emails>",
+			args:   []string{"search", "-u", "https://keys.openpgp.org", "-l", "dwd@fnal.gov"},
+			stdout: "\n  .*@",
+		},
+		{
 			name:   "key search <name>",
-			args:   []string{"search", "westley"},
+			args:   []string{"search", "Library"},
 			stdout: "^Showing",
 		},
 		{

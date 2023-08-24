@@ -8,13 +8,13 @@ package siftool
 import (
 	"context"
 
-	"github.com/sylabs/sif/v2/internal/pkg/exp"
+	"github.com/sylabs/sif/v2/pkg/user"
 )
 
-// Unmounts the FUSE mounted filesystem at mountPath.
+// Unmounts the filesystem at mountPath.
 func (a *App) Unmount(ctx context.Context, mountPath string) error {
-	return exp.Unmount(ctx, mountPath,
-		exp.OptUnmountStdout(a.opts.out),
-		exp.OptUnmountStderr(a.opts.err),
+	return user.Unmount(ctx, mountPath,
+		user.OptUnmountStdout(a.opts.out),
+		user.OptUnmountStderr(a.opts.err),
 	)
 }

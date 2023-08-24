@@ -1,0 +1,166 @@
+---
+
+# Main collection of env. vars to set for all tasks and scripts.
+env:
+    ####
+    #### Global variables used for all tasks
+    ####
+    GOPATH: "/var/tmp/go"
+    CONMON_SLUG: "github.com/containers/conmon"
+
+    # Overrides default location (/tmp/cirrus) for repo clone (will become $SRC)
+    CIRRUS_WORKING_DIR: "${GOPATH}/src/${CONMON_SLUG}"
+    # Required so $ENVLIB gets loaded and /bin/sh is not used
+    CIRRUS_SHELL: "/bin/bash"
+    # Save a little typing (path relative to $CIRRUS_WORKING_DIR)
+    SCRIPT_BASE: "./contrib/cirrus"
+    # Spoof self as travis, as cirrus has the same test issues as travis does
+    TRAVIS: "true"
+
+    ####
+    #### Cache-image names to test with (double-quotes around names are critical)
+    ####
+    FEDORA_NAME: "fedora-34"
+    PRIOR_FEDORA_NAME: "fedora-33"
+    UBUNTU_NAME: "ubuntu-2104"
+
+    # VM Image built in containers/automation_images
+    IMAGE_SUFFIX: "c6431352024203264"
+    FEDORA_CACHE_IMAGE_NAME: "fedora-${IMAGE_SUFFIX}"
+
+    # Container FQIN's
+    FEDORA_CONTAINER_FQIN: "quay.io/libpod/fedora_podman:${IMAGE_SUFFIX}"
+    PRIOR_FEDORA_CONTAINER_FQIN: "quay.io/libpod/prior-fedora_podman:${IMAGE_SUFFIX}"
+    UBUNTU_CONTAINER_FQIN: "quay.io/libpod/ubuntu_podman:${IMAGE_SUFFIX}"
+
+
+# Only github users with write-access can define or use encrypted variables
+# This credential represents a service account with access to manage both VMs
+# and storage.
+gcp_credentials: ENCRYPTED[13e51806369f650e6ccc326338deeb3c24052fc0a7be29beef2b96da551aed3200abbb6c6406a936bb4388fb2758405c]
+
+
+# Default VM to use unless set or modified by task
+gce_instance:
+    image_project: "libpod-218412"
+    zone: "us-central1-f"  # Required by Cirrus for the time being
+    cpu: 2
+    memory: "4Gb"
+    disk: 200  # Required for performance reasons
+    image_name: "${FEDORA_CACHE_IMAGE_NAME}"
+
+
+# Default timeout for each task
+timeout_in: '120m'
+
+# Verify conmon package can be built and installed on Fedora
+fedora_packaging_task:
+    alias: fedora_packaging
+
+    # Runs within Cirrus's "community cluster"
+    container:
+        cpu: 1
+        memory: 4
+
+    matrix:
+        - name: "Packaging for ${FEDORA_NAME}"
+          container:
+            image: "${FEDORA_CONTAINER_FQIN}"
+        - name: "Packaging for ${PRIOR_FEDORA_NAME}"
+          container:
+            image: "${PRIOR_FEDORA_CONTAINER_FQIN}"
+
+    script:
+        - dnf install -y rpm-build golang libseccomp-devel
+        - cd $CIRRUS_WORKING_DIR
+        - make
+        - make -f .rpmbuild/Makefile
+        - rpmbuild --rebuild conmon-*.src.rpm
+        - dnf erase -y conmon
+        - dnf -y install ~/rpmbuild/RPMS/x86_64/conmon*.x86_64.rpm
+        - ls -l /usr/bin/conmon
+
+    timeout_in: '20m'
+
+
+# Verify calls to bin/config were saved
+config_task:
+    # Runs within Cirrus's "community cluster"
+    container:
+        image: "${FEDORA_CONTAINER_FQIN}"
+        cpu: 1
+        memory: 4
+
+    script:
+        - dnf install -y make glib2-devel git gcc golang
+        - cd $CIRRUS_WORKING_DIR
+        - make config
+        - ./hack/tree_status.sh
+
+
+# Verify code was fmt'ed properly
+fmt_task:
+    # Runs within Cirrus's "community cluster"
+    container:
+        image: "${FEDORA_CONTAINER_FQIN}"
+        cpu: 1
+        memory: 4
+
+    script:
+        - dnf install -y clang clang-tools-extra golang
+        - cd $CIRRUS_WORKING_DIR
+        - make fmt
+        - ./hack/tree_status.sh
+
+
+# Build the static binary
+static_binary_task:
+    alias: static_binary
+
+    # Community-maintained task, may fail on occasion.  If so, uncomment
+    # the next line and file an issue with details about the failure.
+    # allow_failures: true
+
+    timeout_in: '240m'
+
+    gce_instance:
+        image_name: "${FEDORA_CACHE_IMAGE_NAME}"
+        cpu: 8
+        memory: 12
+        disk: 200
+
+    env:
+        # Do not use 'latest', fixed-version tag for runtime stability.
+        CTR_FQIN: "docker.io/nixos/nix:2.3.6"
+        # Authentication token for pushing the build cache to cachix.
+        # This is critical, it helps to avoid a very lengthy process of
+        # statically building every dependency needed to build conmon.
+        # Assuming the pinned nix dependencies in nix/nixpkgs.json have not
+        # changed, this cache will ensure that only the static conmon binary is
+        # built.
+        CACHIX_AUTH_TOKEN: ENCRYPTED[4c3b8d82b0333abf048c56a71f2559ddb1c9ed38f0c28916eca13f79affa5904cf90c76a5bd8686680c89f41079ef341]
+
+    matrix:
+      - name: "Static intel binary"
+        env:
+            TARGET: default.nix
+      - name: "Static ARM binary"
+        env:
+            TARGET: default-arm64.nix
+
+    build_script: |
+        set -ex
+        podman run -i --rm \
+          -e CACHIX_AUTH_TOKEN \
+          -v $PWD:$PWD:Z \
+          -w $PWD \
+          $CTR_FQIN \
+          sh -c \
+          "nix-env -iA cachix -f https://cachix.org/api/v1/install && \
+           cachix use conmon && \
+           nix-build nix/$TARGET && \
+           nix-store -qR --include-outputs \$(nix-instantiate nix/$TARGET) | grep -v conmon | cachix push conmon && \
+           cp -R result/bin ."
+
+    binaries_artifacts:
+        path: "bin/conmon"

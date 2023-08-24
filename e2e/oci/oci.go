@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022 Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,9 +7,7 @@ package oci
 
 import (
 	"encoding/json"
-	"io/ioutil"
-	"path/filepath"
-	"runtime"
+	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -17,10 +15,19 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
-	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
 	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
 	"github.com/sylabs/singularity/pkg/ociruntime"
 )
+
+//  NOTE
+//  ----
+//  Tests in this package/topic are run in a a mount namespace only. There is
+//  no PID namespace, in order that the systemd cgroups manager functionality
+//  can be exercised.
+//
+//  You must take extra care not to leave detached process etc. that will
+//  pollute the host PID namespace.
+//
 
 func randomContainerID(t *testing.T) string {
 	t.Helper()
@@ -62,36 +69,16 @@ func genericOciMount(t *testing.T, c *ctx) (string, func()) {
 	require.Seccomp(t)
 	require.Filesystem(t, "overlay")
 
-	bundleDir, err := ioutil.TempDir(c.env.TestDir, "bundle-")
+	bundleDir, err := os.MkdirTemp(c.env.TestDir, "bundle-")
 	if err != nil {
 		err = errors.Wrapf(err, "creating temporary bundle directory at %q", c.env.TestDir)
 		t.Fatalf("failed to create bundle directory: %+v", err)
 	}
-	ociConfig := filepath.Join(bundleDir, "config.json")
-
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci mount"),
 		e2e.WithArgs(c.env.ImagePath, bundleDir),
-		e2e.PostRun(func(t *testing.T) {
-			if t.Failed() {
-				t.Fatalf("failed to mount OCI bundle image")
-			}
-
-			g, err := oci.DefaultConfig()
-			if err != nil {
-				err = errors.Wrapf(err, "generating default OCI config for %q", runtime.GOOS)
-				t.Fatalf("failed to generate default OCI config: %+v", err)
-			}
-			g.SetProcessTerminal(true)
-
-			err = g.SaveToFile(ociConfig)
-			if err != nil {
-				err = errors.Wrapf(err, "saving OCI config at %q", ociConfig)
-				t.Fatalf("failed to save OCI config: %+v", err)
-			}
-		}),
 		e2e.ExpectExit(0),
 	)
 
@@ -125,7 +112,7 @@ func (c ctx) testOciRun(t *testing.T) {
 		e2e.WithArgs("-b", bundleDir, containerID),
 		e2e.ConsoleRun(
 			e2e.ConsoleSendLine("hostname"),
-			e2e.ConsoleExpect("mrsdalloway"),
+			e2e.ConsoleExpect("singularity"),
 			e2e.ConsoleSendLine("id -un"),
 			e2e.ConsoleExpect("root"),
 			e2e.ConsoleSendLine("exit"),
@@ -190,7 +177,7 @@ func (c ctx) testOciAttach(t *testing.T) {
 		e2e.WithArgs(containerID),
 		e2e.ConsoleRun(
 			e2e.ConsoleSendLine("hostname"),
-			e2e.ConsoleExpect("mrsdalloway"),
+			e2e.ConsoleExpect("singularity"),
 			e2e.ConsoleSendLine("exit"),
 		),
 		e2e.PostRun(func(t *testing.T) {
@@ -296,15 +283,16 @@ func (c ctx) testOciBasic(t *testing.T) {
 		t,
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci exec"),
-		e2e.WithArgs(containerID, "id"),
-		e2e.ExpectExit(0),
+		e2e.WithArgs(containerID, "hostname"),
+		e2e.ExpectExit(0,
+			e2e.ExpectOutput(e2e.ContainMatch, "singularity")),
 	)
 
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci kill"),
-		e2e.WithArgs("-t", "2", containerID, "KILL"),
+		e2e.WithArgs(containerID, "KILL"),
 		e2e.PostRun(func(t *testing.T) {
 			if !t.Failed() {
 				c.checkOciState(t, containerID, ociruntime.Stopped)
@@ -423,9 +411,12 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	}
 
 	return testhelper.Tests{
-		"basic":  c.testOciBasic,
-		"attach": c.testOciAttach,
-		"run":    c.testOciRun,
-		"help":   c.testOciHelp,
+		"ordered": testhelper.NoParallel(
+			env.WithRootManagers(func(t *testing.T) {
+				t.Run("basic", c.testOciBasic)
+				t.Run("attach", c.testOciAttach)
+				t.Run("run", c.testOciRun)
+				t.Run("help", c.testOciHelp)
+			})),
 	}
 }

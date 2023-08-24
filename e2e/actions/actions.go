@@ -6,14 +6,15 @@
 package actions
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -370,20 +371,6 @@ func (c actionTests) STDPipe(t *testing.T) {
 			input:   "false",
 			exit:    1,
 		},
-		{
-			name:    "TrueDocker",
-			command: "shell",
-			argv:    []string{"docker://busybox"},
-			input:   "true",
-			exit:    0,
-		},
-		{
-			name:    "FalseDocker",
-			command: "shell",
-			argv:    []string{"docker://busybox"},
-			input:   "false",
-			exit:    1,
-		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
 		// 	name:    "TrueShub",
@@ -494,20 +481,6 @@ func (c actionTests) RunFromURI(t *testing.T) {
 	}{
 		// Run from supported URI's and check the runscript call works
 		{
-			name:    "RunFromDockerOK",
-			command: "run",
-			argv:    []string{"--bind", bind, "docker://busybox:latest", size},
-			exit:    0,
-			profile: e2e.UserProfile,
-		},
-		{
-			name:    "RunFromDockerWithoutShellOK",
-			command: "run",
-			argv:    []string{"docker://hello-world"},
-			exit:    0,
-			profile: e2e.UserProfile,
-		},
-		{
 			name:    "RunFromLibraryOK",
 			command: "run",
 			argv:    []string{"--bind", bind, "library://busybox:1.31.1", size},
@@ -527,13 +500,6 @@ func (c actionTests) RunFromURI(t *testing.T) {
 			command: "run",
 			argv:    []string{"--bind", bind, c.env.OrasTestImage, size},
 			exit:    0,
-			profile: e2e.UserProfile,
-		},
-		{
-			name:    "RunFromDockerKO",
-			command: "run",
-			argv:    []string{"--bind", bind, "docker://busybox:latest", "0"},
-			exit:    1,
 			profile: e2e.UserProfile,
 		},
 		{
@@ -558,22 +524,6 @@ func (c actionTests) RunFromURI(t *testing.T) {
 			exit:    1,
 			profile: e2e.UserProfile,
 		},
-
-		// exec from a supported URI's and check the exit code
-		{
-			name:    "ExecTrueDocker",
-			command: "exec",
-			argv:    []string{"docker://busybox:latest", "true"},
-			exit:    0,
-			profile: e2e.UserProfile,
-		},
-		{
-			name:    "ExecTrueLibrary",
-			command: "exec",
-			argv:    []string{"library://busybox:1.31.1", "true"},
-			exit:    0,
-			profile: e2e.UserProfile,
-		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
 		// 	name:    "ExecTrueShub",
@@ -587,13 +537,6 @@ func (c actionTests) RunFromURI(t *testing.T) {
 			command: "exec",
 			argv:    []string{c.env.OrasTestImage, "true"},
 			exit:    0,
-			profile: e2e.UserProfile,
-		},
-		{
-			name:    "ExecFalseDocker",
-			command: "exec",
-			argv:    []string{"docker://busybox:latest", "false"},
-			exit:    1,
 			profile: e2e.UserProfile,
 		},
 		{
@@ -621,13 +564,6 @@ func (c actionTests) RunFromURI(t *testing.T) {
 
 		// exec from URI with user namespace enabled
 		{
-			name:    "ExecTrueDockerUserns",
-			command: "exec",
-			argv:    []string{"docker://busybox:latest", "true"},
-			exit:    0,
-			profile: e2e.UserNamespaceProfile,
-		},
-		{
 			name:    "ExecTrueLibraryUserns",
 			command: "exec",
 			argv:    []string{"library://busybox:1.31.1", "true"},
@@ -647,13 +583,6 @@ func (c actionTests) RunFromURI(t *testing.T) {
 			command: "exec",
 			argv:    []string{c.env.OrasTestImage, "true"},
 			exit:    0,
-			profile: e2e.UserNamespaceProfile,
-		},
-		{
-			name:    "ExecFalseDockerUserns",
-			command: "exec",
-			argv:    []string{"docker://busybox:latest", "false"},
-			exit:    1,
 			profile: e2e.UserNamespaceProfile,
 		},
 		{
@@ -702,7 +631,7 @@ func (c actionTests) PersistentOverlay(t *testing.T) {
 	require.Command(t, "mksquashfs")
 	require.Command(t, "dd")
 
-	testdir, err := ioutil.TempDir(c.env.TestDir, "persistent-overlay-")
+	testdir, err := os.MkdirTemp(c.env.TestDir, "persistent-overlay-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,13 +656,13 @@ func (c actionTests) PersistentOverlay(t *testing.T) {
 	sandboxImage := filepath.Join(testdir, "sandbox")
 
 	// create an overlay directory
-	dir, err := ioutil.TempDir(testdir, "overlay-dir-")
+	dir, err := os.MkdirTemp(testdir, "overlay-dir-")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create root directory for squashfs image
-	squashDir, err := ioutil.TempDir(testdir, "root-squash-dir-")
+	squashDir, err := os.MkdirTemp(testdir, "root-squash-dir-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1585,12 +1514,12 @@ func (c actionTests) fuseMount(t *testing.T) {
 			if t.Failed() {
 				return
 			}
-			content, err := ioutil.ReadFile(rootPrivKey)
+			content, err := os.ReadFile(rootPrivKey)
 			if err != nil {
 				t.Errorf("could not read ssh private key: %s", err)
 				return
 			}
-			if err := ioutil.WriteFile(userPrivKey, content, 0o600); err != nil {
+			if err := os.WriteFile(userPrivKey, content, 0o600); err != nil {
 				t.Errorf("could not write ssh user private key: %s", err)
 				return
 			}
@@ -1770,7 +1699,7 @@ func (c actionTests) bindImage(t *testing.T) {
 	require.Command(t, "mksquashfs")
 	require.Command(t, "dd")
 
-	testdir, err := ioutil.TempDir(c.env.TestDir, "bind-image-")
+	testdir, err := os.MkdirTemp(c.env.TestDir, "bind-image-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1793,7 +1722,7 @@ func (c actionTests) bindImage(t *testing.T) {
 	ext3Img := filepath.Join(testdir, "ext3_fs.img")
 
 	// create root directory for squashfs image
-	squashDir, err := ioutil.TempDir(testdir, "root-squash-dir-")
+	squashDir, err := os.MkdirTemp(testdir, "root-squash-dir-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2216,6 +2145,27 @@ func (c actionTests) actionNoMount(t *testing.T) {
 			cwd:           "/srv",
 			exit:          0,
 		},
+		// /etc/hosts & /etc/localtime are default 'bind path' entries we should
+		// be able to disable by abs path. Although other 'bind path' entries
+		// are ignored under '--contain' these two are handled specially in
+		// addBindsMount(), so make sure that `--no-mount` applies properly
+		// under contain also.
+		{
+			name:          "/etc/hosts",
+			noMount:       "/etc/hosts",
+			noMatch:       "on /etc/hosts",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
+		{
+			name:          "/etc/localtime",
+			noMount:       "/etc/localtime",
+			noMatch:       "on /etc/localtime",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2303,6 +2253,74 @@ func (c actionTests) actionCompat(t *testing.T) {
 	}
 }
 
+// actionSquashfuse tests that experimental unpriv squashfuse SIF mount works.
+func (c actionTests) actionSIFFUSE(t *testing.T) {
+	require.Command(t, "squashfuse")
+	require.Command(t, "fusermount")
+	e2e.EnsureImage(t, c.env)
+
+	beforeCount := countSquashfuseMounts(t)
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserNamespaceProfile),
+		e2e.WithCommand("exec"),
+		e2e.WithArgs("--sif-fuse", c.env.ImagePath, "/bin/true"),
+		e2e.ExpectExit(
+			0,
+			e2e.ExpectError(e2e.ContainMatch, "Mounting SIF with FUSE"),
+			e2e.ExpectError(e2e.ContainMatch, "Unmounting SIF with FUSE"),
+		),
+	)
+
+	afterCount := countSquashfuseMounts(t)
+	if afterCount != beforeCount {
+		t.Errorf("found %d squashfuse mounts before execution, and %d remaining after", beforeCount, afterCount)
+	}
+}
+
+// Verify that the FUSE mounts, and the CleanupHost() process are not seen when
+// --sif-fuse should not be in effect.
+func (c actionTests) actionNoSIFFUSE(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	profiles := []e2e.Profile{e2e.UserProfile, e2e.RootProfile, e2e.FakerootProfile, e2e.UserNamespaceProfile}
+
+	for _, p := range profiles {
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(p.String()),
+			e2e.WithProfile(p),
+			e2e.WithCommand("exec"),
+			e2e.WithGlobalOptions("-d"),
+			e2e.WithArgs(c.env.ImagePath, "mount"),
+			e2e.ExpectExit(
+				0,
+				e2e.ExpectError(e2e.UnwantedContainMatch, "squashfuse"),
+				e2e.ExpectError(e2e.UnwantedContainMatch, "CleanupHost()"),
+			),
+		)
+	}
+}
+
+func countSquashfuseMounts(t *testing.T) int {
+	count := 0
+
+	mi, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		t.Errorf("failed to open /proc/self/mountinfo: %s", err)
+	}
+	defer mi.Close()
+
+	scanner := bufio.NewScanner(mi)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), "squashfuse") {
+			count++
+		}
+	}
+	return count
+}
+
 // E2ETests is the main func to trigger the test suite
 func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := actionTests{
@@ -2345,5 +2363,7 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"no-mount":              c.actionNoMount,       // test --no-mount
 		"compat":                c.actionCompat,        // test --compat
 		"invalidRemote":         np(c.invalidRemote),   // GHSA-5mv9-q7fq-9394
+		"SIFFUSE":               np(c.actionSIFFUSE),   // test --sif-fuse
+		"NoSIFFUSE":             np(c.actionNoSIFFUSE), // test absence of squashfs and CleanupHost()
 	}
 }

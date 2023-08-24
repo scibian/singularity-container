@@ -6,9 +6,9 @@ package interp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
@@ -48,6 +48,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 			r2 := r.Subshell()
 			r2.stdout = w
 			r2.stmts(ctx, cs.Stmts)
+			r.lastExpandExit = r2.exit
 			return r2.err
 		},
 		ProcSubst: func(ps *syntax.ProcSubst) (string, error) {
@@ -144,7 +145,9 @@ func (r *Runner) updateExpandOpts() {
 	if r.opts[optNoGlob] {
 		r.ecfg.ReadDir = nil
 	} else {
-		r.ecfg.ReadDir = ioutil.ReadDir
+		r.ecfg.ReadDir = func(s string) ([]os.FileInfo, error) {
+			return r.readDirHandler(r.handlerCtx(context.Background()), s)
+		}
 	}
 	r.ecfg.GlobStar = r.opts[optGlobStar]
 	r.ecfg.NullGlob = r.opts[optNullGlob]
@@ -153,7 +156,19 @@ func (r *Runner) updateExpandOpts() {
 
 func (r *Runner) expandErr(err error) {
 	if err != nil {
-		r.errf("%v\n", err)
+		errMsg := err.Error()
+		fmt.Fprintln(r.stderr, errMsg)
+		switch {
+		case errors.As(err, &expand.UnsetParameterError{}):
+		case errMsg == "invalid indirect expansion":
+			// TODO: These errors are treated as fatal by bash.
+			// Make the error type reflect that.
+		case strings.HasSuffix(errMsg, "not supported"):
+			// TODO: This "has suffix" is a temporary measure until the expand
+			// package supports all syntax nodes like extended globbing.
+		default:
+			return // other cases do not exit
+		}
 		r.exitShell(context.TODO(), 1)
 	}
 }
@@ -296,7 +311,7 @@ func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 		//   part of && or || lists
 		//   preceded by !
 		r.exitShell(ctx, r.exit)
-	} else if r.exit != 0 {
+	} else if r.exit != 0 && !r.noErrExit {
 		r.trapCallback(ctx, r.callbackErr, "error")
 	}
 	if !r.keepRedirs {
@@ -308,6 +323,10 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 	if r.stop(ctx) {
 		return
 	}
+
+	tracingEnabled := r.opts[optXTrace]
+	trace := r.tracer()
+
 	switch x := cm.(type) {
 	case *syntax.Block:
 		r.stmts(ctx, x.Stmts)
@@ -332,11 +351,36 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 			}
 		}
 		args = append(args, left...)
+		r.lastExpandExit = 0
 		fields := r.fields(args...)
 		if len(fields) == 0 {
 			for _, as := range x.Assigns {
 				vr := r.assignVal(as, "")
 				r.setVar(as.Name.Value, as.Index, vr)
+
+				if !tracingEnabled {
+					continue
+				}
+
+				// Strangely enough, it seems like Bash prints original
+				// source for arrays, but the expanded value otherwise.
+				// TODO: add test cases for x[i]=y and x+=y.
+				if as.Array != nil {
+					trace.expr(as)
+				} else if as.Value != nil {
+					val, err := syntax.Quote(vr.String(), syntax.LangBash)
+					if err != nil { // should never happen
+						panic(err)
+					}
+					trace.stringf("%s=%s", as.Name.Value, val)
+				}
+				trace.newLineFlush()
+			}
+			// If interpreting the last expansion like $(foo) failed,
+			// and the expansion and assignments otherwise succeeded,
+			// we need to surface that last exit code.
+			if r.exit == 0 {
+				r.exit = r.lastExpandExit
 			}
 			break
 		}
@@ -359,6 +403,10 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 
 			r.setVarInternal(name, vr)
 		}
+
+		trace.call(fields[0], fields[1:]...)
+		trace.newLineFlush()
+
 		r.call(ctx, x.Args[0].Pos(), fields)
 		for _, restore := range restores {
 			r.setVarInternal(restore.name, restore.vr)
@@ -434,11 +482,24 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 		case *syntax.WordIter:
 			name := y.Name.Value
 			items := r.Params // for i; do ...
-			if y.InPos.IsValid() {
+
+			inToken := y.InPos.IsValid()
+			if inToken {
 				items = r.fields(y.Items...) // for i in ...; do ...
 			}
+
 			for _, field := range items {
 				r.setVarString(name, field)
+				trace.stringf("for %s in", y.Name.Value)
+				if inToken {
+					for _, item := range y.Items {
+						trace.string(" ")
+						trace.expr(item)
+					}
+				} else {
+					trace.string(` "$@"`)
+				}
+				trace.newLineFlush()
 				if r.loopStmtsBroken(ctx, x.Do) {
 					break
 				}
@@ -464,9 +525,32 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 		var val int
 		for _, expr := range x.Exprs {
 			val = r.arithm(expr)
+
+			if !tracingEnabled {
+				continue
+			}
+
+			switch v := expr.(type) {
+			case *syntax.Word:
+				qs, err := syntax.Quote(r.literal(v), syntax.LangBash)
+				if err != nil {
+					return
+				}
+				trace.stringf("let %v", qs)
+			case *syntax.BinaryArithm, *syntax.UnaryArithm:
+				trace.expr(x)
+			case *syntax.ParenArithm:
+				// TODO
+			}
 		}
+
+		trace.newLineFlush()
 		r.exit = oneIf(val == 0)
 	case *syntax.CaseClause:
+		trace.string("case ")
+		trace.expr(x.Word)
+		trace.string(" in")
+		trace.newLineFlush()
 		str := r.literal(x.Word)
 		for _, ci := range x.Items {
 			for _, word := range ci.Patterns {
@@ -597,7 +681,7 @@ func (r *Runner) trapCallback(ctx context.Context, callback, name string) {
 	r.handlingTrap = false
 }
 
-// setExit call this function to exit the shell with status
+// exitShell exits the current shell session with the given status code.
 func (r *Runner) exitShell(ctx context.Context, status int) {
 	if status != 0 {
 		r.trapCallback(ctx, r.callbackErr, "error")
@@ -634,11 +718,11 @@ func (r *Runner) flattenAssign(as *syntax.Assign) []*syntax.Assign {
 }
 
 func match(pat, name string) bool {
-	expr, err := pattern.Regexp(pat, 0)
+	expr, err := pattern.Regexp(pat, pattern.EntireString)
 	if err != nil {
 		return false
 	}
-	rx := regexp.MustCompile("^" + expr + "$")
+	rx := regexp.MustCompile(expr)
 	return rx.MatchString(name)
 }
 
@@ -774,6 +858,15 @@ func (r *Runner) call(ctx context.Context, pos syntax.Pos, args []string) {
 	if r.stop(ctx) {
 		return
 	}
+	if r.callHandler != nil {
+		var err error
+		args, err = r.callHandler(r.handlerCtx(ctx), args)
+		if err != nil {
+			// handler's custom fatal error
+			r.setErr(err)
+			return
+		}
+	}
 	name := args[0]
 	if body := r.Funcs[name]; body != nil {
 		// stack them to support nested func calls
@@ -835,6 +928,12 @@ func (r *Runner) open(ctx context.Context, path string, flags int, mode os.FileM
 	return f, err
 }
 
-func (r *Runner) stat(name string) (os.FileInfo, error) {
-	return os.Stat(r.absPath(name))
+func (r *Runner) stat(ctx context.Context, name string) (os.FileInfo, error) {
+	path := absPath(r.Dir, name)
+	return r.statHandler(ctx, path, true)
+}
+
+func (r *Runner) lstat(ctx context.Context, name string) (os.FileInfo, error) {
+	path := absPath(r.Dir, name)
+	return r.statHandler(ctx, path, false)
 }

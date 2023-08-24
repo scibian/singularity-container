@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -121,7 +120,7 @@ var testNetworks []string
 func TestGetAllNetworkConfigList(t *testing.T) {
 	test.EnsurePrivilege(t)
 
-	emptyDir, err := ioutil.TempDir("", "empty_conf_")
+	emptyDir, err := os.MkdirTemp("", "empty_conf_")
 	if err != nil {
 		t.Errorf("failed to creaty empty configuration directory: %s", err)
 	}
@@ -490,7 +489,7 @@ func testHTTPPortmap(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdo
 	}
 	conn.Close()
 
-	received, err := ioutil.ReadAll(stdout)
+	received, err := io.ReadAll(stdout)
 	if err != nil {
 		return err
 	}
@@ -517,19 +516,6 @@ func testBadBridge(nsPath string, cniPath *CNIPath, stdin io.WriteCloser, stdout
 func TestAddDelNetworks(t *testing.T) {
 	test.EnsurePrivilege(t)
 
-	// centos 6 doesn't support bridge/veth, only macvlan
-	// just skip tests on centos 6, rhel 6
-	b, err := ioutil.ReadFile("/etc/system-release-cpe")
-	if err == nil {
-		fields := strings.Split(string(b), ":")
-		switch fields[2] {
-		case "centos", "redhat":
-			if strings.HasPrefix(fields[4], "6") {
-				t.Skipf("RHEL6/CentOS6 don't support CNI bridge/veth - skipping")
-			}
-		}
-	}
-
 	cniPath := &CNIPath{
 		Conf:   defaultCNIConfPath,
 		Plugin: defaultCNIPluginPath,
@@ -554,7 +540,7 @@ func TestAddDelNetworks(t *testing.T) {
 		{
 			name:    "TestHTTPPortmap",
 			command: "nc",
-			args:    []string{"-l", "80"},
+			args:    []string{"-l", "0.0.0.0", "80"},
 			runFunc: testHTTPPortmap,
 		},
 		{
@@ -616,7 +602,7 @@ func TestMain(m *testing.M) {
 
 	test.EnsurePrivilege(nil)
 
-	defaultCNIConfPath, err = ioutil.TempDir("", "conf_test_")
+	defaultCNIConfPath, err = os.MkdirTemp("", "conf_test_")
 	if err != nil {
 		os.Exit(1)
 	}
@@ -624,7 +610,7 @@ func TestMain(m *testing.M) {
 	for _, conf := range confFiles {
 		testNetworks = append(testNetworks, conf.name)
 		path := filepath.Join(defaultCNIConfPath, conf.file)
-		if err := ioutil.WriteFile(path, []byte(conf.content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(conf.content), 0o644); err != nil {
 			os.RemoveAll(defaultCNIConfPath)
 			os.Exit(1)
 		}

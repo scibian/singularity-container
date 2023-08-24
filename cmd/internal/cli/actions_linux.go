@@ -6,9 +6,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	sifuser "github.com/sylabs/sif/v2/pkg/user"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/image/unpacker"
 	"github.com/sylabs/singularity/internal/pkg/instance"
@@ -31,6 +32,7 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/util/shell/interpreter"
 	"github.com/sylabs/singularity/internal/pkg/util/starter"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
+	"github.com/sylabs/singularity/pkg/image"
 	imgutil "github.com/sylabs/singularity/pkg/image"
 	clicallback "github.com/sylabs/singularity/pkg/plugin/callback/cli"
 	singularitycallback "github.com/sylabs/singularity/pkg/plugin/callback/runtime/engine/singularity"
@@ -46,44 +48,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// convertImage extracts the image found at filename to directory dir within a temporary directory
-// tempDir. If the unsquashfs binary is not located, the binary at unsquashfsPath is used. It is
-// the caller's responsibility to remove tempDir when no longer needed.
-func convertImage(filename string, unsquashfsPath string) (tempDir, imageDir string, err error) {
-	img, err := imgutil.Init(filename, false)
-	if err != nil {
-		return "", "", fmt.Errorf("could not open image %s: %s", filename, err)
-	}
-	defer img.File.Close()
-
-	part, err := img.GetRootFsPartition()
-	if err != nil {
-		return "", "", fmt.Errorf("while getting root filesystem in %s: %s", filename, err)
-	}
-
-	// Nice message if we have been given an older ext3 image, which cannot be extracted due to lack of privilege
-	// to loopback mount.
-	if part.Type == imgutil.EXT3 {
-		sylog.Errorf("File %q is an ext3 format continer image.", filename)
-		sylog.Errorf("Only SIF and squashfs images can be extracted in unprivileged mode.")
-		sylog.Errorf("Use `singularity build` to convert this image to a SIF file using a setuid install of Singularity.")
-	}
-
-	// Only squashfs can be extracted
-	if part.Type != imgutil.SQUASHFS {
-		return "", "", fmt.Errorf("not a squashfs root filesystem")
-	}
-
-	// create a reader for rootfs partition
-	reader, err := imgutil.NewPartitionReader(img, "", 0)
-	if err != nil {
-		return "", "", fmt.Errorf("could not extract root filesystem: %s", err)
-	}
-	s := unpacker.NewSquashfs()
-	if !s.HasUnsquashfs() && unsquashfsPath != "" {
-		s.UnsquashfsPath = unsquashfsPath
-	}
-
+// mkContainerDirs creates a tempDir, with a nested 'root' imageDir that an image can be placed into.
+// The directory nesting is required so that extraction of an image doesn't apply permissions that
+// cause the tempDir to be accessible to others.
+func mkContainerDirs() (tempDir, imageDir string, err error) {
 	// keep compatibility with v2
 	tmpdir := os.Getenv("SINGULARITY_TMPDIR")
 	if tmpdir == "" {
@@ -93,10 +61,10 @@ func convertImage(filename string, unsquashfsPath string) (tempDir, imageDir str
 		}
 	}
 
-	// create temporary sandbox
-	tempDir, err = ioutil.TempDir(tmpdir, "rootfs-")
+	// create temporary dir
+	tempDir, err = os.MkdirTemp(tmpdir, "rootfs-")
 	if err != nil {
-		return "", "", fmt.Errorf("could not create temporary sandbox: %s", err)
+		return "", "", fmt.Errorf("could not create temporary directory: %s", err)
 	}
 	defer func() {
 		if err != nil {
@@ -110,12 +78,120 @@ func convertImage(filename string, unsquashfsPath string) (tempDir, imageDir str
 		return "", "", fmt.Errorf("could not create root directory: %s", err)
 	}
 
-	// extract root filesystem
-	if err := s.ExtractAll(reader, imageDir); err != nil {
-		return "", "", fmt.Errorf("root filesystem extraction failed: %s", err)
+	return tempDir, imageDir, nil
+}
+
+// handleImage makes the image at filename available at directory dir within a
+// temporary directory tempDir, by extraction or squashfuse mount. It is the
+// caller's responsibility to remove tempDir when no longer needed. If isFUSE is
+// returned true, then the imageDir is a FUSE mount, and must be unmounted
+// during cleanup.
+func handleImage(ctx context.Context, filename string, tryFUSE bool) (isFUSE bool, tempDir, imageDir string, err error) {
+	img, err := imgutil.Init(filename, false)
+	if err != nil {
+		return false, "", "", fmt.Errorf("could not open image %s: %s", filename, err)
+	}
+	defer img.File.Close()
+
+	part, err := img.GetRootFsPartition()
+	if err != nil {
+		return false, "", "", fmt.Errorf("while getting root filesystem in %s: %s", filename, err)
 	}
 
-	return tempDir, imageDir, err
+	// Nice message if we have been given an older ext3 image, which cannot be extracted due to lack of privilege
+	// to loopback mount.
+	if part.Type == imgutil.EXT3 {
+		sylog.Errorf("File %q is an ext3 format container image.", filename)
+		sylog.Errorf("Only SIF and squashfs images can be extracted in unprivileged mode.")
+		sylog.Errorf("Use `singularity build` to convert this image to a SIF file using a setuid install of Singularity.")
+	}
+
+	// Only squashfs can be extracted
+	if part.Type != imgutil.SQUASHFS {
+		return false, "", "", fmt.Errorf("not a squashfs root filesystem")
+	}
+
+	tempDir, imageDir, err = mkContainerDirs()
+	if err != nil {
+		return false, "", "", err
+	}
+
+	// Attempt squashfuse mount
+	if tryFUSE {
+		err := squashfuseMount(ctx, img, imageDir)
+		if err == nil {
+			return true, tempDir, imageDir, nil
+		}
+		sylog.Warningf("SIF squashfuse mount failed, falling back to extraction: %v", err)
+	}
+
+	// Fall back to extraction to directory
+	err = extractImage(img, imageDir)
+	if err == nil {
+		return false, tempDir, imageDir, nil
+	}
+
+	if err2 := os.RemoveAll(tempDir); err2 != nil {
+		sylog.Errorf("Couldn't remove temporary directory %s: %s", tempDir, err2)
+	}
+	return false, "", "", fmt.Errorf("while extracting image: %v", err)
+}
+
+// extractImage extracts img to directory dir within a temporary directory
+// tempDir. It is the caller's responsibility to remove tempDir
+// when no longer needed.
+func extractImage(img *imgutil.Image, imageDir string) error {
+	sylog.Infof("Converting SIF file to temporary sandbox...")
+	unsquashfsPath, err := bin.FindBin("unsquashfs")
+	if err != nil {
+		return err
+	}
+
+	// create a reader for rootfs partition
+	reader, err := imgutil.NewPartitionReader(img, "", 0)
+	if err != nil {
+		return fmt.Errorf("could not extract root filesystem: %s", err)
+	}
+	s := unpacker.NewSquashfs()
+	if !s.HasUnsquashfs() && unsquashfsPath != "" {
+		s.UnsquashfsPath = unsquashfsPath
+	}
+
+	// extract root filesystem
+	if err := s.ExtractAll(reader, imageDir); err != nil {
+		return fmt.Errorf("root filesystem extraction failed: %s", err)
+	}
+
+	return nil
+}
+
+// squashfuseMount mounts img using squashfuse to directory imageDir. It is the
+// caller's responsibility to umount imageDir when no longer needed.
+func squashfuseMount(ctx context.Context, img *imgutil.Image, imageDir string) (err error) {
+	part, err := img.GetRootFsPartition()
+	if err != nil {
+		return fmt.Errorf("while getting root filesystem : %s", err)
+	}
+	if img.Type != image.SIF && part.Type != image.SQUASHFS {
+		return fmt.Errorf("only SIF images are supported")
+	}
+	if IsFakeroot {
+		return fmt.Errorf("fakeroot is not currently supported")
+	}
+	sylog.Infof("Mounting SIF with FUSE...")
+
+	squashfusePath, err := bin.FindBin("squashfuse")
+	if err != nil {
+		return fmt.Errorf("squashfuse is required: %w", err)
+	}
+	if _, err := bin.FindBin("fusermount"); err != nil {
+		return fmt.Errorf("fusermount is required: %w", err)
+	}
+
+	return sifuser.Mount(ctx, img.Path, imageDir,
+		sifuser.OptMountStdout(os.Stdout),
+		sifuser.OptMountStderr(os.Stderr),
+		sifuser.OptMountSquashfusePath(squashfusePath))
 }
 
 // checkHidepid checks if hidepid is set on /proc mount point, when this
@@ -142,6 +218,7 @@ func hidepidProc() bool {
 // Set engine flags to disable mounts, to allow overriding them if they are set true
 // in the singularity.conf
 func setNoMountFlags(c *singularityConfig.EngineConfig) {
+	skipBinds := []string{}
 	for _, v := range NoMount {
 		switch v {
 		case "proc":
@@ -161,12 +238,18 @@ func setNoMountFlags(c *singularityConfig.EngineConfig) {
 		case "cwd":
 			c.SetNoCwd(true)
 		default:
+			if filepath.IsAbs(v) {
+				skipBinds = append(skipBinds, v)
+				continue
+			}
 			sylog.Warningf("Ignoring unknown mount type '%s'", v)
 		}
 	}
+	c.SetSkipBinds(skipBinds)
 }
 
 // TODO: Let's stick this in another file so that that CLI is just CLI
+//
 //nolint:maintidx
 func execStarter(cobraCmd *cobra.Command, image string, args []string, name string) {
 	var err error
@@ -215,6 +298,11 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		sylog.Debugf("Saving umask %04o for propagation into container", currMask)
 		engineConfig.SetUmask(currMask)
 		engineConfig.SetRestoreUmask(true)
+	}
+
+	if NoEval {
+		engineConfig.SetNoEval(true)
+		generator.AddProcessEnv("SINGULARITY_NO_EVAL", "1")
 	}
 
 	uidParam := security.GetParam(Security, "uid")
@@ -410,9 +498,21 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		generator.AddProcessEnv("SINGULARITY_SHELL", ShellPath)
 	}
 
-	checkPrivileges(CgroupsPath != "", "--apply-cgroups", func() {
-		engineConfig.SetCgroupsPath(CgroupsPath)
-	})
+	if name != "" && uid != 0 && CgroupsTOMLFile != "" {
+		sylog.Fatalf("Instances do not currently support rootless cgroups")
+	}
+
+	if uid != 0 {
+		sylog.Debugf("Recording rootless XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS")
+		engineConfig.SetXdgRuntimeDir(os.Getenv("XDG_RUNTIME_DIR"))
+		engineConfig.SetDbusSessionBusAddress(os.Getenv("DBUS_SESSION_BUS_ADDRESS"))
+	}
+
+	cgJSON, err := getCgroupsJSON()
+	if err != nil {
+		sylog.Fatalf("While parsing cgroups configuration: %s", err)
+	}
+	engineConfig.SetCgroupsJSON(cgJSON)
 
 	if IsWritable && IsWritableTmpfs {
 		sylog.Warningf("Disabling --writable-tmpfs flag, mutually exclusive with --writable")
@@ -571,7 +671,7 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 			"SINGULARITY_IMAGE="+engineConfig.GetImage(),
 		)
 
-		content, err := ioutil.ReadFile(SingularityEnvFile)
+		content, err := os.ReadFile(SingularityEnvFile)
 		if err != nil {
 			sylog.Fatalf("Could not read %q environment file: %s", SingularityEnvFile, err)
 		}
@@ -671,17 +771,13 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 		}
 
 		if convert {
-			unsquashfsPath, err := bin.FindBin("unsquashfs")
+			tryFUSE := SIFFUSE || engineConfig.File.SIFFUSE
+			fuse, tempDir, imageDir, err := handleImage(cobraCmd.Context(), image, tryFUSE)
 			if err != nil {
-				sylog.Fatalf("while extracting %s: %s", image, err)
-			}
-			sylog.Verbosef("User namespace requested, convert image %s to sandbox", image)
-			sylog.Infof("Converting SIF file to temporary sandbox...")
-			tempDir, imageDir, err := convertImage(image, unsquashfsPath)
-			if err != nil {
-				sylog.Fatalf("while extracting %s: %s", image, err)
+				sylog.Fatalf("while handling %s: %s", image, err)
 			}
 			engineConfig.SetImage(imageDir)
+			engineConfig.SetImageFuse(fuse)
 			engineConfig.SetDeleteTempDir(tempDir)
 			generator.AddProcessEnv("SINGULARITY_CONTAINER", imageDir)
 
@@ -694,6 +790,10 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 				}
 			}
 		}
+	}
+
+	if SIFFUSE && !(UserNamespace || insideUserNs) {
+		sylog.Warningf("--sif-fuse is not supported without user namespace, ignoring.")
 	}
 
 	// setuid workflow set RLIMIT_STACK to its default value,
@@ -740,6 +840,7 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 			starter.WithStdout(stdout),
 			starter.WithStderr(stderr),
 			starter.LoadOverlayModule(loadOverlay),
+			starter.CleanupHost(engineConfig.GetImageFuse()),
 		)
 
 		if sylog.GetLevel() != 0 {
@@ -771,6 +872,7 @@ func execStarter(cobraCmd *cobra.Command, image string, args []string, name stri
 			cfg,
 			starter.UseSuid(useSuid),
 			starter.LoadOverlayModule(loadOverlay),
+			starter.CleanupHost(engineConfig.GetImageFuse()),
 		)
 		sylog.Fatalf("%s", err)
 	}

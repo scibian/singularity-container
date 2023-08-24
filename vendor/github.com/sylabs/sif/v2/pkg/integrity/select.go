@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
 	"github.com/sylabs/sif/v2/pkg/sif"
 )
 
@@ -97,6 +98,19 @@ func getObjectSignatures(f *sif.FileImage, id uint32) ([]sif.Descriptor, error) 
 	return sigs, nil
 }
 
+// isLegacySignature returns true if data contains a legacy signature.
+func isLegacySignature(data []byte) bool {
+	// Legacy signatures always encoded in clear-sign format.
+	b, _ := clearsign.Decode(data)
+	if b == nil {
+		return false
+	}
+
+	// The plaintext of legacy signatures always begins with "SIFHASH", and non-legacy signatures
+	// never do, as they are JSON.
+	return bytes.HasPrefix(b.Plaintext, []byte("SIFHASH:\n"))
+}
+
 // getGroupSignatures returns descriptors in f that contain signature objects linked to the object
 // group with identifier groupID. If legacy is true, only legacy signatures are considered.
 // Otherwise, only non-legacy signatures are considered. If no such signatures are found, a
@@ -112,8 +126,7 @@ func getGroupSignatures(f *sif.FileImage, groupID uint32, legacy bool) ([]sif.De
 				return false, err
 			}
 
-			isLegacy, err := isLegacySignature(b)
-			return isLegacy == legacy, err
+			return isLegacySignature(b) == legacy, err
 		},
 	)
 	if err != nil {
@@ -152,7 +165,9 @@ func getGroupMinObjectID(f *sif.FileImage, groupID uint32) (uint32, error) {
 
 // getGroupIDs returns all identifiers for the groups contained in f, sorted by ID. If no groups
 // are present, errNoGroupsFound is returned.
-func getGroupIDs(f *sif.FileImage) (groupIDs []uint32, err error) {
+func getGroupIDs(f *sif.FileImage) ([]uint32, error) {
+	var groupIDs []uint32
+
 	f.WithDescriptors(func(od sif.Descriptor) bool {
 		if groupID := od.GroupID(); groupID != 0 {
 			groupIDs = insertSorted(groupIDs, groupID)
@@ -161,10 +176,10 @@ func getGroupIDs(f *sif.FileImage) (groupIDs []uint32, err error) {
 	})
 
 	if len(groupIDs) == 0 {
-		err = errNoGroupsFound
+		return nil, errNoGroupsFound
 	}
 
-	return groupIDs, err
+	return groupIDs, nil
 }
 
 // getFingerprints returns a sorted list of unique fingerprints contained in sigs.
@@ -175,6 +190,10 @@ func getFingerprints(sigs []sif.Descriptor) ([][]byte, error) {
 		_, fp, err := sig.SignatureMetadata()
 		if err != nil {
 			return nil, err
+		}
+
+		if len(fp) == 0 {
+			continue
 		}
 
 		// Check if fingerprint is already in list.

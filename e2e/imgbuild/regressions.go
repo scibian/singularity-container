@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,8 +6,6 @@
 package imgbuild
 
 import (
-	"bytes"
-	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -17,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sylabs/singularity/e2e/internal/e2e"
-	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 )
 
@@ -66,7 +63,7 @@ func (c *imgBuildTests) issue4407(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
 	sandboxDir := func() string {
-		name, err := ioutil.TempDir(c.env.TestDir, "sandbox.")
+		name, err := os.MkdirTemp(c.env.TestDir, "sandbox.")
 		if err != nil {
 			log.Fatalf("failed to create temporary directory for sandbox: %v", err)
 		}
@@ -109,50 +106,6 @@ func (c *imgBuildTests) issue4407(t *testing.T) {
 			e2e.ExpectExit(0),
 		)
 	}
-}
-
-// This test will build a sandbox, as a non-root user from a dockerhub image
-// that contains a single folder and file with `000` permission.
-// It will verify that with `--fix-perms` we force files to be accessible,
-// moveable, removable by the user. We check for `700` and `400` permissions on
-// the folder and file respectively.
-func (c *imgBuildTests) issue4524(t *testing.T) {
-	sandbox := filepath.Join(c.env.TestDir, "issue_4524")
-
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(e2e.UserProfile),
-		e2e.WithCommand("build"),
-		e2e.WithArgs("--fix-perms", "--sandbox", sandbox, "docker://sylabsio/issue4524"),
-		e2e.PostRun(func(t *testing.T) {
-			// If we failed to build the sandbox completely, leave what we have for
-			// investigation.
-			if t.Failed() {
-				t.Logf("Test %s failed, not removing directory %s", t.Name(), sandbox)
-				return
-			}
-
-			if !e2e.PathPerms(t, path.Join(sandbox, "directory"), 0o700) {
-				t.Error("Expected 0700 permissions on 000 test directory in rootless sandbox")
-			}
-			if !e2e.PathPerms(t, path.Join(sandbox, "file"), 0o600) {
-				t.Error("Expected 0600 permissions on 000 test file in rootless sandbox")
-			}
-
-			// If the permissions aren't as we expect them to be, leave what we have for
-			// investigation.
-			if t.Failed() {
-				t.Logf("Test %s failed, not removing directory %s", t.Name(), sandbox)
-				return
-			}
-
-			err := os.RemoveAll(sandbox)
-			if err != nil {
-				t.Logf("Cannot remove sandbox directory: %#v", err)
-			}
-		}),
-		e2e.ExpectExit(0),
-	)
 }
 
 func (c *imgBuildTests) issue4583(t *testing.T) {
@@ -203,23 +156,9 @@ func (c imgBuildTests) issue4837(t *testing.T) {
 	)
 }
 
-func (c *imgBuildTests) issue4943(t *testing.T) {
-	require.Arch(t, "amd64")
-
-	const (
-		image = "docker://gitlab-registry.cern.ch/linuxsupport/cc7-base:20191107"
-	)
-
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(e2e.UserProfile),
-		e2e.WithCommand("build"),
-		e2e.WithArgs("--force", "/dev/null", image),
-		e2e.ExpectExit(0),
-	)
-}
-
-// Test -c section parameter is correctly handled.
+// Test %post -c section parameter is correctly handled. We use `-c /bin/busybox
+// sh` for this test, and can observe the `/proc/$$/cmdline` to check that was
+// used to invoke the post script.
 func (c *imgBuildTests) issue4967(t *testing.T) {
 	image := filepath.Join(c.env.TestDir, "issue_4967.sif")
 
@@ -233,7 +172,7 @@ func (c *imgBuildTests) issue4967(t *testing.T) {
 		}),
 		e2e.ExpectExit(
 			0,
-			e2e.ExpectOutput(e2e.ContainMatch, "function foo"),
+			e2e.ExpectOutput(e2e.ContainMatch, "/bin/busybox sh /.post.script"),
 		),
 	)
 }
@@ -263,7 +202,7 @@ func (c *imgBuildTests) issue5166(t *testing.T) {
 	sensibleDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "sensible-dir-", "")
 
 	secret := filepath.Join(sensibleDir, "secret")
-	if err := ioutil.WriteFile(secret, []byte("secret"), 0o644); err != nil {
+	if err := os.WriteFile(secret, []byte("secret"), 0o644); err != nil {
 		t.Fatalf("could not create %s: %s", secret, err)
 	}
 
@@ -302,56 +241,6 @@ func (c *imgBuildTests) issue5166(t *testing.T) {
 		e2e.PostRun(func(t *testing.T) {
 			if !t.Failed() {
 				cleanup(t)
-			}
-		}),
-		e2e.ExpectExit(0),
-	)
-}
-
-func (c *imgBuildTests) issue5172(t *testing.T) {
-	e2e.EnsureRegistry(t)
-
-	u := e2e.UserProfile.HostUser(t)
-
-	// create $HOME/.config/containers/registries.conf
-	regImage := "docker://localhost:5000/my-busybox"
-	regDir := filepath.Join(u.Dir, ".config", "containers")
-	regFile := filepath.Join(regDir, "registries.conf")
-	imagePath := filepath.Join(c.env.TestDir, "issue-5172")
-
-	if err := os.MkdirAll(regDir, 0o755); err != nil {
-		t.Fatalf("can't create directory %s: %s", regDir, err)
-	}
-
-	// add our test registry as insecure and test build/pull
-	b := new(bytes.Buffer)
-	b.WriteString("[registries.insecure]\nregistries = ['localhost']")
-	if err := ioutil.WriteFile(regFile, b.Bytes(), 0o644); err != nil {
-		t.Fatalf("can't create %s: %s", regFile, err)
-	}
-	defer os.RemoveAll(regDir)
-
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(e2e.UserProfile),
-		e2e.WithCommand("build"),
-		e2e.WithArgs("--sandbox", imagePath, regImage),
-		e2e.PostRun(func(t *testing.T) {
-			if !t.Failed() {
-				os.RemoveAll(imagePath)
-			}
-		}),
-		e2e.ExpectExit(0),
-	)
-
-	c.env.RunSingularity(
-		t,
-		e2e.WithProfile(e2e.UserProfile),
-		e2e.WithCommand("pull"),
-		e2e.WithArgs(imagePath, regImage),
-		e2e.PostRun(func(t *testing.T) {
-			if !t.Failed() {
-				os.RemoveAll(imagePath)
 			}
 		}),
 		e2e.ExpectExit(0),
@@ -502,7 +391,7 @@ func (c *imgBuildTests) issue3848(t *testing.T) {
 	tmpDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "issue-3848-", "")
 	defer cleanup(t)
 
-	f, err := ioutil.TempFile(tmpDir, "test-def-")
+	f, err := os.CreateTemp(tmpDir, "test-def-")
 	if err != nil {
 		t.Fatalf("failed to open temp file: %v", err)
 	}
@@ -520,8 +409,8 @@ func (c *imgBuildTests) issue3848(t *testing.T) {
 		File: tmpfile,
 	}
 
-	defTmpl := `Bootstrap: docker
-From: alpine:latest
+	defTmpl := `Bootstrap: library
+From: alpine:3.11.5
 
 %files
 	{{ .File }}

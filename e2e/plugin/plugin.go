@@ -1,4 +1,4 @@
-// Copyright (c) 2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -22,7 +22,7 @@ func (c ctx) testPluginBasic(t *testing.T) {
 	pluginName := "github.com/sylabs/singularity/e2e-plugin"
 
 	// plugin code directory
-	pluginDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "plugin-dir-", "")
+	pluginDir, cleanup := e2e.MakeTempDir(t, "testdata", "e2e-plugin-dir-", "")
 	defer cleanup(t)
 
 	// plugin sif file
@@ -42,6 +42,14 @@ func (c ctx) testPluginBasic(t *testing.T) {
 			command:    "plugin create",
 			args:       []string{pluginDir, pluginName},
 			expectExit: 0,
+		},
+		{
+			name:       "ListNoPlugins",
+			profile:    e2e.UserProfile,
+			command:    "plugin list",
+			args:       []string{},
+			expectExit: 0,
+			expectOp:   e2e.ExpectOutput(e2e.ExactMatch, "There are no plugins installed."),
 		},
 		{
 			name:       "Compile",
@@ -65,12 +73,12 @@ func (c ctx) testPluginBasic(t *testing.T) {
 			expectExit: 255,
 		},
 		{
-			name:       "List",
+			name:       "ListAfterInstall",
 			profile:    e2e.UserProfile,
 			command:    "plugin list",
 			args:       []string{},
 			expectExit: 0,
-			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, pluginName),
+			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, "yes  "+pluginName),
 		},
 		{
 			name:       "Disable",
@@ -78,6 +86,14 @@ func (c ctx) testPluginBasic(t *testing.T) {
 			command:    "plugin disable",
 			args:       []string{pluginName},
 			expectExit: 0,
+		},
+		{
+			name:       "ListAfterDisable",
+			profile:    e2e.UserProfile,
+			command:    "plugin list",
+			args:       []string{},
+			expectExit: 0,
+			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, "no  "+pluginName),
 		},
 		{
 			name:       "DisableAsUser",
@@ -92,6 +108,14 @@ func (c ctx) testPluginBasic(t *testing.T) {
 			command:    "plugin enable",
 			args:       []string{pluginName},
 			expectExit: 0,
+		},
+		{
+			name:       "ListAfterEnable",
+			profile:    e2e.UserProfile,
+			command:    "plugin list",
+			args:       []string{},
+			expectExit: 0,
+			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, "yes  "+pluginName),
 		},
 		{
 			name:       "EnableAsUser",
@@ -113,6 +137,7 @@ func (c ctx) testPluginBasic(t *testing.T) {
 			command:    "plugin inspect",
 			args:       []string{sifFile},
 			expectExit: 0,
+			expectOp:   e2e.ExpectOutput(e2e.ContainMatch, "Name: "+pluginName),
 		},
 		{
 			name:       "UninstallAsUser",
@@ -127,6 +152,14 @@ func (c ctx) testPluginBasic(t *testing.T) {
 			command:    "plugin uninstall",
 			args:       []string{pluginName},
 			expectExit: 0,
+		},
+		{
+			name:       "ListAfterUninstall",
+			profile:    e2e.UserProfile,
+			command:    "plugin list",
+			args:       []string{},
+			expectExit: 0,
+			expectOp:   e2e.ExpectOutput(e2e.ExactMatch, "There are no plugins installed."),
 		},
 	}
 

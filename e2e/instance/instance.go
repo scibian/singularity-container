@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,7 +7,6 @@ package instance
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -101,7 +100,7 @@ func (c *ctx) testBasicOptions(t *testing.T) {
 	fileContents := []byte("world")
 
 	// Create a temporary directory to serve as a home directory.
-	dir, err := ioutil.TempDir(c.env.TestDir, "TestInstance")
+	dir, err := os.MkdirTemp(c.env.TestDir, "TestInstance")
 	if err != nil {
 		t.Fatalf("Failed to create temporary directory: %v", err)
 	}
@@ -109,7 +108,7 @@ func (c *ctx) testBasicOptions(t *testing.T) {
 
 	// Create and populate a temporary file.
 	tempFile := filepath.Join(dir, fileName)
-	err = ioutil.WriteFile(tempFile, fileContents, 0o644)
+	err = os.WriteFile(tempFile, fileContents, 0o644)
 	err = errors.Wrapf(err, "creating temporary test file %s", tempFile)
 	if err != nil {
 		t.Fatalf("Failed to create file: %+v", err)
@@ -158,7 +157,7 @@ func (c *ctx) testContain(t *testing.T) {
 	const fileName = "thegreattestfile"
 
 	// Create a temporary directory to serve as a contain directory.
-	dir, err := ioutil.TempDir("", "TestInstance")
+	dir, err := os.MkdirTemp("", "TestInstance")
 	if err != nil {
 		t.Fatalf("Failed to create temporary directory: %v", err)
 	}
@@ -199,42 +198,22 @@ func (c *ctx) testContain(t *testing.T) {
 
 // Test by running directly from URI
 func (c *ctx) testInstanceFromURI(t *testing.T) {
-	instances := []struct {
-		name string
-		uri  string
-	}{
-		{
-			name: "test_from_docker",
-			uri:  "docker://busybox",
-		},
-		{
-			name: "test_from_library",
-			uri:  "library://busybox:1.31.1",
-		},
-		// TODO(mem): reenable this; disabled while shub is down
-		// {
-		// 	name: "test_from_shub",
-		// 	uri:  "shub://singularityhub/busybox",
-		// },
-	}
-
-	for _, i := range instances {
-		args := []string{i.uri, i.name}
-		c.env.RunSingularity(
-			t,
-			e2e.WithProfile(c.profile),
-			e2e.WithCommand("instance start"),
-			e2e.WithArgs(args...),
-			e2e.PostRun(func(t *testing.T) {
-				if t.Failed() {
-					return
-				}
-				c.execInstance(t, i.name, "id")
-				c.stopInstance(t, i.name)
-			}),
-			e2e.ExpectExit(0),
-		)
-	}
+	name := "test_from_library"
+	args := []string{"library://busybox:1.31.1", name}
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(c.profile),
+		e2e.WithCommand("instance start"),
+		e2e.WithArgs(args...),
+		e2e.PostRun(func(t *testing.T) {
+			if t.Failed() {
+				return
+			}
+			c.execInstance(t, name, "id")
+			c.stopInstance(t, name)
+		}),
+		e2e.ExpectExit(0),
+	)
 }
 
 // Execute an instance process, kill master process
@@ -251,7 +230,7 @@ func (c *ctx) testGhostInstance(t *testing.T) {
 			t.Fatalf("instance %s failed to start correctly", instanceName)
 		}
 
-		d, err := ioutil.ReadFile(pidfile)
+		d, err := os.ReadFile(pidfile)
 		if err != nil {
 			t.Fatalf("failed to read pid file: %s", err)
 		}

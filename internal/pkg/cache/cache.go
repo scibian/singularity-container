@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,7 +9,6 @@ package cache
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -161,7 +160,7 @@ func (h *Handle) GetEntry(cacheType string, hash string) (e *Entry, err error) {
 func (h *Handle) CleanCache(cacheType string, dryRun bool, days int) (err error) {
 	dir := h.getCacheTypeDir(cacheType)
 
-	files, err := ioutil.ReadDir(dir)
+	files, err := os.ReadDir(dir)
 	if (err != nil && os.IsNotExist(err)) || len(files) == 0 {
 		sylog.Infof("No cached files to remove at %s", dir)
 		return nil
@@ -169,9 +168,15 @@ func (h *Handle) CleanCache(cacheType string, dryRun bool, days int) (err error)
 
 	errCount := 0
 	for _, f := range files {
-
 		if days >= 0 {
-			if time.Since(f.ModTime()) < time.Duration(days*24)*time.Hour {
+			fi, err := f.Info()
+			if err != nil {
+				sylog.Errorf("Could not get info for cache entry '%s': %v", f.Name(), err)
+				errCount = errCount + 1
+				continue
+			}
+
+			if time.Since(fi.ModTime()) < time.Duration(days*24)*time.Hour {
 				sylog.Debugf("Skipping %s: less that %d days old", f.Name(), days)
 				continue
 			}
@@ -193,21 +198,6 @@ func (h *Handle) CleanCache(cacheType string, dryRun bool, days int) (err error)
 	}
 
 	return err
-}
-
-// cleanAllCaches is an utility function that wipes all files in the
-// cache directory, will return a error if one occurs
-func (h *Handle) cleanAllCaches() {
-	if h.disabled {
-		return
-	}
-
-	for _, ct := range append(FileCacheTypes, OciCacheTypes...) {
-		dir := h.getCacheTypeDir(ct)
-		if err := os.RemoveAll(dir); err != nil {
-			sylog.Verbosef("unable to clean %s cache, directory %s: %v", ct, dir, err)
-		}
-	}
 }
 
 // IsDisabled returns true if the cache is disabled
@@ -291,12 +281,12 @@ func New(cfg Config) (h *Handle, err error) {
 // getCacheParentDir figures out where the parent directory of the cache is.
 //
 // Singularity makes the following assumptions:
-// - the default location for caches is specified by RootDefault
-// - a user can specify the environment variable specified by DirEnv to
-//   change the location
-// - a user can change the location of a cache at any time
-// - but in the context of a Singularity command, the cache location
-//   cannot change once the command starts executing
+//   - the default location for caches is specified by RootDefault
+//   - a user can specify the environment variable specified by DirEnv to
+//     change the location
+//   - a user can change the location of a cache at any time
+//   - but in the context of a Singularity command, the cache location
+//     cannot change once the command starts executing
 func getCacheParentDir() string {
 	// If the user defined the special environment variable, we use its value
 	// as base directory.
