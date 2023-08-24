@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,6 +9,7 @@ package singularity
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/sylabs/singularity/internal/pkg/remote"
@@ -33,17 +34,15 @@ var ErrLoginAborted = errors.New("user aborted login")
 // If the supplied remote name is an empty string, it will attempt
 // to use the default remote.
 func RemoteLogin(usrConfigFile string, args *LoginArgs) (err error) {
-	c := &remote.Config{}
-
 	// opening config file
-	file, err := os.OpenFile(usrConfigFile, os.O_RDWR|os.O_CREATE, 0600)
+	file, err := os.OpenFile(usrConfigFile, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("while opening remote config file: %s", err)
 	}
 	defer file.Close()
 
 	// read file contents to config struct
-	c, err = remote.ReadFrom(file)
+	c, err := remote.ReadFrom(file)
 	if err != nil {
 		return fmt.Errorf("while parsing remote config data: %s", err)
 	}
@@ -70,6 +69,9 @@ func RemoteLogin(usrConfigFile string, args *LoginArgs) (err error) {
 		}
 	} else {
 		// services (oci registry, single keyserver etc.)
+		if args.Tokenfile != "" {
+			return fmt.Errorf("--tokenfile is only supported for login to a remote endpoint, not OCI (docker/oras) or keyservers")
+		}
 		if err := c.Login(args.Name, args.Username, args.Password, args.Insecure); err != nil {
 			return fmt.Errorf("while login to %s: %s", args.Name, err)
 		}
@@ -80,7 +82,7 @@ func RemoteLogin(usrConfigFile string, args *LoginArgs) (err error) {
 		return fmt.Errorf("while truncating remote config file: %s", err)
 	}
 
-	if n, err := file.Seek(0, os.SEEK_SET); err != nil || n != 0 {
+	if n, err := file.Seek(0, io.SeekStart); err != nil || n != 0 {
 		return fmt.Errorf("failed to reset %s cursor: %s", file.Name(), err)
 	}
 
@@ -113,7 +115,7 @@ func endPointLogin(ep *endpoint.Config, args *LoginArgs) error {
 		// Interactive login
 		// If a token is already set, prompt to see if we want to replace it
 		if ep.Token != "" {
-			input, err := interactive.AskYNQuestion("n", "An access token is already set for this remote. Replace it? [N/y]")
+			input, err := interactive.AskYNQuestion("n", "An access token is already set for this remote. Replace it? [N/y] ")
 			if err != nil {
 				return fmt.Errorf("while reading input: %s", err)
 			}
@@ -122,7 +124,12 @@ func endPointLogin(ep *endpoint.Config, args *LoginArgs) error {
 			}
 		}
 
-		fmt.Printf("Generate an access token at https://%s/auth/tokens, and paste it here.\n", ep.URI)
+		webURL, err := ep.GetURL()
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Generate an access token at %s/auth/tokens, and paste it here.\n", webURL)
 		fmt.Println("Token entered will be hidden for security.")
 		token, err = interactive.AskQuestionNoEcho("Access Token: ")
 		if err != nil {

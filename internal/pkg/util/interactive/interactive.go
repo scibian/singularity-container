@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -10,17 +10,20 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/sylabs/singularity/pkg/sylog"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
-var errInvalidChoice = errors.New("invalid choice")
-var errPassphraseMismatch = errors.New("passphrases do not match")
-var errTooManyRetries = errors.New("too many retries while getting a passphrase")
+var (
+	errInvalidChoice      = errors.New("invalid choice")
+	errPassphraseMismatch = errors.New("passphrases do not match")
+	errTooManyRetries     = errors.New("too many retries while getting a passphrase")
+)
 
 // askQuestionUsingGenericDescr reads from a file descriptor (more precisely
 // from a *os.File object) one line at a time. The file can be a normal file or
@@ -64,7 +67,7 @@ func askQuestionUsingGenericDescr(f *os.File) (string, error) {
 	// Note that we do not check for errors since some cases (e.g., pipes)
 	// will actually not allow to perform a Seek(). This is intended and
 	// will not create a problem.
-	f.Seek(pos+int64(strLen), os.SEEK_SET)
+	f.Seek(pos+int64(strLen), io.SeekStart)
 
 	return response, nil
 }
@@ -133,9 +136,9 @@ func AskQuestionNoEcho(format string, a ...interface{}) (string, error) {
 	// underlying file descriptor is associated to a VT100 terminal, not with
 	// other file descriptors, including when redirecting Stdin to an actual
 	// file in the context of testing or in the context of pipes.
-	if terminal.IsTerminal(int(os.Stdin.Fd())) {
+	if term.IsTerminal(int(os.Stdin.Fd())) {
 		var resp []byte
-		resp, err = terminal.ReadPassword(int(os.Stdin.Fd()))
+		resp, err = term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {
 			return "", err
 		}

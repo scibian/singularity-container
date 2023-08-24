@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,7 +8,6 @@ package singularity
 import (
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strings"
 
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
@@ -60,47 +59,7 @@ type FuseMount struct {
 	Cmd           *exec.Cmd `json:"-"`                       // holds the process exec command when FUSE driver run in foreground mode
 }
 
-// BindOption represents a bind option with its associated
-// value if any.
-type BindOption struct {
-	Value string `json:"value,omitempty"`
-}
-
-// BindPath stores bind path.
-type BindPath struct {
-	Source      string                 `json:"source"`
-	Destination string                 `json:"destination"`
-	Options     map[string]*BindOption `json:"options"`
-}
-
-// ImageSrc returns the value of option image-src or an empty
-// string if the option wasn't set.
-func (b *BindPath) ImageSrc() string {
-	if b.Options != nil && b.Options["image-src"] != nil {
-		src := b.Options["image-src"].Value
-		if src == "" {
-			return "/"
-		}
-		return src
-	}
-	return ""
-}
-
-// ImageSrc returns the value of option id or an empty
-// string if the option wasn't set.
-func (b *BindPath) ID() string {
-	if b.Options != nil && b.Options["id"] != nil {
-		return b.Options["id"].Value
-	}
-	return ""
-}
-
-// Readonly returns the option ro was set or not.
-func (b *BindPath) Readonly() bool {
-	return b.Options != nil && b.Options["ro"] != nil
-}
-
-// JSONConfig stores engine specific confguration that is allowed to be set by the user.
+// JSONConfig stores engine specific configuration that is allowed to be set by the user.
 type JSONConfig struct {
 	ScratchDir        []string          `json:"scratchdir,omitempty"`
 	OverlayImage      []string          `json:"overlayImage,omitempty"`
@@ -136,7 +95,9 @@ type JSONConfig struct {
 	WritableImage     bool              `json:"writableImage,omitempty"`
 	WritableTmpfs     bool              `json:"writableTmpfs,omitempty"`
 	Contain           bool              `json:"container,omitempty"`
-	Nv                bool              `json:"nv,omitempty"`
+	NvLegacy          bool              `json:"nvLegacy,omitempty"`
+	NvCCLI            bool              `json:"nvCCLI,omitempty"`
+	NvCCLIEnv         []string          `json:"NvCCLIEnv,omitempty"`
 	Rocm              bool              `json:"rocm,omitempty"`
 	CustomHome        bool              `json:"customHome,omitempty"`
 	Instance          bool              `json:"instance,omitempty"`
@@ -172,12 +133,12 @@ func (e *EngineConfig) GetImage() string {
 	return e.JSON.Image
 }
 
-// SetKey sets the key for the image's system partition.
+// SetEncryptionKey sets the key for the image's system partition.
 func (e *EngineConfig) SetEncryptionKey(key []byte) {
 	e.JSON.EncryptionKey = key
 }
 
-// GetKey retrieves the key for image's system partition.
+// GetEncryptionKey retrieves the key for image's system partition.
 func (e *EngineConfig) GetEncryptionKey() []byte {
 	return e.JSON.EncryptionKey
 }
@@ -212,14 +173,34 @@ func (e *EngineConfig) GetContain() bool {
 	return e.JSON.Contain
 }
 
-// SetNv sets nv flag to bind cuda libraries into containee.JSON.
-func (e *EngineConfig) SetNv(nv bool) {
-	e.JSON.Nv = nv
+// SetNvLegacy sets nvLegacy flag to bind cuda libraries into containee.JSON.
+func (e *EngineConfig) SetNvLegacy(nv bool) {
+	e.JSON.NvLegacy = nv
 }
 
-// GetNv returns if nv flag is set or not.
-func (e *EngineConfig) GetNv() bool {
-	return e.JSON.Nv
+// GetNvLegacy returns if nv flag is set or not.
+func (e *EngineConfig) GetNvLegacy() bool {
+	return e.JSON.NvLegacy
+}
+
+// SetNvCCLI sets nvcontainer flag to use nvidia-container-cli for CUDA setup
+func (e *EngineConfig) SetNvCCLI(nvCCLI bool) {
+	e.JSON.NvCCLI = nvCCLI
+}
+
+// GetNvCCLI returns if NvCCLI flag is set or not.
+func (e *EngineConfig) GetNvCCLI() bool {
+	return e.JSON.NvCCLI
+}
+
+// SetNVCCLIEnv sets env vars holding options for nvidia-container-cli GPU setup
+func (e *EngineConfig) SetNvCCLIEnv(NvCCLIEnv []string) {
+	e.JSON.NvCCLIEnv = NvCCLIEnv
+}
+
+// GetNVCCLIEnv returns env vars holding options for nvidia-container-cli GPU setup
+func (e *EngineConfig) GetNvCCLIEnv() []string {
+	return e.JSON.NvCCLIEnv
 }
 
 // SetRocm sets rocm flag to bind rocm libraries into containee.JSON.
@@ -280,141 +261,6 @@ func (e *EngineConfig) SetCustomHome(custom bool) {
 // GetCustomHome retrieves if home path is a custom path.
 func (e *EngineConfig) GetCustomHome() bool {
 	return e.JSON.CustomHome
-}
-
-// ParseBindPath parses a string and returns all encountered
-// bind paths as array.
-func ParseBindPath(bindpaths string) ([]BindPath, error) {
-	var bind string
-	var binds []BindPath
-	var elem int
-
-	var validOptions = map[string]bool{
-		"ro":        true,
-		"rw":        true,
-		"image-src": false,
-		"id":        false,
-	}
-
-	// there is a better regular expression to handle
-	// that directly without all the logic below ...
-	// we need to parse various syntax:
-	// source1
-	// source1:destination1
-	// source1:destination1:option1
-	// source1:destination1:option1,option2
-	// source1,source2
-	// source1:destination1:option1,source2
-	re := regexp.MustCompile(`([^,^:]+:?)`)
-
-	// with the regex above we get string array:
-	// - source1 -> [source1]
-	// - source1:destination1 -> [source1:, destination1]
-	// - source1:destination1:option1 -> [source1:, destination1:, option1]
-	// - source1:destination1:option1,option2 -> [source1:, destination1:, option1, option2]
-	for _, m := range re.FindAllString(bindpaths, -1) {
-		s := strings.TrimSpace(m)
-		isColon := bind != "" && bind[len(bind)-1] == ':'
-
-		// options are taken only if the bind has a source
-		// and a destination
-		if elem == 2 {
-			isOption := false
-
-			for option, flag := range validOptions {
-				if flag {
-					if s == option {
-						isOption = true
-						break
-					}
-				} else {
-					if strings.HasPrefix(s, option+"=") {
-						isOption = true
-						break
-					}
-				}
-			}
-			if isOption {
-				if !isColon {
-					bind += ","
-				}
-				bind += s
-				continue
-			}
-		} else if elem > 2 {
-			return nil, fmt.Errorf("wrong bind syntax: %s", bind)
-		}
-
-		elem++
-
-		if bind != "" {
-			if isColon {
-				bind += s
-				continue
-			}
-			bp, err := newBindPath(bind, validOptions)
-			if err != nil {
-				return nil, fmt.Errorf("while getting bind path: %s", err)
-			}
-			binds = append(binds, bp)
-			elem = 1
-		}
-		// new bind path
-		bind = s
-	}
-
-	if bind != "" {
-		bp, err := newBindPath(bind, validOptions)
-		if err != nil {
-			return nil, fmt.Errorf("while getting bind path: %s", err)
-		}
-		binds = append(binds, bp)
-	}
-
-	return binds, nil
-}
-
-// newBindPath returns BindPath record based on the provided bind
-// string argument and ensures that the options are valid.
-func newBindPath(bind string, validOptions map[string]bool) (BindPath, error) {
-	var bp BindPath
-
-	splitted := strings.SplitN(bind, ":", 3)
-
-	bp.Source = splitted[0]
-	if bp.Source == "" {
-		return bp, fmt.Errorf("empty bind source for bind path %q", bind)
-	}
-
-	bp.Destination = bp.Source
-
-	if len(splitted) > 1 {
-		bp.Destination = splitted[1]
-	}
-
-	if len(splitted) > 2 {
-		bp.Options = make(map[string]*BindOption)
-
-		for _, value := range strings.Split(splitted[2], ",") {
-			valid := false
-			for optName, optFlag := range validOptions {
-				if optFlag && optName == value {
-					bp.Options[optName] = &BindOption{}
-					valid = true
-					break
-				} else if strings.HasPrefix(value, optName+"=") {
-					bp.Options[optName] = &BindOption{Value: value[len(optName+"="):]}
-					valid = true
-					break
-				}
-			}
-			if !valid {
-				return bp, fmt.Errorf("%s is not a valid bind option", value)
-			}
-		}
-	}
-
-	return bp, nil
 }
 
 // SetBindPath sets the paths to bind into container.
@@ -607,12 +453,12 @@ func (e *EngineConfig) GetNoTmp() bool {
 	return e.JSON.NoTmp
 }
 
-// SetNoHostFs set flag to not mount all host mounts.
+// SetNoHostfs set flag to not mount all host mounts.
 func (e *EngineConfig) SetNoHostfs(val bool) {
 	e.JSON.NoHostfs = val
 }
 
-// SetNoHostfs returns if no-hostfs flag is set or not.
+// GetNoHostfs returns if no-hostfs flag is set or not.
 func (e *EngineConfig) GetNoHostfs() bool {
 	return e.JSON.NoHostfs
 }
@@ -622,7 +468,7 @@ func (e *EngineConfig) SetNoCwd(val bool) {
 	e.JSON.NoCwd = val
 }
 
-// SetNoCwd returns if no-cwd flag is set or not.
+// GetNoCwd returns if no-cwd flag is set or not.
 func (e *EngineConfig) GetNoCwd() bool {
 	return e.JSON.NoCwd
 }
@@ -926,7 +772,7 @@ func (e *EngineConfig) SetUmask(umask int) {
 	e.JSON.Umask = umask
 }
 
-// SetUmask returns the umask to be used in the container launched process.
+// GetUmask returns the umask to be used in the container launched process.
 func (e *EngineConfig) GetUmask() int {
 	return e.JSON.Umask
 }

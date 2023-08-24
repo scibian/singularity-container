@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -20,7 +20,7 @@ import (
 	"github.com/sylabs/singularity/pkg/sylog"
 )
 
-const (
+var (
 	// rootDir is the root directory for the plugin
 	// installation, typically located within LIBEXECDIR.
 	rootDir = buildcfg.PLUGIN_ROOTDIR
@@ -88,7 +88,7 @@ func metaPath(name string) string {
 // install installs the plugin represented by m into the plugin installation
 // directory. This should normally only be called in InstallFromSIF.
 func (m *Meta) install(img *image.Image) error {
-	if err := os.MkdirAll(m.path(), 0755); err != nil {
+	if err := os.MkdirAll(m.path(), 0o755); err != nil {
 		return err
 	}
 
@@ -105,11 +105,7 @@ func (m *Meta) install(img *image.Image) error {
 		return err
 	}
 
-	if err := m.installMeta(); err != nil {
-		return err
-	}
-
-	return nil
+	return m.installMeta()
 }
 
 func (m *Meta) installBinary(img *image.Image) error {

@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -22,6 +22,7 @@ import (
 
 const defaultTimeout = 10 * time.Second
 
+// Default Sylabs cloud service endpoints.
 const (
 	SCSDefaultCloudURI     = "cloud.sylabs.io"
 	SCSDefaultLibraryURI   = "https://library.sylabs.io"
@@ -44,11 +45,9 @@ var errorCodeMap = map[int]string{
 	500: "Internal Server Error",
 }
 
-var (
-	// ErrStatusNotSupported represents the error returned by
-	// a service which doesn't support SCS status check.
-	ErrStatusNotSupported = errors.New("status not supported")
-)
+// ErrStatusNotSupported represents the error returned by
+// a service which doesn't support SCS status check.
+var ErrStatusNotSupported = errors.New("status not supported")
 
 // Service defines a simple service interface which can be exposed
 // to retrieve service URI and check the service status.
@@ -121,16 +120,21 @@ func (ep *Config) GetAllServices() (map[string][]Service, error) {
 		Timeout: defaultTimeout,
 	}
 
-	url := "https://" + ep.URI + "/assets/config/config.prod.json"
+	epURL, err := ep.GetURL()
+	if err != nil {
+		return nil, err
+	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	configURL := epURL + "/assets/config/config.prod.json"
+
+	req, err := http.NewRequest(http.MethodGet, configURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("User-Agent", useragent.Value())
 
-	cacheReader := getCachedConfig(ep.URI)
+	cacheReader := getCachedConfig(epURL)
 	reader := cacheReader
 
 	if cacheReader == nil {
@@ -156,7 +160,7 @@ func (ep *Config) GetAllServices() (map[string][]Service, error) {
 	}
 
 	if reader != cacheReader {
-		updateCachedConfig(ep.URI, b)
+		updateCachedConfig(epURL, b)
 	}
 
 	for k, v := range a {
@@ -189,19 +193,6 @@ func (ep *Config) GetAllServices() (map[string][]Service, error) {
 // GetServiceURI returns the URI for the service at the specified SCS endpoint
 // Examples of services: consent, build, library, key, token
 func (ep *Config) GetServiceURI(service string) (string, error) {
-	// don't grab remote URI if the endpoint is the
-	// default public Sylabs Cloud Service
-	if ep.URI == SCSDefaultCloudURI {
-		switch service {
-		case Library:
-			return SCSDefaultLibraryURI, nil
-		case Builder:
-			return SCSDefaultBuilderURI, nil
-		case Keyserver:
-			return SCSDefaultKeyserverURI, nil
-		}
-	}
-
 	services, err := ep.GetAllServices()
 	if err != nil {
 		return "", err

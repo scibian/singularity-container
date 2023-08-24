@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -13,12 +13,15 @@ import (
 	"os/user"
 	"runtime"
 	"strconv"
-	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
-var origUID, origGID, unprivUID, unprivGID int
-var origHome, unprivHome string
+var (
+	origUID, origGID, unprivUID, unprivGID int
+	origHome, unprivHome                   string
+)
 
 // EnsurePrivilege ensures elevated privileges are available during a test.
 func EnsurePrivilege(t *testing.T) {
@@ -32,18 +35,17 @@ func EnsurePrivilege(t *testing.T) {
 // not require elevated privileges. A matching call to ResetPrivilege must
 // occur before the test completes (a defer statement is recommended.)
 func DropPrivilege(t *testing.T) {
-
 	// setresuid/setresgid modifies the current thread only. To ensure our new
 	// uid/gid sticks, we need to lock ourselves to the current OS thread.
 	runtime.LockOSThread()
 
 	if os.Getgid() == 0 {
-		if err := syscall.Setresgid(unprivGID, unprivGID, origGID); err != nil {
+		if err := unix.Setresgid(unprivGID, unprivGID, origGID); err != nil {
 			t.Fatalf("failed to set group identity: %v", err)
 		}
 	}
 	if os.Getuid() == 0 {
-		if err := syscall.Setresuid(unprivUID, unprivUID, origUID); err != nil {
+		if err := unix.Setresuid(unprivUID, unprivUID, origUID); err != nil {
 			t.Fatalf("failed to set user identity: %v", err)
 		}
 
@@ -55,10 +57,10 @@ func DropPrivilege(t *testing.T) {
 
 // ResetPrivilege returns effective privilege to the original user.
 func ResetPrivilege(t *testing.T) {
-	if err := syscall.Setresuid(origUID, origUID, unprivUID); err != nil {
+	if err := unix.Setresuid(origUID, origUID, unprivUID); err != nil {
 		t.Fatalf("failed to reset user identity: %v", err)
 	}
-	if err := syscall.Setresgid(origGID, origGID, unprivGID); err != nil {
+	if err := unix.Setresgid(origGID, origGID, unprivGID); err != nil {
 		t.Fatalf("failed to reset group identity: %v", err)
 	}
 	if err := os.Setenv("HOME", origHome); err != nil {
@@ -136,7 +138,6 @@ func init() {
 	origUID = os.Getuid()
 	origGID = os.Getgid()
 	origUser, err := user.LookupId(strconv.Itoa(origUID))
-
 	if err != nil {
 		log.Fatalf("err: %s", err)
 	}
@@ -145,7 +146,6 @@ func init() {
 
 	unprivUID, unprivGID = getUnprivIDs(os.Getpid())
 	unprivUser, err := user.LookupId(strconv.Itoa(unprivUID))
-
 	if err != nil {
 		log.Fatalf("err: %s", err)
 	}

@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	dirMode  os.FileMode = 0755
-	fileMode             = 0644
+	dirMode  os.FileMode = 0o755
+	fileMode os.FileMode = 0o644
 )
 
 type file struct {
@@ -111,6 +111,7 @@ func (v *defaultVFS) WriteFile(filename string, data []byte, perm os.FileMode) e
 	return err
 }
 
+// DefaultVFS is the default VFS.
 var DefaultVFS VFS = &defaultVFS{}
 
 // Manager manages a filesystem layout in a given path
@@ -164,7 +165,7 @@ func (m *Manager) createParentDir(path string) {
 				d := &dir{mode: m.DirMode, uid: uid, gid: gid}
 				m.entries[p] = d
 				m.dirs = append(m.dirs, d)
-				// check if the parent directory is part of the overrided
+				// check if the parent directory is part of the overridden
 				// directories to force the creation of the destination
 				// directory in the right parent directory (nested binds)
 				if ovDirs, ok := m.ovDirs[filepath.Dir(p)]; ok {
@@ -192,10 +193,10 @@ func (m *Manager) SetRootPath(path string) error {
 	if m.dirs == nil {
 		m.dirs = make([]*dir, 0)
 	}
-	if m.DirMode == 0000 {
+	if m.DirMode == 0o000 {
 		m.DirMode = dirMode
 	}
-	if m.FileMode == 0000 {
+	if m.FileMode == 0o000 {
 		m.FileMode = fileMode
 	}
 	d := &dir{mode: m.DirMode, uid: os.Getuid(), gid: os.Getgid()}

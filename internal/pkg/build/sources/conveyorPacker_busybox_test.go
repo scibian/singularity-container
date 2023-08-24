@@ -21,6 +21,8 @@ import (
 const busyBoxDef = "../../../../examples/busybox/Singularity"
 
 func TestBusyBoxConveyor(t *testing.T) {
+	// 2021-09-07 - Always skip due to frequent download failures
+	t.SkipNow()
 
 	if testing.Short() {
 		t.SkipNow()
@@ -51,7 +53,7 @@ func TestBusyBoxConveyor(t *testing.T) {
 	c := &sources.BusyBoxConveyor{}
 
 	err = c.Get(context.Background(), b)
-	// clean up tmpfs since assembler isnt called
+	// clean up tmpfs since assembler isn't called
 	defer c.CleanUp()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", busyBoxDef, err)
@@ -59,6 +61,9 @@ func TestBusyBoxConveyor(t *testing.T) {
 }
 
 func TestBusyBoxPacker(t *testing.T) {
+	// 2021-09-22 - Always skip due to frequent download failures
+	t.SkipNow()
+
 	// TODO - busybox example has arch hard coded
 	require.Arch(t, "amd64")
 
@@ -84,7 +89,7 @@ func TestBusyBoxPacker(t *testing.T) {
 	cp := &sources.BusyBoxConveyorPacker{}
 
 	err = cp.Get(context.Background(), b)
-	// clean up tmpfs since assembler isnt called
+	// clean up tmpfs since assembler isn't called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", busyBoxDef, err)

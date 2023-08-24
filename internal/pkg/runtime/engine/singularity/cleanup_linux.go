@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -16,12 +16,13 @@ import (
 
 	"github.com/sylabs/singularity/internal/pkg/instance"
 	fakerootConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/fakeroot/config"
+	"github.com/sylabs/singularity/internal/pkg/util/bin"
+	"github.com/sylabs/singularity/internal/pkg/util/crypt"
 	"github.com/sylabs/singularity/internal/pkg/util/priv"
 	"github.com/sylabs/singularity/internal/pkg/util/starter"
 	"github.com/sylabs/singularity/pkg/runtime/engine/config"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/capabilities"
-	"github.com/sylabs/singularity/pkg/util/crypt"
 )
 
 // CleanupContainer is called from master after the MonitorContainer returns.
@@ -72,19 +73,24 @@ func (e *EngineOperations) CleanupContainer(ctx context.Context, fatal error, st
 	}
 
 	if networkSetup != nil {
-		if e.EngineConfig.GetFakeroot() {
+		net := e.EngineConfig.GetNetwork()
+		privileged := false
+		// If a CNI configuration was allowed as non-root (or fakeroot)
+		if net != "none" && os.Geteuid() != 0 {
 			priv.Escalate()
+			privileged = true
 		}
+		sylog.Debugf("Cleaning up CNI network config %s", net)
 		if err := networkSetup.DelNetworks(ctx); err != nil {
 			sylog.Errorf("could not delete networks: %v", err)
 		}
-		if e.EngineConfig.GetFakeroot() {
+		if privileged {
 			priv.Drop()
 		}
 	}
 
-	if cgroupManager != nil {
-		if err := cgroupManager.Remove(); err != nil {
+	if cgroupsManager != nil {
+		if err := cgroupsManager.Remove(); err != nil {
 			sylog.Errorf("could not remove cgroups: %v", err)
 		}
 	}
@@ -165,7 +171,12 @@ func cleanupCrypt(path string) error {
 }
 
 func fakerootCleanup(path string) error {
-	command := []string{"/bin/rm", "-rf", path}
+	rm, err := bin.FindBin("rm")
+	if err != nil {
+		return err
+	}
+
+	command := []string{rm, "-rf", path}
 
 	sylog.Debugf("Calling fakeroot engine to execute %q", strings.Join(command, " "))
 

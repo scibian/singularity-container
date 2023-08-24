@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -206,7 +206,7 @@ func (t *RPC) EvalRelative(name string, root string) string {
 	return reply
 }
 
-// Lchown calls the lchown RPC using the supplied arguments.
+// Readlink calls the readlink RPC using the supplied arguments.
 func (t *RPC) Readlink(name string) (string, error) {
 	arguments := &args.ReadlinkArgs{
 		Name: name,
@@ -234,4 +234,14 @@ func (t *RPC) WriteFile(filename string, data []byte, perm os.FileMode) error {
 		Perm:     perm,
 	}
 	return t.Client.Call(t.Name+".WriteFile", arguments, nil)
+}
+
+// NvCCLI will call nvidia-container-cli to configure GPU(s) for the container.
+func (t *RPC) NvCCLI(flags []string, rootFsPath string, userNS bool) error {
+	arguments := &args.NvCCLIArgs{
+		Flags:      flags,
+		RootFsPath: rootFsPath,
+		UserNS:     userNS,
+	}
+	return t.Client.Call(t.Name+".NvCCLI", arguments, nil)
 }

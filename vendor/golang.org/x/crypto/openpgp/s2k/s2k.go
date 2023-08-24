@@ -4,11 +4,12 @@
 
 // Package s2k implements the various OpenPGP string-to-key transforms as
 // specified in RFC 4800 section 3.7.1.
-
-// Modifications from patches written by:
-//    Fan Jiang <fanjiang@thoughtworks.com> and
-//    Sofia Celi <sceli@thoughtworks.com>
-
+//
+// Deprecated: this package is unmaintained except for security fixes. New
+// applications should consider a more focused, modern alternative to OpenPGP
+// for their specific task. If you are required to interoperate with OpenPGP
+// systems and need a maintained package, consider a community fork.
+// See https://golang.org/issue/44226.
 package s2k // import "golang.org/x/crypto/openpgp/s2k"
 
 import (
@@ -48,10 +49,6 @@ func (c *Config) hash() crypto.Hash {
 	}
 
 	return c.Hash
-}
-
-func (c *Config) EncodedCount() uint8 {
-	return c.encodedCount()
 }
 
 func (c *Config) encodedCount() uint8 {
@@ -160,14 +157,9 @@ func Iterated(out []byte, h hash.Hash, in []byte, salt []byte, count int) {
 	}
 }
 
-func Parse(r io.Reader) (f func(out, in []byte), err error) {
-	f, _, _, _, _, err = Parse2(r)
-	return
-}
-
 // Parse reads a binary specification for a string-to-key transformation from r
 // and returns a function which performs that transform.
-func Parse2(r io.Reader) (f func(out, in []byte), mode uint8, hash crypto.Hash, salt []byte, count int, err error) {
+func Parse(r io.Reader) (f func(out, in []byte), err error) {
 	var buf [9]byte
 
 	_, err = io.ReadFull(r, buf[:2])
@@ -177,46 +169,41 @@ func Parse2(r io.Reader) (f func(out, in []byte), mode uint8, hash crypto.Hash, 
 
 	hash, ok := HashIdToHash(buf[1])
 	if !ok {
-		err = errors.UnsupportedError("hash for S2K function: " + strconv.Itoa(int(buf[1])))
-		return
+		return nil, errors.UnsupportedError("hash for S2K function: " + strconv.Itoa(int(buf[1])))
 	}
 	if !hash.Available() {
-		err = errors.UnsupportedError("hash not available: " + strconv.Itoa(int(hash)))
-		return
+		return nil, errors.UnsupportedError("hash not available: " + strconv.Itoa(int(hash)))
 	}
 	h := hash.New()
-	mode = buf[0]
-	switch mode {
+
+	switch buf[0] {
 	case 0:
-		f = func(out, in []byte) {
+		f := func(out, in []byte) {
 			Simple(out, h, in)
 		}
-		return
+		return f, nil
 	case 1:
 		_, err = io.ReadFull(r, buf[:8])
 		if err != nil {
 			return
 		}
-		f = func(out, in []byte) {
+		f := func(out, in []byte) {
 			Salted(out, h, in, buf[:8])
 		}
-		salt = buf[:8]
-		return
+		return f, nil
 	case 3:
 		_, err = io.ReadFull(r, buf[:9])
 		if err != nil {
 			return
 		}
-		count = decodeCount(buf[8])
-		f = func(out, in []byte) {
+		count := decodeCount(buf[8])
+		f := func(out, in []byte) {
 			Iterated(out, h, in, buf[:8], count)
 		}
-		salt = buf[:8]
-		return
+		return f, nil
 	}
 
-	err = errors.UnsupportedError("S2K function")
-	return
+	return nil, errors.UnsupportedError("S2K function")
 }
 
 // Serialize salts and stretches the given passphrase and writes the

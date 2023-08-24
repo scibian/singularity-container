@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -31,8 +31,6 @@ type status struct {
 // If the supplied remote name is an empty string, it will attempt
 // to use the default remote.
 func RemoteStatus(usrConfigFile, name string) (err error) {
-	c := &remote.Config{}
-
 	if name != "" {
 		sylog.Infof("Checking status of remote: %s", name)
 	} else {
@@ -40,7 +38,7 @@ func RemoteStatus(usrConfigFile, name string) (err error) {
 	}
 
 	// opening config file
-	file, err := os.OpenFile(usrConfigFile, os.O_RDONLY|os.O_CREATE, 0600)
+	file, err := os.OpenFile(usrConfigFile, os.O_RDONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("no remote configurations")
@@ -50,7 +48,7 @@ func RemoteStatus(usrConfigFile, name string) (err error) {
 	defer file.Close()
 
 	// read file contents to config struct
-	c, err = remote.ReadFrom(file)
+	c, err := remote.ReadFrom(file)
 	if err != nil {
 		return fmt.Errorf("while parsing remote config data: %s", err)
 	}

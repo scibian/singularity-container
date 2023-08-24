@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -17,13 +17,13 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sylabs/singularity/internal/pkg/remote/endpoint"
-
 	"github.com/spf13/cobra"
+	keyclient "github.com/sylabs/scs-key-client/client"
 	"github.com/sylabs/singularity/internal/pkg/build"
 	"github.com/sylabs/singularity/internal/pkg/build/remotebuilder"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/cache"
+	"github.com/sylabs/singularity/internal/pkg/remote/endpoint"
 	fakerootConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/fakeroot/config"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/interactive"
@@ -33,10 +33,15 @@ import (
 	"github.com/sylabs/singularity/pkg/image"
 	"github.com/sylabs/singularity/pkg/runtime/engine/config"
 	"github.com/sylabs/singularity/pkg/sylog"
-	"github.com/sylabs/singularity/pkg/util/crypt"
+	"github.com/sylabs/singularity/pkg/util/cryptkey"
 )
 
 func fakerootExec(cmdArgs []string) {
+	if buildArgs.nvccli && !buildArgs.noTest {
+		sylog.Warningf("Due to writable-tmpfs limitations, %%test sections will fail with --nvccli & --fakeroot")
+		sylog.Infof("Use -T / --notest to disable running tests during the build")
+	}
+
 	useSuid := buildcfg.SINGULARITY_SUID_INSTALL == 1
 
 	short := "-" + buildFakerootFlag.ShortHand
@@ -96,7 +101,45 @@ func fakerootExec(cmdArgs []string) {
 }
 
 func runBuild(cmd *cobra.Command, args []string) {
-	ctx := context.TODO()
+	if buildArgs.nvidia {
+		if buildArgs.remote {
+			sylog.Fatalf("--nv option is not supported for remote build")
+		}
+		os.Setenv("SINGULARITY_NV", "1")
+	}
+	if buildArgs.nvccli {
+		if buildArgs.remote {
+			sylog.Fatalf("--nvccli option is not supported for remote build")
+		}
+		os.Setenv("SINGULARITY_NVCCLI", "1")
+	}
+	if buildArgs.rocm {
+		if buildArgs.remote {
+			sylog.Fatalf("--rocm option is not supported for remote build")
+		}
+		os.Setenv("SINGULARITY_ROCM", "1")
+	}
+	if len(buildArgs.bindPaths) > 0 {
+		if buildArgs.remote {
+			sylog.Fatalf("-B/--bind option is not supported for remote build")
+		}
+		os.Setenv("SINGULARITY_BINDPATH", strings.Join(buildArgs.bindPaths, ","))
+	}
+	if len(buildArgs.mounts) > 0 {
+		if buildArgs.remote {
+			sylog.Fatalf("--mount option is not supported for remote build")
+		}
+		os.Setenv("SINGULARITY_MOUNT", strings.Join(buildArgs.mounts, "\n"))
+	}
+	if buildArgs.writableTmpfs {
+		if buildArgs.remote {
+			sylog.Fatalf("--writable-tmpfs option is not supported for remote build")
+		}
+		if buildArgs.fakeroot {
+			sylog.Fatalf("--writable-tmpfs option is not supported for fakeroot build")
+		}
+		os.Setenv("SINGULARITY_WRITABLE_TMPFS", "1")
+	}
 
 	if buildArgs.arch != runtime.GOARCH && !buildArgs.remote {
 		sylog.Fatalf("Requested architecture (%s) does not match host (%s). Cannot build locally.", buildArgs.arch, runtime.GOARCH)
@@ -111,9 +154,9 @@ func runBuild(cmd *cobra.Command, args []string) {
 	}
 
 	if buildArgs.remote {
-		runBuildRemote(ctx, cmd, dest, spec)
+		runBuildRemote(cmd.Context(), cmd, dest, spec)
 	} else {
-		runBuildLocal(ctx, cmd, dest, spec)
+		runBuildLocal(cmd.Context(), cmd, dest, spec)
 	}
 	sylog.Infof("Build complete: %s", dest)
 }
@@ -126,29 +169,47 @@ func runBuildRemote(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 
 	// TODO - the keyserver config needs to go to the remote builder for fingerprint verification at
 	// build time to be fully supported.
-	bc, lc, _, err := getServiceConfigs(buildArgs.builderURL, buildArgs.libraryURL, buildArgs.keyServerURL)
+
+	lc, err := getLibraryClientConfig(buildArgs.libraryURL)
 	if err != nil {
-		sylog.Fatalf("Unable to get builder and library client configuration: %v", err)
+		sylog.Fatalf("Unable to get library client configuration: %v", err)
 	}
 	buildArgs.libraryURL = lc.BaseURL
-	buildArgs.builderURL = bc.BaseURL
+
+	baseURI, authToken, err := getBuilderClientConfig(buildArgs.builderURL)
+	if err != nil {
+		sylog.Fatalf("Unable to get builder client configuration: %v", err)
+	}
+	buildArgs.builderURL = baseURI
 
 	// To provide a web link to detached remote builds we need to know the web frontend URI.
 	// We only know this working forward from a remote config, and not if the user has set custom
 	// service URLs, since there is no straightforward foolproof way to work back from them to a
 	// matching frontend URL.
 	if !cmd.Flag("builder").Changed && !cmd.Flag("library").Changed {
-		buildArgs.webURL = URI()
+		webURL, err := currentRemoteEndpoint.GetURL()
+		if err != nil {
+			sylog.Fatalf("Unable to find remote web URI %v", err)
+		}
+		buildArgs.webURL = webURL
 	}
 
 	// submitting a remote build requires a valid authToken
-	if bc.AuthToken == "" {
+	if authToken == "" {
 		sylog.Fatalf("Unable to submit build job: %v", remoteWarning)
 	}
 
 	def, err := definitionFromSpec(spec)
 	if err != nil {
 		sylog.Fatalf("Unable to build from %s: %v", spec, err)
+	}
+
+	// Ensure that the definition bootstrap source is valid before we submit a remote build
+	if _, err := build.NewConveyorPacker(def); err != nil {
+		sylog.Fatalf("Unable to build from %s: %v", spec, err)
+	}
+	if bs, ok := def.Header["bootstrap"]; ok && bs == "localimage" {
+		sylog.Fatalf("Building from a \"localimage\" source with the remote builder is not supported.")
 	}
 
 	// path SIF from remote builder should be placed
@@ -210,7 +271,7 @@ func runBuildRemote(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 		}()
 	}
 
-	b, err := remotebuilder.New(rbDst, buildArgs.libraryURL, def, buildArgs.detached, forceOverwrite, buildArgs.builderURL, bc.AuthToken, buildArgs.arch, buildArgs.webURL)
+	b, err := remotebuilder.New(rbDst, buildArgs.libraryURL, def, buildArgs.detached, forceOverwrite, buildArgs.builderURL, authToken, buildArgs.arch, buildArgs.webURL)
 	if err != nil {
 		sylog.Fatalf("Failed to create builder: %v", err)
 	}
@@ -221,7 +282,7 @@ func runBuildRemote(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 }
 
 func runBuildLocal(ctx context.Context, cmd *cobra.Command, dst, spec string) {
-	var keyInfo *crypt.KeyInfo
+	var keyInfo *cryptkey.KeyInfo
 	if buildArgs.encrypt || promptForPassphrase || cmd.Flags().Lookup("pem-path").Changed {
 		if os.Getuid() != 0 {
 			sylog.Fatalf("You must be root to build an encrypted container")
@@ -265,18 +326,25 @@ func runBuildLocal(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 		sylog.Fatalf("Unable to build from %s: %v", spec, err)
 	}
 
+	authToken := ""
 	hasLibrary := false
+	hasSIF := false
 
-	// only resolve remote endpoints if library is a build source
 	for _, d := range defs {
+		// If there's a library source we need the library client, and it'll be a SIF
 		if d.Header["bootstrap"] == "library" {
 			hasLibrary = true
+			hasSIF = true
 			break
+		}
+		// Certain other bootstrap sources may result in a SIF image source
+		if d.Header["bootstrap"] == "localimage" || d.Header["bootstrap"] == "oras" || d.Header["bootstrap"] == "shub" {
+			hasSIF = true
 		}
 	}
 
-	authToken := ""
-
+	// We only need to initialize the library client if we have a library source
+	// in our definition file.
 	if hasLibrary {
 		lc, err := getLibraryClientConfig(buildArgs.libraryURL)
 		if err != nil {
@@ -286,9 +354,16 @@ func runBuildLocal(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 		authToken = lc.AuthToken
 	}
 
-	co, err := getKeyserverClientOpts(buildArgs.keyServerURL, endpoint.KeyserverVerifyOp)
-	if err != nil {
-		sylog.Fatalf("Unable to get key server client configuration: %v", err)
+	// We only need to initialize the key server client if we have a source
+	// in our definition file that could provide a SIF. Only SIFs verify in the build.
+	var ko []keyclient.Option
+	if hasSIF {
+		ko, err = getKeyserverClientOpts(buildArgs.keyServerURL, endpoint.KeyserverVerifyOp)
+		if err != nil {
+			// Do not hard fail if we can't get a keyserver config.
+			// Verification can use the local keyring still.
+			sylog.Warningf("Unable to get key server client configuration: %v", err)
+		}
 	}
 
 	buildFormat := "sif"
@@ -316,7 +391,7 @@ func runBuildLocal(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 				NoHTTPS:           noHTTPS,
 				LibraryURL:        buildArgs.libraryURL,
 				LibraryAuthToken:  authToken,
-				KeyServerOpts:     co,
+				KeyServerOpts:     ko,
 				DockerAuthConfig:  authConf,
 				EncryptionKeyInfo: keyInfo,
 				FixPerms:          buildArgs.fixPerms,
@@ -364,8 +439,8 @@ func isImage(spec string) bool {
 // getEncryptionMaterial handles the setting of encryption environment and flag parameters to eventually be
 // passed to the crypt package for handling.
 // This handles the SINGULARITY_ENCRYPTION_PASSPHRASE/PEM_PATH envvars outside of cobra in order to
-// enforce the unique flag/env precidence for the encryption flow
-func getEncryptionMaterial(cmd *cobra.Command) (crypt.KeyInfo, error) {
+// enforce the unique flag/env precedence for the encryption flow
+func getEncryptionMaterial(cmd *cobra.Command) (cryptkey.KeyInfo, error) {
 	passphraseFlag := cmd.Flags().Lookup("passphrase")
 	PEMFlag := cmd.Flags().Lookup("pem-path")
 	passphraseEnv, passphraseEnvOK := os.LookupEnv("SINGULARITY_ENCRYPTION_PASSPHRASE")
@@ -376,7 +451,7 @@ func getEncryptionMaterial(cmd *cobra.Command) (crypt.KeyInfo, error) {
 		sylog.Fatalf("Unable to use container encryption. Must supply encryption material through environment variables or flags.")
 	}
 
-	// order of precidence:
+	// order of precedence:
 	// 1. PEM flag
 	// 2. Passphrase flag
 	// 3. PEM envvar
@@ -396,29 +471,29 @@ func getEncryptionMaterial(cmd *cobra.Command) (crypt.KeyInfo, error) {
 
 		// Check it's a valid PEM public key we can load, before starting the build (#4173)
 		if cmd.Name() == "build" {
-			if _, err := crypt.LoadPEMPublicKey(encryptionPEMPath); err != nil {
+			if _, err := cryptkey.LoadPEMPublicKey(encryptionPEMPath); err != nil {
 				sylog.Fatalf("Invalid encryption public key: %v", err)
 			}
 			// or a valid private key before launching the engine for actions on a container (#5221)
 		} else {
-			if _, err := crypt.LoadPEMPrivateKey(encryptionPEMPath); err != nil {
+			if _, err := cryptkey.LoadPEMPrivateKey(encryptionPEMPath); err != nil {
 				sylog.Fatalf("Invalid encryption private key: %v", err)
 			}
 		}
 
-		return crypt.KeyInfo{Format: crypt.PEM, Path: encryptionPEMPath}, nil
+		return cryptkey.KeyInfo{Format: cryptkey.PEM, Path: encryptionPEMPath}, nil
 	}
 
 	if passphraseFlag.Changed {
 		sylog.Verbosef("Using interactive passphrase entry for encrypted container")
 		passphrase, err := interactive.AskQuestionNoEcho("Enter encryption passphrase: ")
 		if err != nil {
-			return crypt.KeyInfo{}, err
+			return cryptkey.KeyInfo{}, err
 		}
 		if passphrase == "" {
 			sylog.Fatalf("Cannot encrypt container with empty passphrase")
 		}
-		return crypt.KeyInfo{Format: crypt.Passphrase, Material: passphrase}, nil
+		return cryptkey.KeyInfo{Format: cryptkey.Passphrase, Material: passphrase}, nil
 	}
 
 	if pemPathEnvOK {
@@ -432,13 +507,13 @@ func getEncryptionMaterial(cmd *cobra.Command) (crypt.KeyInfo, error) {
 		}
 
 		sylog.Verbosef("Using pem path environment variable for encrypted container")
-		return crypt.KeyInfo{Format: crypt.PEM, Path: pemPathEnv}, nil
+		return cryptkey.KeyInfo{Format: cryptkey.PEM, Path: pemPathEnv}, nil
 	}
 
 	if passphraseEnvOK {
 		sylog.Verbosef("Using passphrase environment variable for encrypted container")
-		return crypt.KeyInfo{Format: crypt.Passphrase, Material: passphraseEnv}, nil
+		return cryptkey.KeyInfo{Format: cryptkey.Passphrase, Material: passphraseEnv}, nil
 	}
 
-	return crypt.KeyInfo{}, nil
+	return cryptkey.KeyInfo{}, nil
 }

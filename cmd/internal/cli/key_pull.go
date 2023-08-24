@@ -26,14 +26,12 @@ var KeyPullCmd = &cobra.Command{
 	Args:                  cobra.ExactArgs(1),
 	DisableFlagsInUseLine: true,
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.TODO()
-
 		co, err := getKeyserverClientOpts(keyServerURI, endpoint.KeyserverPullOp)
 		if err != nil {
 			sylog.Fatalf("Keyserver client failed: %s", err)
 		}
 
-		if err := doKeyPullCmd(ctx, args[0], co...); err != nil {
+		if err := doKeyPullCmd(cmd.Context(), args[0], co...); err != nil {
 			sylog.Errorf("pull failed: %s", err)
 			os.Exit(2)
 		}
@@ -49,12 +47,12 @@ func doKeyPullCmd(ctx context.Context, fingerprint string, co ...client.Option) 
 	var count int
 	var opts []sypgp.HandleOpt
 	path := ""
-	mode := os.FileMode(0600)
+	mode := os.FileMode(0o600)
 
 	if keyGlobalPubKey {
 		path = buildcfg.SINGULARITY_CONFDIR
 		opts = append(opts, sypgp.GlobalHandleOpt())
-		mode = os.FileMode(0644)
+		mode = os.FileMode(0o644)
 	}
 
 	keyring := sypgp.NewHandle(path, opts...)

@@ -23,12 +23,13 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/build/apps"
 	"github.com/sylabs/singularity/internal/pkg/build/assemblers"
 	"github.com/sylabs/singularity/internal/pkg/build/sources"
+	"github.com/sylabs/singularity/internal/pkg/buildcfg"
+	"github.com/sylabs/singularity/internal/pkg/image/packer"
 	"github.com/sylabs/singularity/internal/pkg/util/fs/squashfs"
 	"github.com/sylabs/singularity/internal/pkg/util/uri"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/build/types/parser"
 	"github.com/sylabs/singularity/pkg/image"
-	"github.com/sylabs/singularity/pkg/image/packer"
 	"github.com/sylabs/singularity/pkg/sylog"
 )
 
@@ -75,7 +76,7 @@ func New(defs []types.Definition, conf Config) (*Build, error) {
 
 func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 	sandboxCopy := false
-	oldumask := syscall.Umask(0002)
+	oldumask := syscall.Umask(0o002)
 	defer syscall.Umask(oldumask)
 
 	dest, err := fs.Abs(conf.Dest)
@@ -172,7 +173,7 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 		s.b.Opts = conf.Opts
 		// dont need to get cp if we're skipping bootstrap
 		if !conf.Opts.Update || conf.Opts.Force {
-			if c, err := conveyorPacker(d); err == nil {
+			if c, err := NewConveyorPacker(d); err == nil {
 				s.c = c
 			} else {
 				return nil, fmt.Errorf("unable to get conveyorpacker: %s", err)
@@ -338,7 +339,7 @@ func (b *Build) Full(ctx context.Context) error {
 	// clean up build normally
 	defer b.cleanUp()
 
-	oldumask := syscall.Umask(0002)
+	oldumask := syscall.Umask(0o002)
 
 	// generate the default configuration
 	config, err := singularityconf.Parse("")
@@ -349,6 +350,19 @@ func (b *Build) Full(ctx context.Context) error {
 	config.ConfigResolvConf = false
 	config.MountHome = false
 	config.MountDevPts = false
+
+	// nvidia-container-cli path / ldconfig path will be needed by %post/%test
+	// in builds run with --nv / --nvccli. Must grab paths from the main config.
+	sysConfig := singularityconf.GetCurrentConfig()
+	if sysConfig == nil {
+		configFile := buildcfg.SINGULARITY_CONF_FILE
+		sysConfig, err = singularityconf.Parse(configFile)
+		if err != nil {
+			return fmt.Errorf("could not parse %q: %v", configFile, err)
+		}
+	}
+	config.LdconfigPath = sysConfig.LdconfigPath
+	config.NvidiaContainerCliPath = sysConfig.NvidiaContainerCliPath
 
 	var buffer bytes.Buffer
 
@@ -439,7 +453,7 @@ func (b *Build) Full(ctx context.Context) error {
 
 		// write the build configuration used for %post and %test sections
 		configFile := filepath.Join(stage.b.TmpDir, "singularity.conf")
-		if err := ioutil.WriteFile(configFile, configData, 0644); err != nil {
+		if err := ioutil.WriteFile(configFile, configData, 0o644); err != nil {
 			return fmt.Errorf("while creating %s: %s", configFile, err)
 		}
 		defer os.Remove(configFile)

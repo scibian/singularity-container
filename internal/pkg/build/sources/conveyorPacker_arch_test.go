@@ -22,7 +22,6 @@ import (
 const archDef = "../../../../examples/arch/Singularity"
 
 func TestArchConveyor(t *testing.T) {
-
 	if testing.Short() {
 		t.SkipNow()
 	}
@@ -57,7 +56,7 @@ func TestArchConveyor(t *testing.T) {
 	cp := &sources.ArchConveyorPacker{}
 
 	err = cp.Get(context.Background(), b)
-	// clean up tmpfs since assembler isnt called
+	// clean up tmpfs since assembler isn't called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", archDef, err)
@@ -95,7 +94,7 @@ func TestArchPacker(t *testing.T) {
 	cp := &sources.ArchConveyorPacker{}
 
 	err = cp.Get(context.Background(), b)
-	// clean up tmpfs since assembler isnt called
+	// clean up tmpfs since assembler isn't called
 	defer cp.CleanUp()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", archDef, err)

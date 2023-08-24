@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -36,6 +36,7 @@ var (
 	remoteNoLogin           bool
 	global                  bool
 	remoteUseExclusive      bool
+	remoteAddInsecure       bool
 )
 
 // assemble values of remoteConfig for user/sys locations
@@ -67,7 +68,7 @@ var remoteTokenFileFlag = cmdline.Flag{
 	Value:        &loginTokenFile,
 	DefaultValue: "",
 	Name:         "tokenfile",
-	Usage:        "path to the file holding token",
+	Usage:        "path to the file holding auth token for login (remote endpoints only)",
 }
 
 // --no-login
@@ -86,7 +87,7 @@ var remoteLoginUsernameFlag = cmdline.Flag{
 	DefaultValue: "",
 	Name:         "username",
 	ShortHand:    "u",
-	Usage:        "username to authenticate with (leave it empty for token authentication)",
+	Usage:        "username to authenticate with (required for Docker/OCI registry login)",
 	EnvKeys:      []string{"LOGIN_USERNAME"},
 }
 
@@ -97,7 +98,7 @@ var remoteLoginPasswordFlag = cmdline.Flag{
 	DefaultValue: "",
 	Name:         "password",
 	ShortHand:    "p",
-	Usage:        "password to authenticate with",
+	Usage:        "password / token to authenticate with",
 	EnvKeys:      []string{"LOGIN_PASSWORD"},
 }
 
@@ -151,6 +152,16 @@ var remoteKeyserverInsecureFlag = cmdline.Flag{
 	Usage:        "allow insecure connection to keyserver",
 }
 
+// -i|--insecure
+var remoteAddInsecureFlag = cmdline.Flag{
+	ID:           "remoteAddInsecureFlag",
+	Value:        &remoteAddInsecure,
+	DefaultValue: false,
+	Name:         "insecure",
+	ShortHand:    "i",
+	Usage:        "allow connection to an insecure http remote",
+}
+
 func init() {
 	addCmdInit(func(cmdManager *cmdline.CommandManager) {
 		cmdManager.RegisterCmd(RemoteCmd)
@@ -170,8 +181,9 @@ func init() {
 		cmdManager.RegisterFlagForCmd(&remoteTokenFileFlag, RemoteLoginCmd, RemoteAddCmd)
 		// add --global flag to remote add/remove/use commands
 		cmdManager.RegisterFlagForCmd(&remoteGlobalFlag, RemoteAddCmd, RemoteRemoveCmd, RemoteUseCmd)
-		// add --no-login flag to add command
+		// add --insecure, --no-login flags to add command
 		cmdManager.RegisterFlagForCmd(&remoteNoLoginFlag, RemoteAddCmd)
+		cmdManager.RegisterFlagForCmd(&remoteAddInsecureFlag, RemoteAddCmd)
 
 		cmdManager.RegisterFlagForCmd(&remoteLoginUsernameFlag, RemoteLoginCmd)
 		cmdManager.RegisterFlagForCmd(&remoteLoginPasswordFlag, RemoteLoginCmd)
@@ -225,7 +237,7 @@ var RemoteAddCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
 		uri := args[1]
-		if err := singularity.RemoteAdd(remoteConfig, name, uri, global); err != nil {
+		if err := singularity.RemoteAdd(remoteConfig, name, uri, global, remoteAddInsecure); err != nil {
 			sylog.Fatalf("%s", err)
 		}
 		sylog.Infof("Remote %q added.", name)

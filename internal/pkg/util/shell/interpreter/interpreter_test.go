@@ -287,6 +287,25 @@ func TestEvaluateEnv(t *testing.T) {
 		},
 	}
 
+	// Since mvdan.cc/sh/v3@v3.4.0 some default vars will be set:
+	//    HOME IFS OPTIND PWD UID GID
+	// These don't adversely impact our downstream container environment, but
+	// must be accounted for here.
+	// https://github.com/mvdan/sh/commit/f4c774aa15046ef006508e182fde10c4b56876fa
+	// https://github.com/mvdan/sh/commit/d48a421feafd08247e3b19a6f26b31008ab858c7
+	pwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shDefaults := []string{
+		fmt.Sprintf("HOME=%s", os.Getenv("HOME")),
+		"IFS= \t\n",
+		"OPTIND=1",
+		fmt.Sprintf("PWD=%s", pwd),
+		fmt.Sprintf("UID=%d", os.Getuid()),
+		fmt.Sprintf("GID=%d", os.Getgid()),
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			env, err := EvaluateEnv([]byte(tt.script), tt.argv, tt.env)
@@ -295,6 +314,7 @@ func TestEvaluateEnv(t *testing.T) {
 			} else if tt.expectErr && err == nil {
 				t.Fatalf("unexpected success")
 			} else if !tt.expectErr {
+				tt.resultEnv = append(tt.resultEnv, shDefaults...)
 				sort.Strings(tt.resultEnv)
 				sort.Strings(env)
 				if !reflect.DeepEqual(tt.resultEnv, env) {

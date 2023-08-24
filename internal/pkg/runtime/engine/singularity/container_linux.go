@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -27,6 +27,7 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/util/fs/layout/layer/underlay"
 	"github.com/sylabs/singularity/internal/pkg/util/fs/mount"
 	fsoverlay "github.com/sylabs/singularity/internal/pkg/util/fs/overlay"
+	"github.com/sylabs/singularity/internal/pkg/util/gpu"
 	"github.com/sylabs/singularity/internal/pkg/util/mainthread"
 	"github.com/sylabs/singularity/internal/pkg/util/priv"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
@@ -36,23 +37,25 @@ import (
 	singularity "github.com/sylabs/singularity/pkg/runtime/engine/singularity/config"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/fs/proc"
-	"github.com/sylabs/singularity/pkg/util/gpu"
 	"github.com/sylabs/singularity/pkg/util/loop"
 	"github.com/sylabs/singularity/pkg/util/namespaces"
 	"github.com/sylabs/singularity/pkg/util/singularityconf"
-	"golang.org/x/crypto/ssh/terminal"
+	"github.com/sylabs/singularity/pkg/util/slice"
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 // global variables used by master process only at various steps:
 // - setup
 // - cleanup
 // - post start process
-var cryptDev string
-var networkSetup *network.Setup
-var cgroupManager *cgroups.Manager
-var imageDriver image.Driver
-var umountPoints []string
+var (
+	cryptDev       string
+	networkSetup   *network.Setup
+	imageDriver    image.Driver
+	umountPoints   []string
+	cgroupsManager cgroups.Manager
+)
 
 // defaultCNIConfPath is the default directory to CNI network configuration files.
 var defaultCNIConfPath = filepath.Join(buildcfg.SYSCONFDIR, "singularity", "network")
@@ -83,6 +86,7 @@ type container struct {
 	devSourcePath string
 }
 
+//nolint:maintidx
 func create(ctx context.Context, engine *EngineOperations, rpcOps *client.RPC, pid int) error {
 	var err error
 
@@ -256,6 +260,25 @@ func create(ctx context.Context, engine *EngineOperations, rpcOps *client.RPC, p
 		return err
 	}
 
+	if engine.EngineConfig.GetNvCCLI() {
+		// If a container has a CUDA install in it then nvidia-container-cli will bind mount
+		// from <session_dir>/final/usr/local/cuda/compat into the main container lib dir.
+		// This *requires* that the container rootfs is a private mount, as it is a bind source.
+		// By default, the rootfs will be mounted shared due to requirements of the FUSE mount
+		// handling, so make it private here just before calling nvidia-container-cli.
+		if err := c.rpcOps.Mount("", c.session.FinalPath(), "", syscall.MS_PRIVATE, ""); err != nil {
+			return err
+		}
+
+		sylog.Debugf("nvidia-container-cli")
+		// If we are not inside a user namespace then the NVCCLI call must exec nvidia-container-cli
+		// as the host uid 0. This may happen via the setuid starter, or from singularity being run
+		// directly as uid 0, e.g. `sudo singularity`.
+		if err := c.rpcOps.NvCCLI(engine.EngineConfig.GetNvCCLIEnv(), c.session.FinalPath(), c.userNS); err != nil {
+			return err
+		}
+	}
+
 	// chroot from RPC server current working directory since
 	// it's already in final directory after chdirFinal call
 	sylog.Debugf("Chroot into %s\n", c.session.FinalPath())
@@ -277,10 +300,9 @@ func create(ctx context.Context, engine *EngineOperations, rpcOps *client.RPC, p
 	if os.Geteuid() == 0 && !c.userNS {
 		path := engine.EngineConfig.GetCgroupsPath()
 		if path != "" {
-			cgroupPath := filepath.Join("/singularity", strconv.Itoa(pid))
-			cgroupManager = &cgroups.Manager{Pid: pid, Path: cgroupPath}
-			if err := cgroupManager.ApplyFromFile(path); err != nil {
-				return fmt.Errorf("failed to apply cgroups resources restriction: %s", err)
+			cgroupsManager, err = cgroups.NewManagerFromFile(path, pid, "")
+			if err != nil {
+				return fmt.Errorf("while applying cgroups config: %v", err)
 			}
 		}
 	}
@@ -506,11 +528,7 @@ func (c *container) setPropagationMount(system *mount.System) error {
 		pflags |= syscall.MS_PRIVATE
 	}
 
-	if err := c.rpcOps.Mount("", "/", "", pflags, ""); err != nil {
-		return err
-	}
-
-	return nil
+	return c.rpcOps.Mount("", "/", "", pflags, "")
 }
 
 // addMountinfo handles the case where hidepid is set on /proc mount
@@ -872,7 +890,7 @@ func (c *container) overlayUpperWork(system *mount.System) error {
 	createUpperWork := func(path, label string) error {
 		fi, err := c.rpcOps.Lstat(path)
 		if os.IsNotExist(err) {
-			if err := c.rpcOps.Mkdir(path, 0755); err != nil {
+			if err := c.rpcOps.Mkdir(path, 0o755); err != nil {
 				return fmt.Errorf("failed to create %s directory: %s", path, err)
 			}
 		} else if err == nil && !fi.IsDir() {
@@ -1060,7 +1078,7 @@ func (c *container) addImageBindMount(system *mount.System) error {
 
 		imagePath := bind.Source
 		destination := bind.Destination
-		id := 0
+		partID := uint32(0)
 		imageSource := "/"
 
 		if src := bind.ImageSrc(); src != "" {
@@ -1068,14 +1086,13 @@ func (c *container) addImageBindMount(system *mount.System) error {
 		}
 
 		if idStr := bind.ID(); idStr != "" {
-			var err error
-
-			id, err = strconv.Atoi(idStr)
+			p, err := strconv.ParseUint(idStr, 10, 32)
 			if err != nil {
 				return fmt.Errorf("while parsing id bind option: %s", err)
-			} else if id <= 0 {
+			} else if p <= 0 {
 				return fmt.Errorf("id number must be greater than 0")
 			}
+			partID = uint32(p)
 		}
 
 		for _, img := range imageList {
@@ -1089,13 +1106,13 @@ func (c *container) addImageBindMount(system *mount.System) error {
 			data := (*image.Section)(nil)
 
 			// id is only meaningful for SIF images
-			if img.Type == image.SIF && id > 0 {
+			if img.Type == image.SIF && partID > 0 {
 				partitions, err := img.GetAllPartitions()
 				if err != nil {
 					return fmt.Errorf("while getting partitions for %s: %s", img.Path, err)
 				}
 				for _, part := range partitions {
-					if part.ID == uint32(id) {
+					if part.ID == partID {
 						data = &part
 						break
 					}
@@ -1275,6 +1292,7 @@ func (c *container) addSessionDevMount(system *mount.System) error {
 	return nil
 }
 
+//nolint:maintidx
 func (c *container) addDevMount(system *mount.System) error {
 	sylog.Debugf("Checking configuration file for 'mount dev'")
 
@@ -1344,7 +1362,7 @@ func (c *container) addDevMount(system *mount.System) error {
 		}
 		// add /dev/console mount pointing to original tty if there is one
 		for fd := 0; fd <= 2; fd++ {
-			if !terminal.IsTerminal(fd) {
+			if !term.IsTerminal(fd) {
 				continue
 			}
 			// Found a tty on stdin, stdout, or stderr.
@@ -1400,7 +1418,7 @@ func (c *container) addDevMount(system *mount.System) error {
 		if err := c.addSessionDev("/dev/urandom", system); err != nil {
 			return err
 		}
-		if c.engine.EngineConfig.GetNv() {
+		if c.engine.EngineConfig.GetNvLegacy() {
 			devs, err := gpu.NvidiaDevices(true)
 			if err != nil {
 				return fmt.Errorf("failed to get nvidia devices: %v", err)
@@ -1811,10 +1829,10 @@ func (c *container) addTmpMount(system *mount.System) error {
 			tmpSource = filepath.Join(workdir, tmpSource)
 			vartmpSource = filepath.Join(workdir, vartmpSource)
 
-			if err := fs.Mkdir(tmpSource, os.ModeSticky|0777); err != nil && !os.IsExist(err) {
+			if err := fs.Mkdir(tmpSource, os.ModeSticky|0o777); err != nil && !os.IsExist(err) {
 				return fmt.Errorf("failed to create %s: %s", tmpSource, err)
 			}
-			if err := fs.Mkdir(vartmpSource, os.ModeSticky|0777); err != nil && !os.IsExist(err) {
+			if err := fs.Mkdir(vartmpSource, os.ModeSticky|0o777); err != nil && !os.IsExist(err) {
 				return fmt.Errorf("failed to create %s: %s", vartmpSource, err)
 			}
 		} else {
@@ -1822,7 +1840,7 @@ func (c *container) addTmpMount(system *mount.System) error {
 				if err := c.session.AddDir(tmpSource); err != nil {
 					return err
 				}
-				if err := c.session.Chmod(tmpSource, os.ModeSticky|0777); err != nil {
+				if err := c.session.Chmod(tmpSource, os.ModeSticky|0o777); err != nil {
 					return err
 				}
 			}
@@ -1830,7 +1848,7 @@ func (c *container) addTmpMount(system *mount.System) error {
 				if err := c.session.AddDir(vartmpSource); err != nil {
 					return err
 				}
-				if err := c.session.Chmod(vartmpSource, os.ModeSticky|0777); err != nil {
+				if err := c.session.Chmod(vartmpSource, os.ModeSticky|0o777); err != nil {
 					return err
 				}
 			}
@@ -1881,7 +1899,7 @@ func (c *container) addScratchMount(system *mount.System) error {
 	if hasWorkdir {
 		workdir = filepath.Clean(workdir)
 		sourceDir := filepath.Join(workdir, scratchSessionDir)
-		if err := fs.MkdirAll(sourceDir, 0750); err != nil {
+		if err := fs.MkdirAll(sourceDir, 0o750); err != nil {
 			return fmt.Errorf("could not create scratch working directory %s: %s", sourceDir, err)
 		}
 	}
@@ -1894,7 +1912,7 @@ func (c *container) addScratchMount(system *mount.System) error {
 		fullSourceDir, _ := c.session.GetPath(src)
 		if hasWorkdir {
 			fullSourceDir = filepath.Join(workdir, scratchSessionDir, dir)
-			if err := fs.MkdirAll(fullSourceDir, 0750); err != nil {
+			if err := fs.MkdirAll(fullSourceDir, 0o750); err != nil {
 				return fmt.Errorf("could not create scratch working directory %s: %s", fullSourceDir, err)
 			}
 		}
@@ -2244,12 +2262,41 @@ func (c *container) prepareNetworkSetup(system *mount.System, pid int) (func(con
 
 	fakeroot := c.engine.EngineConfig.GetFakeroot()
 	net := c.engine.EngineConfig.GetNetwork()
-	euid := os.Geteuid()
 
+	// If we haven't requested a network namespace, or we have but with no config, we are done here
 	if !c.netNS || net == noneNet {
 		return nil, nil
-	} else if (c.userNS || euid != 0) && !fakeroot {
-		return nil, fmt.Errorf("network requires root or --fakeroot, users need to specify --network=%s with --net", noneNet)
+	}
+
+	// Otherwise start checking what's permitted for the current user
+	euid := os.Geteuid()
+	allowedNetUnpriv := false
+	if euid != 0 {
+		// Is the user permitted in the list of unpriv users / groups permitted to use CNI?
+		allowedNetUser, err := user.UIDInList(euid, c.engine.EngineConfig.File.AllowNetUsers)
+		if err != nil {
+			return nil, err
+		}
+		allowedNetGroup, err := user.UIDInAnyGroup(euid, c.engine.EngineConfig.File.AllowNetGroups)
+		if err != nil {
+			return nil, err
+		}
+		// Is/are the requested network(s) in the list of networks allowed for unpriv CNI?
+		allowedNetNetwork := false
+		for _, n := range strings.Split(net, ",") {
+			allowedNetNetwork = slice.ContainsString(c.engine.EngineConfig.File.AllowNetNetworks, n)
+			// If any one requested network is not allowed, disallow the whole config
+			if !allowedNetNetwork {
+				sylog.Errorf("Network %s is not permitted for unprivileged users.", n)
+				break
+			}
+		}
+		// User is in the user / groups allowed, and requesting an allowed network?
+		allowedNetUnpriv = (allowedNetUser || allowedNetGroup) && allowedNetNetwork
+	}
+
+	if (c.userNS || euid != 0) && !fakeroot && !allowedNetUnpriv {
+		return nil, fmt.Errorf("network requires root or --fakeroot, non-root users can only use --network=%s unless permitted by the administrator", noneNet)
 	}
 
 	// we hold a reference to container network namespace
@@ -2264,6 +2311,7 @@ func (c *container) prepareNetworkSetup(system *mount.System, pid int) (func(con
 	}
 	networks := strings.Split(c.engine.EngineConfig.GetNetwork(), ",")
 
+	// In fakeroot mode only permit the `fakeroot` CNI config
 	if fakeroot && euid != 0 && net != fakerootNet {
 		// set as debug message to avoid annoying warning
 		sylog.Debugf("only '%s' network is allowed for regular user, you requested '%s'", fakerootNet, net)
@@ -2293,10 +2341,12 @@ func (c *container) prepareNetworkSetup(system *mount.System, pid int) (func(con
 	}
 
 	return func(ctx context.Context) error {
-		if fakeroot {
+		if fakeroot || allowedNetUnpriv {
 			// prevent port hijacking between user processes
-			if err := networkSetup.SetPortProtection(fakerootNet, 0); err != nil {
-				return err
+			for _, n := range strings.Split(net, ",") {
+				if err := networkSetup.SetPortProtection(n, 0); err != nil {
+					return err
+				}
 			}
 			if euid != 0 {
 				priv.Escalate()
@@ -2380,13 +2430,12 @@ func (c *container) openFuseFdFromRPC() (int, int, error) {
 
 	fuseFd := -1
 
-	for _, msg := range msgs {
-		fds, err := unix.ParseUnixRights(&msg)
+	if len(msgs) > 0 {
+		fds, err := unix.ParseUnixRights(&msgs[0])
 		if err != nil {
 			return -1, -1, fmt.Errorf("while getting file descriptor: %s", err)
 		}
 		fuseFd = fds[0]
-		break
 	}
 
 	return fuseFd, fuseRPCFd, nil

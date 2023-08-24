@@ -54,13 +54,13 @@ func TestLayout(t *testing.T) {
 	}
 
 	if err := session.SetRootPath("/fakedirectory"); err == nil {
-		t.Error("shoud have failed with invalid root path directory")
+		t.Error("should have failed with invalid root path directory")
 	}
 	if err := session.SetRootPath(dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := session.SetRootPath(dir); err == nil {
-		t.Error("shoud have failed with root path already set error")
+		t.Error("should have failed with root path already set error")
 	}
 
 	if err := session.AddDir("etc"); err == nil {
@@ -70,7 +70,7 @@ func TestLayout(t *testing.T) {
 		t.Error(err)
 	}
 	if err := session.AddDir("/etc"); err == nil {
-		t.Error("shoud have failed with existent path")
+		t.Error("should have failed with existent path")
 	}
 
 	if _, err := session.GetPath("/etcd"); err == nil {
@@ -84,10 +84,10 @@ func TestLayout(t *testing.T) {
 		t.Error(err)
 	}
 
-	if err := session.Chmod("/etc", 0777); err != nil {
+	if err := session.Chmod("/etc", 0o777); err != nil {
 		t.Error(err)
 	}
-	if err := session.Chmod("/etcd", 0777); err == nil {
+	if err := session.Chmod("/etcd", 0o777); err == nil {
 		t.Error("should have failed with non existent path")
 	}
 
@@ -98,7 +98,7 @@ func TestLayout(t *testing.T) {
 		t.Error("should have failed with non existent path")
 	}
 
-	if err := session.Chmod("/etc/passwd", 0600); err != nil {
+	if err := session.Chmod("/etc/passwd", 0o600); err != nil {
 		t.Error(err)
 	}
 	if err := session.Chown("/etc/passwd", uid, gid); err != nil {

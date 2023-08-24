@@ -12,11 +12,10 @@ generate_docs
 .idea/
 builddir/
 internal/pkg/buildcfg/config.go
-singularity.spec
+singularity-ce.spec
 trash.lock
 Makefile.in
 autom4te.cache/
-bin/golangci-lint
 bin/Makefile
 bin/Makefile.in
 bin/singularity
@@ -105,3 +104,14 @@ build/*
 runtime/cli
 
 pkg/library/client/test[0-9]*
+
+# Debian packaging ignore
+_build
+debian/.debhelper/
+debian/files
+debian/singularity-ce*.debhelper.log
+debian/singularity-ce*.substvars
+debian/singularity-ce*/
+debian/tmp/
+
+LICENSE_DEPENDENCIES.csv

@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,6 +7,7 @@ package singularity
 
 import (
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path"
@@ -17,7 +18,7 @@ import (
 )
 
 // RemoteAdd adds remote to configuration
-func RemoteAdd(configFile, name, uri string, global bool) (err error) {
+func RemoteAdd(configFile, name, uri string, global, insecure bool) (err error) {
 	// Explicit handling of corner cases: name and uri must be valid strings
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("invalid name: cannot have empty name")
@@ -26,12 +27,10 @@ func RemoteAdd(configFile, name, uri string, global bool) (err error) {
 		return fmt.Errorf("invalid URI: cannot have empty URI")
 	}
 
-	c := &remote.Config{}
-
 	// system config should be world readable
-	perm := os.FileMode(0600)
+	perm := os.FileMode(0o600)
 	if global {
-		perm = os.FileMode(0644)
+		perm = os.FileMode(0o644)
 	}
 
 	// opening config file
@@ -42,7 +41,7 @@ func RemoteAdd(configFile, name, uri string, global bool) (err error) {
 	defer file.Close()
 
 	// read file contents to config struct
-	c, err = remote.ReadFrom(file)
+	c, err := remote.ReadFrom(file)
 	if err != nil {
 		return fmt.Errorf("while parsing remote config data: %s", err)
 	}
@@ -51,7 +50,7 @@ func RemoteAdd(configFile, name, uri string, global bool) (err error) {
 	if err != nil {
 		return err
 	}
-	e := endpoint.Config{URI: path.Join(u.Host + u.Path), System: global}
+	e := endpoint.Config{URI: path.Join(u.Host + u.Path), System: global, Insecure: insecure}
 
 	if err := c.Add(name, &e); err != nil {
 		return err
@@ -62,7 +61,7 @@ func RemoteAdd(configFile, name, uri string, global bool) (err error) {
 		return fmt.Errorf("while truncating remote config file: %s", err)
 	}
 
-	if n, err := file.Seek(0, os.SEEK_SET); err != nil || n != 0 {
+	if n, err := file.Seek(0, io.SeekStart); err != nil || n != 0 {
 		return fmt.Errorf("failed to reset %s cursor: %s", file.Name(), err)
 	}
 

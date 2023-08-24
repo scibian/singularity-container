@@ -6,17 +6,16 @@
 package sources
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/sylog"
+	"github.com/sylabs/singularity/pkg/util/archive"
 )
 
 // SandboxPacker holds the locations of where to pack from and to
-// Ext3Packer holds the locations of where to back from and to, aswell as image offset info
+// Ext3Packer holds the locations of where to back from and to, as well as image offset info
 type SandboxPacker struct {
 	srcdir string
 	b      *types.Bundle
@@ -28,11 +27,10 @@ func (p *SandboxPacker) Pack(context.Context) (*types.Bundle, error) {
 
 	// copy filesystem into bundle rootfs
 	sylog.Debugf("Copying file system from %s to %s in Bundle\n", rootfs, p.b.RootfsPath)
-	var stderr bytes.Buffer
-	cmd := exec.Command("cp", "-a", rootfs+`/.`, p.b.RootfsPath)
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("cp Failed: %v: %v", err, stderr.String())
+
+	err := archive.CopyWithTar(rootfs+`/.`, p.b.RootfsPath)
+	if err != nil {
+		return nil, fmt.Errorf("copy Failed: %v", err)
 	}
 
 	return p.b, nil

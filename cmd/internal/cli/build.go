@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,11 +14,7 @@ import (
 
 	ocitypes "github.com/containers/image/v5/types"
 	"github.com/spf13/cobra"
-	scsbuildclient "github.com/sylabs/scs-build-client/client"
-	scskeyclient "github.com/sylabs/scs-key-client/client"
-	scslibclient "github.com/sylabs/scs-library-client/client"
 	"github.com/sylabs/singularity/docs"
-	"github.com/sylabs/singularity/internal/pkg/remote/endpoint"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/interactive"
 	"github.com/sylabs/singularity/pkg/build/types"
@@ -29,22 +25,28 @@ import (
 )
 
 var buildArgs struct {
-	sections     []string
-	arch         string
-	builderURL   string
-	libraryURL   string
-	keyServerURL string
-	webURL       string
-	detached     bool
-	encrypt      bool
-	fakeroot     bool
-	fixPerms     bool
-	isJSON       bool
-	noCleanUp    bool
-	noTest       bool
-	remote       bool
-	sandbox      bool
-	update       bool
+	sections      []string
+	bindPaths     []string
+	mounts        []string
+	arch          string
+	builderURL    string
+	libraryURL    string
+	keyServerURL  string
+	webURL        string
+	detached      bool
+	encrypt       bool
+	fakeroot      bool
+	fixPerms      bool
+	isJSON        bool
+	noCleanUp     bool
+	noTest        bool
+	remote        bool
+	sandbox       bool
+	update        bool
+	nvidia        bool
+	nvccli        bool
+	rocm          bool
+	writableTmpfs bool // For test section only
 }
 
 // -s|--sandbox
@@ -204,6 +206,75 @@ var buildFixPermsFlag = cmdline.Flag{
 	EnvKeys:      []string{"FIXPERMS"},
 }
 
+// --nv
+var buildNvFlag = cmdline.Flag{
+	ID:           "nvFlag",
+	Value:        &buildArgs.nvidia,
+	DefaultValue: false,
+	Name:         "nv",
+	Usage:        "inject host Nvidia libraries during build for post and test sections (not supported with remote build)",
+	EnvKeys:      []string{"NV"},
+}
+
+// --nvccli
+var buildNvCCLIFlag = cmdline.Flag{
+	ID:           "buildNvCCLIFlag",
+	Value:        &buildArgs.nvccli,
+	DefaultValue: false,
+	Name:         "nvccli",
+	Usage:        "use nvidia-container-cli for GPU setup (experimental)",
+	EnvKeys:      []string{"NVCCLI"},
+}
+
+// --rocm
+var buildRocmFlag = cmdline.Flag{
+	ID:           "rocmFlag",
+	Value:        &buildArgs.rocm,
+	DefaultValue: false,
+	Name:         "rocm",
+	Usage:        "inject host Rocm libraries during build for post and test sections (not supported with remote build)",
+	EnvKeys:      []string{"ROCM"},
+}
+
+// -B|--bind
+var buildBindFlag = cmdline.Flag{
+	ID:           "buildBindFlag",
+	Value:        &buildArgs.bindPaths,
+	DefaultValue: []string{},
+	Name:         "bind",
+	ShortHand:    "B",
+	Usage: "a user-bind path specification. spec has the format src[:dest[:opts]]," +
+		"where src and dest are outside and inside paths. If dest is not given," +
+		"it is set equal to src. Mount options ('opts') may be specified as 'ro'" +
+		"(read-only) or 'rw' (read/write, which is the default)." +
+		"Multiple bind paths can be given by a comma separated list. (not supported with remote build)",
+	EnvKeys:    []string{"BIND", "BINDPATH"},
+	EnvHandler: cmdline.EnvAppendValue,
+}
+
+// --mount
+var buildMountFlag = cmdline.Flag{
+	ID:           "buildMountFlag",
+	Value:        &buildArgs.mounts,
+	DefaultValue: []string{},
+	Name:         "mount",
+	Usage:        "a mount specification e.g. 'type=bind,source=/opt,destination=/hostopt'.",
+	EnvKeys:      []string{"MOUNT"},
+	Tag:          "<spec>",
+	EnvHandler:   cmdline.EnvAppendValue,
+	StringArray:  true,
+}
+
+// --writable-tmpfs
+var buildWritableTmpfsFlag = cmdline.Flag{
+	ID:           "buildWritableTmpfsFlag",
+	Value:        &buildArgs.writableTmpfs,
+	DefaultValue: false,
+	Name:         "writable-tmpfs",
+	Usage:        "during the %test section, makes the file system accessible as read-write with non persistent data (with overlay support only)",
+	EnvKeys:      []string{"WRITABLE_TMPFS"},
+}
+
 func init() {
 	addCmdInit(func(cmdManager *cmdline.CommandManager) {
 		cmdManager.RegisterCmd(buildCmd)
@@ -233,6 +304,13 @@ func init() {
 
 		cmdManager.RegisterFlagForCmd(&commonPromptForPassphraseFlag, buildCmd)
 		cmdManager.RegisterFlagForCmd(&commonPEMFlag, buildCmd)
+
+		cmdManager.RegisterFlagForCmd(&buildNvFlag, buildCmd)
+		cmdManager.RegisterFlagForCmd(&buildNvCCLIFlag, buildCmd)
+		cmdManager.RegisterFlagForCmd(&buildRocmFlag, buildCmd)
+		cmdManager.RegisterFlagForCmd(&buildBindFlag, buildCmd)
+		cmdManager.RegisterFlagForCmd(&buildMountFlag, buildCmd)
+		cmdManager.RegisterFlagForCmd(&buildWritableTmpfsFlag, buildCmd)
 	})
 }
 
@@ -298,7 +376,7 @@ func checkBuildTarget(path string) error {
 		}
 		if !buildArgs.update && !forceOverwrite {
 
-			question := fmt.Sprintf("Build target '%s' already exists and will be deleted during the build process. Do you want to continue? [N/y]", f.Name())
+			question := fmt.Sprintf("Build target '%s' already exists and will be deleted during the build process. Do you want to continue? [N/y] ", f.Name())
 
 			img, err := image.Init(abspath, false)
 			if err != nil {
@@ -306,7 +384,7 @@ func checkBuildTarget(path string) error {
 					return fmt.Errorf("while determining '%s' format: %s", f.Name(), err)
 				}
 				// unknown image file format
-				question = fmt.Sprintf("Build target '%s' may be a definition file or a text/binary file that will be overwritten. Do you still want to overwrite it? [N/y]", f.Name())
+				question = fmt.Sprintf("Build target '%s' may be a definition file or a text/binary file that will be overwritten. Do you still want to overwrite it? [N/y] ", f.Name())
 			} else {
 				img.File.Close()
 			}
@@ -402,21 +480,4 @@ func makeDockerCredentials(cmd *cobra.Command) (authConf *ocitypes.DockerAuthCon
 	// pointer, which will mean containers/image falls back to looking for
 	// .docker/config.json
 	return nil, nil
-}
-
-// get configuration for remote library, builder, keyserver that may be used in the build
-func getServiceConfigs(buildURI, libraryURI, keyserverURI string) (*scsbuildclient.Config, *scslibclient.Config, []scskeyclient.Option, error) {
-	lc, err := getLibraryClientConfig(libraryURI)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	bc, err := getBuilderClientConfig(buildURI)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	co, err := getKeyserverClientOpts(keyserverURI, endpoint.KeyserverVerifyOp)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return bc, lc, co, nil
 }

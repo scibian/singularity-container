@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -87,7 +88,7 @@ func GetConfig(filename string, edit bool, getUserFn GetUserFn) (*Config, error)
 		defer syscall.Umask(umask)
 	}
 
-	config.file, err = os.OpenFile(filename, flags, 0644)
+	config.file, err = os.OpenFile(filename, flags, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open: %s: %s", filename, err)
 	}
@@ -141,7 +142,7 @@ func (c *Config) parseEntry(line string) {
 		e.disabled = true
 	}
 
-	uid, err := strconv.Atoi(username)
+	uid, err := strconv.ParseUint(username, 10, 32)
 	if err == nil {
 		e.UID = uint32(uid)
 	} else {
@@ -183,7 +184,7 @@ func (c *Config) Close() error {
 	if err := c.file.Truncate(0); err != nil {
 		return fmt.Errorf("error while truncating %s to 0: %s", filename, err)
 	}
-	if _, err := c.file.Seek(0, os.SEEK_SET); err != nil {
+	if _, err := c.file.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("error while resetting file offset: %s", err)
 	}
 	if _, err := c.file.Write(buf.Bytes()); err != nil {
@@ -336,8 +337,10 @@ func (c *Config) GetUserEntry(username string) (*Entry, error) {
 }
 
 // getPwUID is also used for mocking purpose
-var getPwUID = user.GetPwUID
-var getPwNam = user.GetPwNam
+var (
+	getPwUID = user.GetPwUID
+	getPwNam = user.GetPwNam
+)
 
 // GetIDRange determines UID/GID mappings based on configuration
 // file provided in path.

@@ -1,4 +1,4 @@
-// Copyright (c) 2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -45,7 +45,7 @@ const (
 	ContainMatch MatchType = iota
 	// ExactMatch is for exact match
 	ExactMatch
-	// UnwaantedContainMatch checks that output does not contain text
+	// UnwantedContainMatch checks that output does not contain text
 	UnwantedContainMatch
 	// UnwantedExactMatch checks that output does not exactly match text
 	UnwantedExactMatch
@@ -465,6 +465,7 @@ func ExpectExit(code int, resultOps ...SingularityCmdResultOp) SingularityCmdOp 
 // cmdPath specifies the path to the singularity binary and cmdOps
 // provides a list of operations to be executed before or after running
 // the command.
+//nolint:maintidx
 func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 	t.Helper()
 

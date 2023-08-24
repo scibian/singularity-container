@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2019,2020 Sylabs Inc. All rights reserved.
+// Copyright (c) 2019,2022 Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -22,6 +22,7 @@ import (
 	"github.com/sylabs/singularity/e2e/actions"
 	e2ebuildcfg "github.com/sylabs/singularity/e2e/buildcfg"
 	"github.com/sylabs/singularity/e2e/cache"
+	"github.com/sylabs/singularity/e2e/cgroups"
 	"github.com/sylabs/singularity/e2e/cmdenvvars"
 	"github.com/sylabs/singularity/e2e/config"
 	"github.com/sylabs/singularity/e2e/delete"
@@ -35,6 +36,7 @@ import (
 	"github.com/sylabs/singularity/e2e/instance"
 	"github.com/sylabs/singularity/e2e/key"
 	"github.com/sylabs/singularity/e2e/oci"
+	"github.com/sylabs/singularity/e2e/overlay"
 	"github.com/sylabs/singularity/e2e/plugin"
 	"github.com/sylabs/singularity/e2e/pull"
 	"github.com/sylabs/singularity/e2e/push"
@@ -93,7 +95,7 @@ func Run(t *testing.T) {
 		os.RemoveAll(name)
 	})(t)
 
-	if err := os.Chmod(name, 0755); err != nil {
+	if err := os.Chmod(name, 0o755); err != nil {
 		log.Fatalf("failed to chmod temporary directory: %v", err)
 	}
 	testenv.TestDir = name
@@ -153,7 +155,9 @@ func Run(t *testing.T) {
 	// the Singularity instance directory we *must* now call it before we
 	// start running tests which could use instance and oci functionality.
 	// See: https://github.com/hpcng/singularity/issues/5744
-	e2e.PrepRegistry(t, testenv)
+	t.Run("PrepRegistry", func(t *testing.T) {
+		e2e.PrepRegistry(t, testenv)
+	})
 	// e2e.KillRegistry is called here to ensure that the registry
 	// is stopped after tests run.
 	defer e2e.KillRegistry(t, testenv)
@@ -167,6 +171,7 @@ func Run(t *testing.T) {
 	suite.AddGroup("BUILDCFG", e2ebuildcfg.E2ETests)
 	suite.AddGroup("BUILD", imgbuild.E2ETests)
 	suite.AddGroup("CACHE", cache.E2ETests)
+	suite.AddGroup("CGROUPS", cgroups.E2ETests)
 	suite.AddGroup("CMDENVVARS", cmdenvvars.E2ETests)
 	suite.AddGroup("CONFIG", config.E2ETests)
 	suite.AddGroup("DELETE", delete.E2ETests)
@@ -179,6 +184,7 @@ func Run(t *testing.T) {
 	suite.AddGroup("INSTANCE", instance.E2ETests)
 	suite.AddGroup("KEY", key.E2ETests)
 	suite.AddGroup("OCI", oci.E2ETests)
+	suite.AddGroup("OVERLAY", overlay.E2ETests)
 	suite.AddGroup("PLUGIN", plugin.E2ETests)
 	suite.AddGroup("PULL", pull.E2ETests)
 	suite.AddGroup("PUSH", push.E2ETests)

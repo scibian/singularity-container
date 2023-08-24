@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2018-2019, Sylabs, Inc. All rights reserved.
+  Copyright (c) 2018-2021, Sylabs, Inc. All rights reserved.
 
   This software is licensed under a 3-clause BSD license.  Please
   consult LICENSE.md file distributed with the sources of this project regarding
@@ -120,7 +120,18 @@ static void priv_escalate(bool keep_fsuid) {
     if ( keep_fsuid ) {
         /* Use setfsuid to address issue about root_squash filesystems option */
         verbosef("Change filesystem uid to %d\n", uid);
-        setfsuid(uid);
+        /*
+         * See BUGS section of recent man 2 setfsuid.
+         * First call will return the previous fsuid, on success or failure.
+         * Return <0 is an error possible on GLIBC <=2.15 only
+         */
+        if ( setfsuid(uid) < 0 ) {
+            fatalf("Failed to set filesystem uid to %d\n", uid);
+        }
+        /*
+         * Have to call again with an effective no-op to check if it really worked.
+         * If first call succeeded, return of second call is the required uid.
+         */
         if ( setfsuid(uid) != uid ) {
             fatalf("Failed to set filesystem uid to %d\n", uid);
         }
@@ -238,7 +249,7 @@ static void apply_privileges(struct privileges *privileges, struct capabilities 
     int last_cap = get_last_cap();
     int caps_index;
 
-    /* adjust capabilities based on the lastest capability supported by the system */
+    /* adjust capabilities based on the latest capability supported by the system */
     for ( caps_index = last_cap + 1; caps_index <= CAPSET_MAX; caps_index++ ) {
         privileges->capabilities.effective &= ~capflag(caps_index);
         privileges->capabilities.permitted &= ~capflag(caps_index);
@@ -374,6 +385,23 @@ static void set_rpc_privileges(void) {
     priv->capabilities.bounding = capflag(CAP_SYS_ADMIN);
     priv->capabilities.bounding |= capflag(CAP_IPC_LOCK);
     priv->capabilities.bounding |= capflag(CAP_MKNOD);
+    /* required by nvidia-container-cli */
+    if (sconfig->starter.nvCCLICaps) {
+        debugf("Enabling bounding capabilities for nvidia-container-cli\n");
+        priv->capabilities.bounding |= capflag(CAP_CHOWN);
+        priv->capabilities.bounding |= capflag(CAP_DAC_OVERRIDE);
+        priv->capabilities.bounding |= capflag(CAP_DAC_READ_SEARCH);
+        priv->capabilities.bounding |= capflag(CAP_FOWNER);
+        priv->capabilities.bounding |= capflag(CAP_KILL);
+        priv->capabilities.bounding |= capflag(CAP_MKNOD);
+        priv->capabilities.bounding |= capflag(CAP_NET_ADMIN);
+        priv->capabilities.bounding |= capflag(CAP_SETGID);
+        priv->capabilities.bounding |= capflag(CAP_SETPCAP);
+        priv->capabilities.bounding |= capflag(CAP_SETUID);
+        priv->capabilities.bounding |= capflag(CAP_SYS_CHROOT);
+        priv->capabilities.bounding |= capflag(CAP_SYS_PTRACE);
+    }
+    
 
     debugf("Set RPC privileges\n");
     apply_privileges(priv, current);
@@ -975,6 +1003,7 @@ static void cleanup_fd(fdlist_t *master, struct starter *starter) {
             if ( starter->fds[i] == fd ) {
                 found = true;
                 /* set force close on exec */
+                debugf("Setting FD_CLOEXEC on starter fd %d\n", starter->fds[i]);
                 if ( fcntl(starter->fds[i], F_SETFD, FD_CLOEXEC) < 0 ) {
                     debugf("Can't set FD_CLOEXEC on file descriptor %d: %s\n", starter->fds[i], strerror(errno));
                 }
@@ -1128,9 +1157,17 @@ static void cleanenv(void) {
     /*
      * keep only SINGULARITY_MESSAGELEVEL for GO runtime, set others to empty
      * string and not NULL (see issue #3703 for why)
+     *
+     * DCT - also keep any GOGC and GODEBUG vars for go runtime
+     * debugging purposes.
      */
     for (e = environ; *e != NULL; e++) {
-        if ( strncmp(MSGLVL_ENV "=", *e, sizeof(MSGLVL_ENV)) != 0 ) {
+        if ( strncmp(MSGLVL_ENV "=", *e, strlen(MSGLVL_ENV "=")) == 0 ||
+             strncmp("GOGC" "=", *e, strlen("GOGC" "=")) == 0 ||
+             strncmp("GODEBUG" "=", *e, strlen("GODEBUG" "=")) == 0 ) {
+            debugf("Keeping env var %s\n", *e);
+        } else {
+            debugf("Clearing env var %s\n", *e);
             *e = "";
         }
     }

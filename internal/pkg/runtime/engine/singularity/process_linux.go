@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -36,14 +36,15 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/util/env"
 	"github.com/sylabs/singularity/internal/pkg/util/fs/files"
 	"github.com/sylabs/singularity/internal/pkg/util/machine"
+	"github.com/sylabs/singularity/internal/pkg/util/shell"
 	"github.com/sylabs/singularity/internal/pkg/util/shell/interpreter"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
 	singularitycallback "github.com/sylabs/singularity/pkg/plugin/callback/runtime/engine/singularity"
 	singularityConfig "github.com/sylabs/singularity/pkg/runtime/engine/singularity/config"
 	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/util/rlimit"
-	"golang.org/x/crypto/ssh/terminal"
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 	"mvdan.cc/sh/v3/interp"
 )
 
@@ -55,6 +56,7 @@ const defaultShell = "/bin/sh"
 // No additional privileges can be gained during this call (unless container
 // is executed as root intentionally) as starter will set uid/euid/suid
 // to the targetUID (PrepareConfig will set it by calling starter.Config.SetTargetUID).
+//nolint:maintidx
 func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 	// Manage all signals.
 	// Queue them until they're ready to be handled below.
@@ -87,10 +89,10 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 		//   place.  Also, programs that don't use ttyname() and instead
 		//   directly do readlink() on /proc/self/fd/X need this.
 		for fd := 0; fd <= 2; fd++ {
-			if !terminal.IsTerminal(fd) {
+			if !term.IsTerminal(fd) {
 				continue
 			}
-			consfile, err := os.OpenFile("/dev/console", os.O_RDWR, 0600)
+			consfile, err := os.OpenFile("/dev/console", os.O_RDWR, 0o600)
 			if err != nil {
 				sylog.Debugf("Could not open minimal /dev/console, skipping replacing tty descriptors")
 				break
@@ -98,7 +100,7 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 			sylog.Debugf("Replacing tty descriptors with /dev/console")
 			consfd := int(consfile.Fd())
 			for ; fd <= 2; fd++ {
-				if !terminal.IsTerminal(fd) {
+				if !term.IsTerminal(fd) {
 					continue
 				}
 				syscall.Close(fd)
@@ -288,7 +290,7 @@ func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 				statusChan <- status
 			} else if e, ok := err.(*os.SyscallError); ok {
 				// handle possible race with Wait4 call above by ignoring ECHILD
-				// error because child process was already catched
+				// error because child process was already caught
 				if e.Err.(syscall.Errno) != syscall.ECHILD {
 					sylog.Fatalf("error while waiting container process: %s", e.Error())
 				}
@@ -395,6 +397,12 @@ func (e *EngineOperations) PostStartProcess(ctx context.Context, pid int) error 
 				file.UserNs = true
 				break
 			}
+		}
+
+		// If we are using cgroups with this instance then mark that in the instance config.
+		// We don't store the path, as we will get the cgroup manager by Pid.
+		if e.EngineConfig.GetCgroupsPath() != "" {
+			file.Cgroup = true
 		}
 
 		// grab configuration to store in instance file
@@ -632,18 +640,22 @@ func injectEnvHandler(senv map[string]string) interpreter.OpenHandler {
 			`
 			b.WriteString(fmt.Sprintf(defaultPathSnippet, env.DefaultPath))
 
+			// https://github.com/sylabs/singularity/issues/43
+			// We wrap the value of the export in double quotes manually, and do not use
+			// go's %q format string as it prevents passing an escaped literal $ in
+			// a SINGULARITYENV_ as \$
 			snippet := `
 			if test -v %[1]s; then
 				sylog debug "Overriding %[1]s environment variable"
 			fi
-			export %[1]s=%[2]q
+			export %[1]s="%[2]s"
 			`
 			for key, value := range senv {
 				if key == "LD_LIBRARY_PATH" && value != "" {
 					b.WriteString(fmt.Sprintf(snippet, key, value+":/.singularity.d/libs"))
 					continue
 				}
-				b.WriteString(fmt.Sprintf(snippet, key, value))
+				b.WriteString(fmt.Sprintf(snippet, key, shell.EscapeDoubleQuotes(value)))
 			}
 		})
 
@@ -682,27 +694,6 @@ func sylogBuiltin(ctx context.Context, argv []string) error {
 	case "warning":
 		sylog.Warningf(argv[1])
 	}
-	return nil
-}
-
-// unescapeBuiltin returns a string, unescaping \n to a newline
-// Used to return newlines when we export a var in the action script
-func unescapeBuiltin(ctx context.Context, argv []string) error {
-	if len(argv) < 1 {
-		return fmt.Errorf("unescape builtin requires one argument")
-	}
-	hc := interp.HandlerCtx(ctx)
-	fmt.Fprintf(hc.Stdout, "%s", strings.Replace(argv[0], "\\n", "\n", -1))
-	return nil
-}
-
-// getEnvKeyBuiltin returns the KEY part of an environment variable.
-func getEnvKeyBuiltin(ctx context.Context, argv []string) error {
-	if len(argv) < 1 {
-		return fmt.Errorf("getenvkey builtin requires one argument")
-	}
-	hc := interp.HandlerCtx(ctx)
-	fmt.Fprintf(hc.Stdout, "%s\n", strings.SplitN(argv[0], "=", 2)[0])
 	return nil
 }
 
@@ -815,11 +806,9 @@ func runActionScript(engineConfig *singularityConfig.EngineConfig) ([]string, []
 
 	// register few builtin
 	shell.RegisterShellBuiltin("getallenv", getAllEnvBuiltin(shell))
-	shell.RegisterShellBuiltin("getenvkey", getEnvKeyBuiltin)
 	shell.RegisterShellBuiltin("sylog", sylogBuiltin)
 	shell.RegisterShellBuiltin("fixpath", fixPathBuiltin)
 	shell.RegisterShellBuiltin("hash", hashBuiltin)
-	shell.RegisterShellBuiltin("unescape", unescapeBuiltin)
 	shell.RegisterShellBuiltin("umask_builtin", umaskBuiltin)
 
 	// exec builtin won't execute the command but instead

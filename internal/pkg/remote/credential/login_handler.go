@@ -13,10 +13,10 @@ import (
 	"net/url"
 	"time"
 
-	auth "github.com/deislabs/oras/pkg/auth/docker"
 	"github.com/sylabs/singularity/internal/pkg/util/interactive"
 	"github.com/sylabs/singularity/pkg/syfs"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
+	auth "oras.land/oras-go/pkg/auth/docker"
 )
 
 // loginHandlers contains the registered handlers by scheme.
@@ -44,7 +44,7 @@ func init() {
 // function just return the password provided as argument.
 func ensurePassword(password string) (string, error) {
 	if password == "" {
-		question := "Password (or token when username is empty): "
+		question := "Password / Token: "
 		input, err := interactive.AskQuestionNoEcho(question)
 		if err != nil {
 			return "", fmt.Errorf("failed to read password: %s", err)

@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,31 +7,25 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
-	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// OutputReader interface is used to read the websocket output from the stream
-type OutputReader interface {
-	// Read is called when a websocket message is received
-	Read(messageType int, p []byte) (int, error)
-}
-
-// GetOutput reads the build output log for the provided buildID - streaming to
-// OutputReader. The context controls the lifetime of the request.
-func (c *Client) GetOutput(ctx context.Context, buildID string, or OutputReader) error {
-	u := c.BaseURL.ResolveReference(&url.URL{
+// GetOutput streams build output for the provided buildID to w. The context controls the lifetime
+// of the request.
+func (c *Client) GetOutput(ctx context.Context, buildID string, w io.Writer) error {
+	u := c.baseURL.ResolveReference(&url.URL{
 		Path: "v1/build-ws/" + buildID,
 	})
 
 	wsScheme := "ws"
-	if c.BaseURL.Scheme == "https" {
+	if c.baseURL.Scheme == "https" {
 		wsScheme = "wss"
 	}
 	u.Scheme = wsScheme
@@ -39,49 +33,62 @@ func (c *Client) GetOutput(ctx context.Context, buildID string, or OutputReader)
 	h := http.Header{}
 	c.setRequestHeaders(h)
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	dialer := websocket.DefaultDialer
 
-	ws, resp, err := websocket.DefaultDialer.DialContext(ctx, u.String(), h)
+	// Due to this issue (https://github.com/gorilla/websocket/issues/601), it is not possible
+	// clone the 'c.HTTPClient' transport, so we take only the InsecureSkipVerify and RootCAs
+	// parameters.
+	if tr, ok := c.httpClient.Transport.(*http.Transport); ok {
+		dialer.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: tr.TLSClientConfig.InsecureSkipVerify,
+			RootCAs:            tr.TLSClientConfig.RootCAs,
+		}
+	}
+
+	ws, resp, err := dialer.DialContext(ctx, u.String(), h)
 	if err != nil {
-		c.Logger.Logf("websocket dial err - %s, partial response: %+v", err, resp)
-		return err
+		return fmt.Errorf("failed to dial: %w", err)
 	}
 	defer resp.Body.Close()
 	defer ws.Close()
 
+	errChan := make(chan error)
+
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		defer close(errChan)
+		errChan <- func() error {
+			for {
+				// Read from websocket
+				mt, r, err := ws.NextReader()
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+					return nil
+				} else if err != nil {
+					return fmt.Errorf("failed to read output: %w", err)
+				}
 
-		fmt.Printf("\rShutting down due to signal: %v\n", <-sigCh)
+				if mt != websocket.TextMessage {
+					continue
+				}
 
-		if err := c.Cancel(ctx, buildID); err != nil {
-			c.Logger.Logf("build cancellation request failed: %v", err)
-		}
-
-		cancel()
-
+				if _, err := io.Copy(w, r); err != nil {
+					return fmt.Errorf("failed to copy output: %w", err)
+				}
+			}
+		}()
 	}()
 
-	for {
-		// Read from websocket
-		mt, msg, err := ws.ReadMessage()
-		if err != nil {
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				return nil
-			}
-			c.Logger.Logf("websocket read message err - %s", err)
-			return err
-		}
+	select {
+	case <-ctx.Done():
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-		n, err := or.Read(mt, msg)
-		if err != nil {
-			return err
-		}
-		if n != len(msg) {
-			return fmt.Errorf("did not read all message contents: %d != %d", n, len(msg))
-		}
+		_ = c.Cancel(ctx, buildID) //nolint:contextcheck
 
+		ws.Close()
+
+		<-errChan
+		return nil
+	case err := <-errChan:
+		return err
 	}
 }

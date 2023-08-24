@@ -1,4 +1,4 @@
-// Copyright (c) 2018, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,6 +14,7 @@ import (
 
 	"github.com/sylabs/singularity/internal/pkg/test"
 	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
+	"github.com/sylabs/singularity/internal/pkg/util/bin"
 	"github.com/sylabs/singularity/pkg/build/types"
 	"github.com/sylabs/singularity/pkg/build/types/parser"
 )
@@ -29,8 +30,8 @@ func TestYumConveyor(t *testing.T) {
 		t.SkipNow()
 	}
 
-	_, dnfErr := exec.LookPath("dnf")
-	_, yumErr := exec.LookPath("yum")
+	_, dnfErr := bin.FindBin("dnf")
+	_, yumErr := bin.FindBin("yum")
 	if dnfErr != nil && yumErr != nil {
 		t.Skip("skipping test, neither dnf nor yum found")
 	}
@@ -57,7 +58,7 @@ func TestYumConveyor(t *testing.T) {
 	yc := &YumConveyor{}
 
 	err = yc.Get(context.Background(), b)
-	// clean up bundle since assembler isnt called
+	// clean up bundle since assembler isn't called
 	defer yc.b.Remove()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", yumDef, err)
@@ -101,7 +102,7 @@ func TestYumPacker(t *testing.T) {
 	ycp := &YumConveyorPacker{}
 
 	err = ycp.Get(context.Background(), b)
-	// clean up tmpfs since assembler isnt called
+	// clean up tmpfs since assembler isn't called
 	defer ycp.b.Remove()
 	if err != nil {
 		t.Fatalf("failed to Get from %s: %v\n", yumDef, err)

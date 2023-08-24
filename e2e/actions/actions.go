@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -85,19 +85,19 @@ func (c actionTests) actionExec(t *testing.T) {
 	user := e2e.CurrentUser(t)
 
 	// Create a temp testfile
-	testdata, err := fs.MakeTmpDir(c.env.TestDir, "testdata", 0755)
+	testdata, err := fs.MakeTmpDir(c.env.TestDir, "testdata", 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(testdata)
 
 	testdataTmp := filepath.Join(testdata, "tmp")
-	if err := os.Mkdir(testdataTmp, 0755); err != nil {
+	if err := os.Mkdir(testdataTmp, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create a temp testfile
-	tmpfile, err := fs.MakeTmpFile(testdataTmp, "testSingularityExec.", 0644)
+	tmpfile, err := fs.MakeTmpFile(testdataTmp, "testSingularityExec.", 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1053,6 +1053,7 @@ func (c actionTests) actionNetwork(t *testing.T) {
 	}
 }
 
+//nolint:maintidx
 func (c actionTests) actionBinds(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
@@ -1067,7 +1068,9 @@ func (c actionTests) actionBinds(t *testing.T) {
 	hostCanaryFile := filepath.Join(hostCanaryDir, "file")
 
 	canaryFileBind := hostCanaryFile + ":" + contCanaryFile
+	canaryFileMount := "type=bind,source=" + hostCanaryFile + ",destination=" + contCanaryFile
 	canaryDirBind := hostCanaryDir + ":" + contCanaryDir
+	canaryDirMount := "type=bind,source=" + hostCanaryDir + ",destination=" + contCanaryDir
 
 	hostHomeDir := filepath.Join(workspace, "home")
 	hostWorkDir := filepath.Join(workspace, "workdir")
@@ -1085,19 +1088,19 @@ func (c actionTests) actionBinds(t *testing.T) {
 			}
 		})(t)
 
-		if err := fs.Mkdir(hostCanaryDir, 0777); err != nil {
+		if err := fs.Mkdir(hostCanaryDir, 0o777); err != nil {
 			t.Fatalf("failed to create canary_dir: %s", err)
 		}
 		if err := fs.Touch(hostCanaryFile); err != nil {
 			t.Fatalf("failed to create canary_file: %s", err)
 		}
-		if err := os.Chmod(hostCanaryFile, 0777); err != nil {
+		if err := os.Chmod(hostCanaryFile, 0o777); err != nil {
 			t.Fatalf("failed to apply permissions on canary_file: %s", err)
 		}
-		if err := fs.Mkdir(hostHomeDir, 0777); err != nil {
+		if err := fs.Mkdir(hostHomeDir, 0o777); err != nil {
 			t.Fatalf("failed to create workspace home directory: %s", err)
 		}
-		if err := fs.Mkdir(hostWorkDir, 0777); err != nil {
+		if err := fs.Mkdir(hostWorkDir, 0o777); err != nil {
 			t.Fatalf("failed to create workspace work directory: %s", err)
 		}
 	}
@@ -1467,6 +1470,31 @@ func (c actionTests) actionBinds(t *testing.T) {
 			postRun: checkHostDir(filepath.Join(hostWorkDir, "scratch/scratch", "dir")),
 			exit:    0,
 		},
+		// For the --mount variants we are really just verifying the CLI
+		// acceptance of one or more --mount flags. Translation from --mount
+		// strings to BindPath structs is checked in unit tests. The
+		// functionality of bind mounts of various kinds is already checked
+		// above, with --bind flags. No need to duplicate all of these.
+		{
+			name: "MountSingle",
+			args: []string{
+				"--mount", canaryFileMount,
+				sandbox,
+				"test", "-f", contCanaryFile,
+			},
+			exit: 0,
+		},
+		{
+			name: "MountNested",
+			args: []string{
+				"--mount", canaryDirMount,
+				"--mount", "source=" + hostCanaryFile + ",destination=" + filepath.Join(contCanaryDir, "file3"),
+				sandbox,
+				"test", "-f", "/canary/file3",
+			},
+			postRun: checkHostFile(filepath.Join(hostCanaryDir, "file3")),
+			exit:    0,
+		},
 	}
 
 	for _, profile := range e2e.Profiles {
@@ -1562,7 +1590,7 @@ func (c actionTests) fuseMount(t *testing.T) {
 				t.Errorf("could not read ssh private key: %s", err)
 				return
 			}
-			if err := ioutil.WriteFile(userPrivKey, content, 0600); err != nil {
+			if err := ioutil.WriteFile(userPrivKey, content, 0o600); err != nil {
 				t.Errorf("could not write ssh user private key: %s", err)
 				return
 			}
@@ -1734,6 +1762,7 @@ func (c actionTests) fuseMount(t *testing.T) {
 	}
 }
 
+//nolint:maintidx
 func (c actionTests) bindImage(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
@@ -1768,7 +1797,7 @@ func (c actionTests) bindImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(squashDir, 0755); err != nil {
+	if err := os.Chmod(squashDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2026,6 +2055,33 @@ func (c actionTests) bindImage(t *testing.T) {
 			},
 			exit: 0,
 		},
+		// For the --mount variants we are really just verifying the CLI
+		// acceptance of one or more image bind mount strings. Translation from
+		// --mount strings to BindPath structs is checked in unit tests. The
+		// functionality of image mounts of various kinds is already checked
+		// above, with --bind flags. No need to duplicate all of these.
+		{
+			name:    "MountSifWithID",
+			profile: e2e.UserProfile,
+			args: []string{
+				// rootfs ID is now '4'
+				"--mount", "type=bind,source=" + c.env.ImagePath + ",destination=/rootfs,id=4",
+				c.env.ImagePath,
+				"test", "-d", "/rootfs/etc",
+			},
+			exit: 0,
+		},
+		{
+			name:    "MountSifDataExt3AndSquash",
+			profile: e2e.UserProfile,
+			args: []string{
+				"--mount", "type=bind,source=" + sifExt3Image + ",destination=/ext3,image-src=/",
+				"--mount", "type=bind,source=" + sifSquashImage + ",destination=/squash,image-src=/",
+				c.env.ImagePath,
+				"test", "-f", filepath.Join("/squash", squashMarkerFile), "-a", "-f", "/ext3/ext3_marker",
+			},
+			exit: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2073,7 +2129,6 @@ func (c actionTests) actionUmask(t *testing.T) {
 			e2e.ExpectOutput(e2e.ExactMatch, "0022"),
 		),
 	)
-
 }
 
 func (c actionTests) actionNoMount(t *testing.T) {
@@ -2192,11 +2247,69 @@ func (c actionTests) actionNoMount(t *testing.T) {
 	}
 }
 
+// actionCompat checks that the --compat flag sets up the expected environment
+// for improved oci/docker compatibility
+func (c actionTests) actionCompat(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	type test struct {
+		name     string
+		args     []string
+		exitCode int
+		expect   e2e.SingularityCmdResultOp
+	}
+
+	tests := []test{
+		{
+			name:     "containall",
+			args:     []string{"--compat", c.env.ImagePath, "sh", "-c", "ls -lah $HOME"},
+			exitCode: 0,
+			expect:   e2e.ExpectOutput(e2e.ContainMatch, "total 0"),
+		},
+		{
+			name:     "writable-tmpfs",
+			args:     []string{"--compat", c.env.ImagePath, "sh", "-c", "touch /test"},
+			exitCode: 0,
+		},
+		{
+			name:     "no-init",
+			args:     []string{"--compat", c.env.ImagePath, "sh", "-c", "ps"},
+			exitCode: 0,
+			expect:   e2e.ExpectOutput(e2e.UnwantedContainMatch, "sinit"),
+		},
+		{
+			name:     "no-umask",
+			args:     []string{"--compat", c.env.ImagePath, "sh", "-c", "umask"},
+			exitCode: 0,
+			expect:   e2e.ExpectOutput(e2e.ContainMatch, "0022"),
+		},
+	}
+
+	oldUmask := syscall.Umask(0)
+	defer syscall.Umask(oldUmask)
+
+	for _, tt := range tests {
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.UserProfile),
+			e2e.WithCommand("exec"),
+			e2e.WithArgs(tt.args...),
+			e2e.ExpectExit(
+				tt.exitCode,
+				tt.expect,
+			),
+		)
+	}
+}
+
 // E2ETests is the main func to trigger the test suite
 func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := actionTests{
 		env: env,
 	}
+
+	np := testhelper.NoParallel
 
 	return testhelper.Tests{
 		"action URI":            c.RunFromURI,          // action_URI
@@ -2224,11 +2337,13 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"issue 5631":            c.issue5631,           // https://github.com/sylabs/singularity/issues/5631
 		"issue 5690":            c.issue5690,           // https://github.com/sylabs/singularity/issues/5690
 		"network":               c.actionNetwork,       // test basic networking
-		"binds":                 c.actionBinds,         // test various binds
+		"binds":                 c.actionBinds,         // test various binds with --bind and --mount
 		"exit and signals":      c.exitSignals,         // test exit and signals propagation
 		"fuse mount":            c.fuseMount,           // test fusemount option
-		"bind image":            c.bindImage,           // test bind image
+		"bind image":            c.bindImage,           // test bind image with --bind and --mount
 		"umask":                 c.actionUmask,         // test umask propagation
 		"no-mount":              c.actionNoMount,       // test --no-mount
+		"compat":                c.actionCompat,        // test --compat
+		"invalidRemote":         np(c.invalidRemote),   // GHSA-5mv9-q7fq-9394
 	}
 }

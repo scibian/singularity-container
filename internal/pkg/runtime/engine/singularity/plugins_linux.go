@@ -1,4 +1,4 @@
-// Copyright (c) 2019, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -10,7 +10,7 @@
 // If you need to add a new plugin, simply add it to this import list.
 // The build system will pick it up from here.
 
-// +build cni_plugins
+//go:build cni_plugins
 
 package singularity
 
@@ -27,7 +27,8 @@ import (
 	_ "github.com/containernetworking/plugins/plugins/main/vlan"
 	_ "github.com/containernetworking/plugins/plugins/meta/bandwidth"
 	_ "github.com/containernetworking/plugins/plugins/meta/firewall"
-	_ "github.com/containernetworking/plugins/plugins/meta/flannel"
 	_ "github.com/containernetworking/plugins/plugins/meta/portmap"
+	_ "github.com/containernetworking/plugins/plugins/meta/sbr"
 	_ "github.com/containernetworking/plugins/plugins/meta/tuning"
+	_ "github.com/containernetworking/plugins/plugins/meta/vrf"
 )

@@ -1,9 +1,9 @@
-// Copyright (c) 2017-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2017-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
 
-//TODO Provide some guidelines for writing these docs
+// TODO Provide some guidelines for writing these docs
 
 package docs
 
@@ -722,7 +722,7 @@ Enterprise Performance Computing (EPC)`
   image. By default, one digital signature is added for each object group in
   the file.
   
-  To generate a keypair, see 'singularity help key newpair'`
+  To generate a key pair, see 'singularity help key newpair'`
 	SignExample string = `
   $ singularity sign container.sif`
 
@@ -809,7 +809,7 @@ Enterprise Performance Computing (EPC)`
       SCIF_APPLIB        is the application's library folder that is added to the LD_LIBRARY_PATH
       SCIF_APPRUN        is the runscript
       SCIF_APPHELP       is the help file for the runscript
-      SCIF_APPTEST       is the testing script (test.sh) associated with the applicatio
+      SCIF_APPTEST       is the testing script (test.sh) associated with the application
       SCIF_APPNAME       the name for the active application
       SCIF_APPFILES      the files section associated with the application that are added to
 
@@ -1039,4 +1039,42 @@ Enterprise Performance Computing (EPC)`
 
   To display the resulting configuration instead of writing it to file:
   $ singularity config global --dry-run --set "bind path" /etc/resolv.conf`
+
+	OverlayUse   string = `overlay`
+	OverlayShort string = `Manage an EXT3 writable overlay image`
+	OverlayLong  string = `
+  The overlay command allows management of EXT3 writable overlay images.`
+	OverlayExample string = `
+  All overlay commands have their own help output:
+
+  $ singularity help overlay create
+  $ singularity overlay create --help`
+
+	OverlayCreateUse   string = `create <options> image`
+	OverlayCreateShort string = `Create EXT3 writable overlay image`
+	OverlayCreateLong  string = `
+  The overlay create command allows to create EXT3 writable overlay image either
+  as a single EXT3 image or by adding it automatically to an existing SIF image.`
+	OverlayCreateExample string = `
+  To create and add a writable overlay to an existing SIF image:
+  $ singularity overlay create --size 1024 /tmp/image.sif
+
+  To create a single EXT3 writable overlay image:
+  $ singularity overlay create --size 1024 /tmp/my_overlay.img`
+)
+
+// Documentation for sif/siftool command.
+const (
+	SIFUse   string = `sif`
+	SIFAlias string = `siftool`
+	SIFShort string = `Manipulate Singularity Image Format (SIF) images`
+	SIFLong  string = `
+  A set of commands are provided to display elements such as the SIF global
+  header, the data object descriptors and to dump data objects. It is also
+  possible to modify a SIF file via this tool via the add/del commands.`
+	SIFExample string = `
+  All sif commands have their own help output:
+
+  $ singularity help sif list
+  $ singularity sif list --help`
 )
