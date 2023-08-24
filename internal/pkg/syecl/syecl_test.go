@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,7 +8,6 @@ package syecl
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,7 +19,7 @@ import (
 )
 
 const (
-	KeyFP1 = "12045c8c0b1004d058de4beda20c27ee7ff7ba84"
+	KeyFP1 = "F34371D0ACD5D09EB9BD853A80600A5FA11BBD29"
 	KeyFP2 = "7064B1D6EFF01B1262FED3F03581D99FE87EAFD1"
 )
 
@@ -101,7 +100,7 @@ func TestAPutConfig(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			tf, err := ioutil.TempFile("", "eclconfig-test")
+			tf, err := os.CreateTemp("", "eclconfig-test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +111,7 @@ func TestAPutConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			b, err := ioutil.ReadFile(tf.Name())
+			b, err := os.ReadFile(tf.Name())
 			if err != nil {
 				t.Fatal(err)
 			}

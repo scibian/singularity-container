@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,7 +7,6 @@ package types
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,7 +148,6 @@ func cleanupDir(path string) {
 // newBundle creates a minimum bundle with root filesystem in parentPath.
 // Any temporary files created during build process will be in tempDir/bundle-temp-*
 // directory, that will be cleaned up after successful build.
-
 //
 // TODO: much of the logic in this func should likely be re-factored to func newBuild in the
 // internal/pkg/build package, since it is the sole caller and has conditional logic which depends
@@ -160,7 +158,7 @@ func cleanupDir(path string) {
 func newBundle(parentPath, tempDir string, keyInfo *cryptkey.KeyInfo) (*Bundle, error) {
 	rootfsPath := filepath.Join(parentPath, "rootfs")
 
-	tmpPath, err := ioutil.TempDir(tempDir, "bundle-temp-")
+	tmpPath, err := os.MkdirTemp(tempDir, "bundle-temp-")
 	if err != nil {
 		return nil, fmt.Errorf("could not create temp dir in %q: %v", tempDir, err)
 	}
@@ -187,7 +185,7 @@ func newBundle(parentPath, tempDir string, keyInfo *cryptkey.KeyInfo) (*Bundle, 
 		// If the supplied rootfs was not inside tempDir (as is the case during a sandbox build),
 		// try tempDir as a fallback.
 		if !strings.HasPrefix(parentPath, tempDir) {
-			parentPath, err = ioutil.TempDir(tempDir, "build-temp-")
+			parentPath, err = os.MkdirTemp(tempDir, "build-temp-")
 			if err != nil {
 				cleanupDir(tmpPath)
 				return nil, fmt.Errorf("failed to create rootfs directory: %v", err)

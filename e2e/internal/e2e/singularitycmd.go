@@ -324,6 +324,15 @@ func WithEnv(envs []string) SingularityCmdOp {
 	}
 }
 
+// WithRootlessEnv passes through XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS
+// for rootless operations that need these e.g. systemd cgroups interaction.
+func WithRootlessEnv() SingularityCmdOp {
+	return func(s *singularityCmd) {
+		s.envs = append(s.envs, "XDG_RUNTIME_DIR="+os.Getenv("XDG_RUNTIME_DIR"))
+		s.envs = append(s.envs, "DBUS_SESSION_BUS_ADDRESS="+os.Getenv("DBUS_SESSION_BUS_ADDRESS"))
+	}
+}
+
 // WithDir sets the current working directory for the execution of a command.
 func WithDir(dir string) SingularityCmdOp {
 	return func(s *singularityCmd) {
@@ -465,6 +474,7 @@ func ExpectExit(code int, resultOps ...SingularityCmdResultOp) SingularityCmdOp 
 // cmdPath specifies the path to the singularity binary and cmdOps
 // provides a list of operations to be executed before or after running
 // the command.
+//
 //nolint:maintidx
 func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 	t.Helper()
@@ -522,21 +532,15 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 			cmd.Env = os.Environ()
 		}
 
-		// Each command gets by default a clean temporary image cache.
-		// If it is needed to share an image cache between tests, or to manually
-		// set the directory to be used, one shall set the ImgCacheDir of the test
-		// environment. Doing so will overwrite the default creation of an image cache
-		// for the command to be executed. In that context, it is the developer's
-		// responsibility to ensure that the directory is correctly deleted upon successful
-		// or unsuccessful completion of the test.
-		cacheDir := env.ImgCacheDir
-
-		if cacheDir == "" {
-			// cleanCache is a function that will delete the image cache
-			// and fail the test if it cannot be deleted.
-			imgCacheDir, cleanCache := MakeCacheDir(t, env.TestDir)
-			cacheDir = imgCacheDir
-			defer cleanCache(t)
+		// By default, each E2E command shares a temporary image cache
+		// directory. If a test is directly testing the cache, or depends on
+		// specific ordered cache behavior then
+		// TestEnv.PrivCacheDir/UnPrivCacheDir should be overridden to a
+		// separate path in the test. The caller is then responsible for
+		// creating and cleaning up the cache directory.
+		cacheDir := env.UnprivCacheDir
+		if privileged {
+			cacheDir = env.PrivCacheDir
 		}
 		cacheDirEnv := fmt.Sprintf("%s=%s", cache.DirEnv, cacheDir)
 		cmd.Env = append(cmd.Env, cacheDirEnv)

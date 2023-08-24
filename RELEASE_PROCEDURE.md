@@ -14,7 +14,7 @@ will be working in an up-to-date local clone of the GitHub repository, where the
    meetings at least 2 months prior to the scheduled date.
 1. Use a GitHub milestone to track issues and PRs that will form part of the
    next release.
-1. Ensure that the `CHANGELOG.md` is kept up-to-date on the `master` branch,
+1. Ensure that the `CHANGELOG.md` is kept up-to-date on the `main` branch,
    with all relevant changes listed under a "Changes Since Last Release"
    section.
 1. Monitor and merge dependabot updates, such that a release is made with as
@@ -28,13 +28,17 @@ When a new 3.Y.0 minor version of SingularityCE is issued the release process
 begins by branching, and then issuing a release candidate for broader testing.
 
 When a new 3.Y.Z patch release is issued, the branch will already be present,
-and steps 1-2 should be skipped.
+and steps 1-4 should be skipped.
 
-1. From a repository that is up-to-date with master, create a release branch
-   e.g. `git checkout upstream/master -b release-3.8`.
+1. From a repository that is up-to-date with main, create a release branch
+   e.g. `git checkout upstream/main -b release-3.8`.
 1. Push the release branch to GitHub via `git push upstream release-3.8`.
 1. Examine the GitHub branch protection rules, to extend them to the new release
    branch if needed.
+1. Update the `.github/dependabot.yml` configuration so that dependabot is
+   tracking the new stable release branch. Do not remove the previous stable
+   release branch from the configuration yet, as it should be monitored until
+   the final release of a new 3.Y.0 version.
 1. Modify the `README.md`, `INSTALL.md`, `CHANGELOG.md` via PR against the
    release branch, so that they reflect the version to be released.
 1. Apply an annotated tag via
@@ -77,11 +81,11 @@ covered by tests.
 
 ## After the Release
 
-1. Create and merge a PR from the `release-3.x` branch into `master`, so that
-   history from the RC process etc. is captured on `master`.
+1. Create and merge a PR from the `release-3.x` branch into `main`, so that
+   history from the RC process etc. is captured on `main`.
 1. If the release is a new major/minor version, move the prior `release-3.x`
    branch to `vault/release-3.x`.
-1. If the release is a new major/minor version, update the
-   `.github/dependabot.yml` configuration so that dependabot is tracking the new
-   stable release branch.
+1. If the release is a new final major/minor version, update the
+   `.github/dependabot.yml` configuration to remove the prior stable release
+   branch.
 1. Start scheduling / setting up milestones etc. to track the next release!

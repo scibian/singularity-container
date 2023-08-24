@@ -1,7 +1,14 @@
-// Copyright (c) 2019-2021 Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022 Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
+
+// The DOCKER E2E group tests functionality of actions, pulls / builds of
+// Docker/OCI source images. These tests are separated from direct SIF build /
+// pull / actions because they examine OCI specific image behavior. They are run
+// ordered, rather than in parallel to avoid any concurrency issues with
+// containers/image. Also, we can then maximally benefit from caching to avoid
+// Docker Hub rate limiting.
 
 package docker
 
@@ -437,7 +444,279 @@ func (c ctx) testDockerLabels(t *testing.T) {
 	)
 }
 
+//nolint:dupl
+func (c ctx) testDockerCMD(t *testing.T) {
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "docker-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("while getting $HOME: %s", err)
+	}
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("pull"),
+		e2e.WithArgs(imagePath, "docker://sylabsio/docker-cmd"),
+		e2e.ExpectExit(0),
+	)
+
+	tests := []struct {
+		name         string
+		args         []string
+		noeval       bool
+		expectOutput string
+	}{
+		// Singularity historic behavior (without --no-eval)
+		// These do not all match Docker, due to evaluation, consumption of quoting.
+		{
+			name:         "default",
+			args:         []string{},
+			noeval:       false,
+			expectOutput: `CMD 'quotes' "quotes" $DOLLAR s p a c e s`,
+		},
+		{
+			name:         "override",
+			args:         []string{"echo", "test"},
+			noeval:       false,
+			expectOutput: `test`,
+		},
+		{
+			name:         "override env var",
+			args:         []string{"echo", "$HOME"},
+			noeval:       false,
+			expectOutput: home,
+		},
+		// This looks very wrong, but is historic behavior
+		{
+			name:         "override sh echo",
+			args:         []string{"sh", "-c", `echo "hello there"`},
+			noeval:       false,
+			expectOutput: "hello",
+		},
+		// Docker/OCI behavior (with --no-eval)
+		{
+			name:         "no-eval/default",
+			args:         []string{},
+			noeval:       true,
+			expectOutput: `CMD 'quotes' "quotes" $DOLLAR s p a c e s`,
+		},
+		{
+			name:         "no-eval/override",
+			args:         []string{"echo", "test"},
+			noeval:       true,
+			expectOutput: `test`,
+		},
+		{
+			name:         "no-eval/override env var",
+			noeval:       true,
+			args:         []string{"echo", "$HOME"},
+			expectOutput: "$HOME",
+		},
+		{
+			name:         "no-eval/override sh echo",
+			noeval:       true,
+			args:         []string{"sh", "-c", `echo "hello there"`},
+			expectOutput: "hello there",
+		},
+	}
+
+	for _, tt := range tests {
+		cmdArgs := []string{}
+		if tt.noeval {
+			cmdArgs = append(cmdArgs, "--no-eval")
+		}
+		cmdArgs = append(cmdArgs, imagePath)
+		cmdArgs = append(cmdArgs, tt.args...)
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.UserProfile),
+			e2e.WithCommand("run"),
+			e2e.WithArgs(cmdArgs...),
+			e2e.ExpectExit(0,
+				e2e.ExpectOutput(e2e.ExactMatch, tt.expectOutput),
+			),
+		)
+	}
+}
+
+//nolint:dupl
+func (c ctx) testDockerENTRYPOINT(t *testing.T) {
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "docker-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("while getting $HOME: %s", err)
+	}
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("pull"),
+		e2e.WithArgs(imagePath, "docker://sylabsio/docker-entrypoint"),
+		e2e.ExpectExit(0),
+	)
+
+	tests := []struct {
+		name         string
+		args         []string
+		noeval       bool
+		expectOutput string
+	}{
+		// Singularity historic behavior (without --no-eval)
+		// These do not all match Docker, due to evaluation, consumption of quoting.
+		{
+			name:         "default",
+			args:         []string{},
+			noeval:       false,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s`,
+		},
+		{
+			name:         "override",
+			args:         []string{"echo", "test"},
+			noeval:       false,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo test`,
+		},
+		{
+			name:         "override env var",
+			args:         []string{"echo", "$HOME"},
+			noeval:       false,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo ` + home,
+		},
+		// Docker/OCI behavior (with --no-eval)
+		{
+			name:         "no-eval/default",
+			args:         []string{},
+			noeval:       true,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s`,
+		},
+		{
+			name:         "no-eval/override",
+			args:         []string{"echo", "test"},
+			noeval:       true,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo test`,
+		},
+		{
+			name:         "no-eval/override env var",
+			noeval:       true,
+			args:         []string{"echo", "$HOME"},
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo $HOME`,
+		},
+	}
+
+	for _, tt := range tests {
+		cmdArgs := []string{}
+		if tt.noeval {
+			cmdArgs = append(cmdArgs, "--no-eval")
+		}
+		cmdArgs = append(cmdArgs, imagePath)
+		cmdArgs = append(cmdArgs, tt.args...)
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.UserProfile),
+			e2e.WithCommand("run"),
+			e2e.WithArgs(cmdArgs...),
+			e2e.ExpectExit(0,
+				e2e.ExpectOutput(e2e.ExactMatch, tt.expectOutput),
+			),
+		)
+	}
+}
+
+//nolint:dupl
+func (c ctx) testDockerCMDENTRYPOINT(t *testing.T) {
+	imageDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "docker-", "")
+	defer cleanup(t)
+	imagePath := filepath.Join(imageDir, "container")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("while getting $HOME: %s", err)
+	}
+
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("pull"),
+		e2e.WithArgs(imagePath, "docker://sylabsio/docker-cmd-entrypoint"),
+		e2e.ExpectExit(0),
+	)
+
+	tests := []struct {
+		name         string
+		args         []string
+		noeval       bool
+		expectOutput string
+	}{
+		// Singularity historic behavior (without --no-eval)
+		// These do not all match Docker, due to evaluation, consumption of quoting.
+		{
+			name:         "default",
+			args:         []string{},
+			noeval:       false,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s CMD 'quotes' "quotes" $DOLLAR s p a c e s`,
+		},
+		{
+			name:         "override",
+			args:         []string{"echo", "test"},
+			noeval:       false,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo test`,
+		},
+		{
+			name:         "override env var",
+			args:         []string{"echo", "$HOME"},
+			noeval:       false,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo ` + home,
+		},
+		// Docker/OCI behavior (with --no-eval)
+		{
+			name:         "no-eval/default",
+			args:         []string{},
+			noeval:       true,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s CMD 'quotes' "quotes" $DOLLAR s p a c e s`,
+		},
+		{
+			name:         "no-eval/override",
+			args:         []string{"echo", "test"},
+			noeval:       true,
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo test`,
+		},
+		{
+			name:         "no-eval/override env var",
+			noeval:       true,
+			args:         []string{"echo", "$HOME"},
+			expectOutput: `ENTRYPOINT 'quotes' "quotes" $DOLLAR s p a c e s echo $HOME`,
+		},
+	}
+
+	for _, tt := range tests {
+		cmdArgs := []string{}
+		if tt.noeval {
+			cmdArgs = append(cmdArgs, "--no-eval")
+		}
+		cmdArgs = append(cmdArgs, imagePath)
+		cmdArgs = append(cmdArgs, tt.args...)
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(e2e.UserProfile),
+			e2e.WithCommand("run"),
+			e2e.WithArgs(cmdArgs...),
+			e2e.ExpectExit(0,
+				e2e.ExpectOutput(e2e.ExactMatch, tt.expectOutput),
+			),
+		)
+	}
+}
+
 // https://github.com/sylabs/singularity/issues/233
+// This tests quotes in the CMD shell form, not the [ .. ] exec form.
 func (c ctx) testDockerCMDQuotes(t *testing.T) {
 	c.env.RunSingularity(
 		t,
@@ -457,13 +736,26 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	}
 
 	return testhelper.Tests{
-		"AUFS":             c.testDockerAUFS,
-		"def file":         c.testDockerDefFile,
-		"permissions":      c.testDockerPermissions,
-		"pulls":            c.testDockerPulls,
-		"registry":         c.testDockerRegistry,
-		"whiteout symlink": c.testDockerWhiteoutSymlink,
-		"labels":           c.testDockerLabels,
-		"cmd quotes":       c.testDockerCMDQuotes,
+		// Run all docker:// source tests sequentially amongst themselves, so we
+		// don't hit DockerHub massively in parallel, and we benefit from
+		// caching as the same images are used frequently.
+		"ordered": func(t *testing.T) {
+			t.Run("AUFS", c.testDockerAUFS)
+			t.Run("def file", c.testDockerDefFile)
+			t.Run("permissions", c.testDockerPermissions)
+			t.Run("pulls", c.testDockerPulls)
+			t.Run("registry", c.testDockerRegistry)
+			t.Run("whiteout symlink", c.testDockerWhiteoutSymlink)
+			t.Run("labels", c.testDockerLabels)
+			t.Run("cmd", c.testDockerCMD)
+			t.Run("entrypoint", c.testDockerENTRYPOINT)
+			t.Run("cmdentrypoint", c.testDockerCMDENTRYPOINT)
+			t.Run("cmd quotes", c.testDockerCMDQuotes)
+			// Regressions
+			t.Run("issue 4524", c.issue4524)
+			t.Run("issue 4943", c.issue4943)
+			t.Run("issue 5172", c.issue5172)
+			t.Run("issue 274", c.issue274) // https://github.com/sylabs/singularity/issues/274
+		},
 	}
 }

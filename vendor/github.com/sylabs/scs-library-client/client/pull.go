@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,6 +7,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +17,6 @@ import (
 	"strings"
 
 	jsonresp "github.com/sylabs/json-resp"
-	"golang.org/x/sync/errgroup"
 )
 
 // DownloadImage will retrieve an image from the Container Library, saving it
@@ -25,8 +25,8 @@ import (
 // to prevent timeout when downloading large images.
 func (c *Client) DownloadImage(ctx context.Context, w io.Writer, arch, path, tag string, callback func(int64, io.Reader, io.Writer) error) error {
 	if arch != "" && !c.apiAtLeast(ctx, APIVersionV2ArchTags) {
-		c.Logger.Logf("This library does not support architecture specific tags")
-		c.Logger.Logf("The image returned may not be the requested architecture")
+		c.Logger.Log("This library does not support architecture specific tags")
+		c.Logger.Log("The image returned may not be the requested architecture")
 	}
 
 	if strings.Contains(path, ":") {
@@ -43,12 +43,12 @@ func (c *Client) DownloadImage(ctx context.Context, w io.Writer, arch, path, tag
 
 	c.Logger.Logf("Pulling from URL: %s", apiPath)
 
-	req, err := c.newRequest(http.MethodGet, apiPath, q.Encode(), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, apiPath, q.Encode(), nil)
 	if err != nil {
 		return err
 	}
 
-	res, err := c.HTTPClient.Do(req.WithContext(ctx))
+	res, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -82,13 +82,6 @@ func (c *Client) DownloadImage(ctx context.Context, w io.Writer, arch, path, tag
 	return nil
 }
 
-// partSpec defines one part of multi-part (concurrent) download.
-type partSpec struct {
-	Start      int64
-	End        int64
-	BufferSize int64
-}
-
 // Downloader defines concurrency (# of requests) and part size for download operation.
 type Downloader struct {
 	// Concurrency defines concurrency for multi-part downloads.
@@ -99,83 +92,8 @@ type Downloader struct {
 
 	// BufferSize specifies buffer size used for multi-part downloader routine.
 	// Default is 32 KiB.
+	// Deprecated: this value will be ignored. It is retained for backwards compatibility.
 	BufferSize int64
-}
-
-// httpGetRangeRequest performs HTTP GET range request to URL specified by 'u' in range start-end.
-func httpGetRangeRequest(ctx context.Context, url string, start, end int64) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-
-	return http.DefaultClient.Do(req)
-}
-
-// downloadFilePart writes range to dst as specified in bufferSpec.
-func downloadFilePart(ctx context.Context, dst *os.File, url string, ps *partSpec, pb ProgressBar) error {
-	resp, err := httpGetRangeRequest(ctx, url, ps.Start, ps.End)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	// allocate transfer buffer for part
-	buf := make([]byte, ps.BufferSize)
-
-	for bytesRead := int64(0); bytesRead < ps.End-ps.Start+1; {
-		n, err := io.ReadFull(resp.Body, buf)
-
-		// EOF and unexpected EOF shouldn't be handled as errors since short
-		// reads are expected if the part size is less than buffer size e.g.
-		// the last part if part isn't on size boundary.
-		if err != nil && n == 0 {
-			return err
-		}
-
-		pb.IncrBy(n)
-
-		// WriteAt() is a wrapper around pwrite() which is an atomic
-		// seek-and-write operation.
-		if _, err := dst.WriteAt(buf[:n], ps.Start+bytesRead); err != nil {
-			return err
-		}
-		bytesRead += int64(n)
-	}
-	return nil
-}
-
-// downloadWorker is a worker func for processing jobs in stripes channel.
-func downloadWorker(ctx context.Context, dst *os.File, url string, parts <-chan partSpec, pb ProgressBar) func() error {
-	return func() error {
-		for ps := range parts {
-			if err := downloadFilePart(ctx, dst, url, &ps, pb); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-}
-
-func getContentLength(ctx context.Context, url string) (int64, error) {
-	// Perform short request to determine content length.
-	resp, err := httpGetRangeRequest(ctx, url, 0, 1024)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		if resp.StatusCode == http.StatusNotFound {
-			return 0, fmt.Errorf("requested image was not found in the library")
-		}
-		return 0, fmt.Errorf("unexpected HTTP status: %d", resp.StatusCode)
-	}
-
-	vals := strings.Split(resp.Header.Get("Content-Range"), "/")
-	return strconv.ParseInt(vals[1], 0, 64)
 }
 
 // NoopProgressBar implements ProgressBarInterface to allow disabling the progress bar
@@ -230,26 +148,42 @@ func (c *Client) ConcurrentDownloadImage(ctx context.Context, dst *os.File, arch
 		pb = &NoopProgressBar{}
 	}
 
-	if arch != "" && !c.apiAtLeast(ctx, APIVersionV2ArchTags) {
-		c.Logger.Logf("This library does not support architecture specific tags")
-		c.Logger.Logf("The image returned may not be the requested architecture")
-	}
-
 	if strings.Contains(path, ":") {
 		return fmt.Errorf("malformed image path: %s", path)
 	}
 
+	name := strings.TrimPrefix(path, "/")
 	if tag == "" {
 		tag = "latest"
 	}
 
-	apiPath := fmt.Sprintf("v1/imagefile/%s:%s", strings.TrimPrefix(path, "/"), tag)
+	// Check for direct OCI registry access
+	if err := c.ociDownloadImage(ctx, arch, name, tag, dst, spec, pb); err == nil {
+		return err
+	} else if !errors.Is(err, errOCIDownloadNotSupported) {
+		// Return OCI download error or fallback to legacy download
+		return err
+	}
+
+	c.Logger.Log("Fallback to (legacy) library download")
+
+	return c.legacyDownloadImage(ctx, arch, name, tag, dst, spec, pb)
+}
+
+func (c *Client) legacyDownloadImage(ctx context.Context, arch, name, tag string, dst io.WriterAt, spec *Downloader, pb ProgressBar) error {
+	if arch != "" && !c.apiAtLeast(ctx, APIVersionV2ArchTags) {
+		c.Logger.Log("This library does not support architecture specific tags")
+		c.Logger.Log("The image returned may not be the requested architecture")
+	}
+
+	apiPath := fmt.Sprintf("v1/imagefile/%v:%v", name, tag)
 	q := url.Values{}
 	q.Add("arch", arch)
 
 	c.Logger.Logf("Pulling from URL: %s", apiPath)
 
 	customHTTPClient := &http.Client{
+		Transport: c.HTTPClient.Transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.Response.StatusCode == http.StatusSeeOther {
 				return http.ErrUseLastResponse
@@ -260,14 +194,16 @@ func (c *Client) ConcurrentDownloadImage(ctx context.Context, dst *os.File, arch
 			}
 			return nil
 		},
+		Jar:     c.HTTPClient.Jar,
+		Timeout: c.HTTPClient.Timeout,
 	}
 
-	req, err := c.newRequest(http.MethodGet, apiPath, q.Encode(), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, apiPath, q.Encode(), nil)
 	if err != nil {
 		return err
 	}
 
-	res, err := customHTTPClient.Do(req.WithContext(ctx))
+	res, err := customHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -278,95 +214,79 @@ func (c *Client) ConcurrentDownloadImage(ctx context.Context, dst *os.File, arch
 	}
 
 	if res.StatusCode == http.StatusOK {
-		// Library endpoint does not provide HTTP redirection response, treat as single stream, direct download
-		c.Logger.Logf("Library endpoint does not support concurrent downloads; reverting to single stream")
+		// Library endpoint does not provide HTTP redirection response, treat as single stream download
 
-		return c.singleStreamDownload(ctx, dst, res, pb)
+		c.Logger.Log("Library endpoint does not support concurrent downloads; reverting to single stream")
+
+		size, err := parseContentLengthHeader(res.Header.Get("Content-Length"))
+		if err != nil {
+			return err
+		}
+
+		return c.download(ctx, dst, res.Body, size, pb)
 	}
 
 	if res.StatusCode != http.StatusSeeOther {
 		return fmt.Errorf("unexpected HTTP status %d: %v", res.StatusCode, err)
 	}
 
-	url := res.Header.Get("Location")
-
-	contentLength, err := getContentLength(ctx, url)
+	// Get image metadata to determine image size
+	img, err := c.GetImage(ctx, arch, fmt.Sprintf("%v:%v", name, tag))
 	if err != nil {
 		return err
 	}
 
-	numParts := uint(1 + (contentLength-1)/spec.PartSize)
-
-	c.Logger.Logf("size: %d, parts: %d, concurrency: %d, partsize: %d, bufsize: %d",
-		contentLength, numParts, spec.Concurrency, spec.PartSize, spec.BufferSize,
-	)
-
-	jobs := make(chan partSpec, numParts)
-
-	g, ctx := errgroup.WithContext(ctx)
-
-	// initialize progress bar
-	pb.Init(contentLength)
-
-	// if spec.Requests is greater than number of parts for requested file,
-	// set concurrency to number of parts
-	concurrency := spec.Concurrency
-	if numParts < spec.Concurrency {
-		concurrency = numParts
-	}
-
-	// start workers to manage concurrent HTTP requests
-	for workerID := uint(0); workerID <= concurrency; workerID++ {
-		g.Go(downloadWorker(ctx, dst, url, jobs, pb))
-	}
-
-	// iterate over parts, adding to job queue
-	for part := uint(0); part < numParts; part++ {
-		partSize := spec.PartSize
-		if part == numParts-1 {
-			partSize = contentLength - int64(numParts-1)*spec.PartSize
-		}
-
-		ps := partSpec{
-			Start:      int64(part) * spec.PartSize,
-			End:        int64(part)*spec.PartSize + partSize - 1,
-			BufferSize: spec.BufferSize,
-		}
-
-		jobs <- ps
-	}
-
-	close(jobs)
-
-	// wait on errgroup
-	err = g.Wait()
+	redirectURL, err := url.Parse(res.Header.Get("Location"))
 	if err != nil {
-		// cancel/remove progress bar on error
-		pb.Abort(true)
+		return err
 	}
 
-	// wait on progress bar
-	pb.Wait()
+	var creds credentials
+	if c.AuthToken != "" && samehost(c.BaseURL, redirectURL) {
+		// Only include credentials if redirected to same host as base URL
+		creds = bearerTokenCredentials{authToken: c.AuthToken}
+	}
 
-	return err
+	// Use redirect URL to download artifact
+	return c.multipartDownload(ctx, redirectURL.String(), creds, dst, img.Size, spec, pb)
 }
 
-func (c *Client) singleStreamDownload(ctx context.Context, fp *os.File, res *http.Response, pb ProgressBar) error {
-	contentLength := int64(-1)
-	val := res.Header.Get("Content-Length")
-	if val != "" {
-		var err error
-		if contentLength, err = strconv.ParseInt(val, 0, 64); err != nil {
-			return err
-		}
-	}
-	pb.Init(contentLength)
+// samehost returns true if host1 and host2 are, in fact, the same host by
+// comparing scheme (https == https) and host, including port.
+//
+// Hosts will be treated as dissimilar if one host includes domain suffix
+// and the other does not, even if the host names match.
+func samehost(host1, host2 *url.URL) bool {
+	return strings.EqualFold(host1.Scheme, host2.Scheme) && strings.EqualFold(host1.Host, host2.Host)
+}
 
-	proxyReader := pb.ProxyReader(res.Body)
+func parseContentLengthHeader(val string) (int64, error) {
+	if val == "" {
+		return int64(-1), nil
+	}
+	size, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return -1, fmt.Errorf("parsing Content-Length header %v: %v", val, err)
+	}
+	return size, nil
+}
+
+// download implements a simple, single stream downloader
+func (c *Client) download(ctx context.Context, w io.WriterAt, r io.Reader, size int64, pb ProgressBar) error {
+	pb.Init(size)
+	defer pb.Wait()
+
+	proxyReader := pb.ProxyReader(r)
 	defer proxyReader.Close()
 
-	if _, err := io.Copy(fp, proxyReader); err != nil {
+	written, err := io.Copy(&filePartDescriptor{start: 0, end: size - 1, w: w}, proxyReader)
+	if err != nil {
+		pb.Abort(true)
+
 		return err
 	}
+
+	c.Logger.Logf("Downloaded %v byte(s)", written)
+
 	return nil
 }

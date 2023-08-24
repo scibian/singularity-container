@@ -17,12 +17,6 @@ The dependencies and their licenses are as follows:
 
 **License URL:** <https://github.com/Netflix/go-expect/blob/master/LICENSE>
 
-## github.com/containerd/cgroups
-
-**License:** Apache-2.0
-
-**License URL:** <https://github.com/containerd/cgroups/blob/master/LICENSE>
-
 ## github.com/containerd/containerd
 
 **License:** Apache-2.0
@@ -40,6 +34,12 @@ The dependencies and their licenses are as follows:
 **License:** Apache-2.0
 
 **License URL:** <https://github.com/containernetworking/plugins/blob/master/LICENSE>
+
+## github.com/containers/common
+
+**License:** Apache-2.0
+
+**License URL:** <https://github.com/containers/common/blob/master/LICENSE>
 
 ## github.com/containers/image/v5
 
@@ -59,11 +59,11 @@ The dependencies and their licenses are as follows:
 
 **License URL:** <https://github.com/containers/ocicrypt/blob/master/LICENSE>
 
-## github.com/containers/storage/pkg
+## github.com/containers/storage
 
 **License:** Apache-2.0
 
-**License URL:** <https://github.com/containers/storage/blob/master/pkg/LICENSE>
+**License URL:** <https://github.com/containers/storage/blob/master/LICENSE>
 
 ## github.com/coreos/go-iptables/iptables
 
@@ -118,6 +118,12 @@ The dependencies and their licenses are as follows:
 **License:** Apache-2.0
 
 **License URL:** <https://github.com/docker/libtrust/blob/master/LICENSE>
+
+## github.com/google/go-containerregistry/pkg/name
+
+**License:** Apache-2.0
+
+**License URL:** <https://github.com/google/go-containerregistry/blob/master/pkg/name/LICENSE>
 
 ## github.com/gosimple/unidecode
 
@@ -185,17 +191,23 @@ The dependencies and their licenses are as follows:
 
 **License URL:** <https://github.com/opencontainers/image-spec/blob/master/specs-go/LICENSE>
 
-## github.com/opencontainers/runc/libcontainer/user
+## github.com/opencontainers/runc/libcontainer
 
 **License:** Apache-2.0
 
-**License URL:** <https://github.com/opencontainers/runc/blob/master/libcontainer/user/LICENSE>
+**License URL:** <https://github.com/opencontainers/runc/blob/master/libcontainer/LICENSE>
 
 ## github.com/opencontainers/runtime-spec/specs-go
 
 **License:** Apache-2.0
 
 **License URL:** <https://github.com/opencontainers/runtime-spec/blob/master/specs-go/LICENSE>
+
+## github.com/opencontainers/selinux
+
+**License:** Apache-2.0
+
+**License URL:** <https://github.com/opencontainers/selinux/blob/master/LICENSE>
 
 ## github.com/opencontainers/umoci
 
@@ -251,11 +263,11 @@ The dependencies and their licenses are as follows:
 
 **License URL:** <https://github.com/safchain/ethtool/blob/master/LICENSE>
 
-## github.com/seccomp/containers-golang
+## github.com/sigstore/sigstore/pkg
 
 **License:** Apache-2.0
 
-**License URL:** <https://github.com/seccomp/containers-golang/blob/master/LICENSE>
+**License URL:** <https://github.com/sigstore/sigstore/blob/master/pkg/LICENSE>
 
 ## github.com/spf13/cobra
 
@@ -359,17 +371,23 @@ The dependencies and their licenses are as follows:
 
 **License URL:** <https://github.com/ProtonMail/go-crypto/blob/master/LICENSE>
 
+## github.com/cloudflare/circl
+
+**License:** BSD-3-Clause
+
+**License URL:** <https://github.com/cloudflare/circl/blob/master/LICENSE>
+
 ## github.com/cyphar/filepath-securejoin
 
 **License:** BSD-3-Clause
 
 **License URL:** <https://github.com/cyphar/filepath-securejoin/blob/master/LICENSE>
 
-## github.com/gogo/protobuf
+## github.com/gogo/protobuf/proto
 
 **License:** BSD-3-Clause
 
-**License URL:** <https://github.com/gogo/protobuf/blob/master/LICENSE>
+**License URL:** <https://github.com/gogo/protobuf/blob/master/proto/LICENSE>
 
 ## github.com/golang/protobuf
 
@@ -454,6 +472,12 @@ The dependencies and their licenses are as follows:
 **License:** BSD-3-Clause
 
 **License URL:** <https://github.com/sylabs/sif/blob/master/v2/LICENSE.md>
+
+## github.com/theupdateframework/go-tuf/encrypted
+
+**License:** BSD-3-Clause
+
+**License URL:** <https://github.com/theupdateframework/go-tuf/blob/master/encrypted/LICENSE>
 
 ## github.com/ulikunitz/xz
 
@@ -683,11 +707,29 @@ The dependencies and their licenses are as follows:
 
 **License URL:** <https://github.com/rivo/uniseg/blob/master/LICENSE.txt>
 
+## github.com/secure-systems-lab/go-securesystemslib/dsse
+
+**License:** MIT
+
+**License URL:** <https://github.com/secure-systems-lab/go-securesystemslib/blob/master/dsse/LICENSE>
+
+## github.com/shopspring/decimal
+
+**License:** MIT
+
+**License URL:** <https://github.com/shopspring/decimal/blob/master/LICENSE>
+
 ## github.com/sirupsen/logrus
 
 **License:** MIT
 
 **License URL:** <https://github.com/sirupsen/logrus/blob/master/LICENSE>
+
+## github.com/titanous/rocacheck
+
+**License:** MIT
+
+**License URL:** <https://github.com/titanous/rocacheck/blob/master/LICENSE>
 
 ## github.com/urfave/cli
 
@@ -707,6 +749,12 @@ The dependencies and their licenses are as follows:
 
 **Project URL:** <https://go.mozilla.org/pkcs7>
 
+## gopkg.in/yaml.v3
+
+**License:** MIT
+
+**Project URL:** <https://gopkg.in/yaml.v3>
+
 ## github.com/gosimple/slug
 
 **License:** MPL-2.0
@@ -724,6 +772,12 @@ The dependencies and their licenses are as follows:
 **License:** MPL-2.0
 
 **License URL:** <https://github.com/hashicorp/go-multierror/blob/master/LICENSE>
+
+## github.com/letsencrypt/boulder
+
+**License:** MPL-2.0
+
+**License URL:** <https://github.com/letsencrypt/boulder/blob/master/LICENSE.txt>
 
 ## github.com/vbauerster/mpb
 

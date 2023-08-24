@@ -8,13 +8,13 @@ package siftool
 import (
 	"context"
 
-	"github.com/sylabs/sif/v2/internal/pkg/exp"
+	"github.com/sylabs/sif/v2/pkg/user"
 )
 
 // Mount mounts the primary system partition of the SIF file at path into mountPath.
 func (a *App) Mount(ctx context.Context, path, mountPath string) error {
-	return exp.Mount(ctx, path, mountPath,
-		exp.OptMountStdout(a.opts.out),
-		exp.OptMountStderr(a.opts.err),
+	return user.Mount(ctx, path, mountPath,
+		user.OptMountStdout(a.opts.out),
+		user.OptMountStderr(a.opts.err),
 	)
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -36,9 +35,9 @@ import (
 // Build is an abstracted way to look at the entire build process.
 // For example calling NewBuild() will return this object.
 // From there we can call Full() on this build object, which will:
-// 		Call Bundle() to obtain all data needed to execute the specified build locally on the machine
-// 		Execute all of a definition using AllSections()
-// 		And finally call Assemble() to create our container image
+//   - Call Bundle() to obtain all data needed to execute the specified build locally on the machine
+//   - Execute all of a definition using AllSections()
+//   - And finally call Assemble() to create our container image
 type Build struct {
 	// stages of the build
 	stages []stage
@@ -114,7 +113,7 @@ func newBuild(defs []types.Definition, conf Config) (*Build, error) {
 		if conf.Format == "sandbox" {
 			rootfsParent = filepath.Dir(conf.Dest)
 		}
-		parentPath, err := ioutil.TempDir(rootfsParent, "build-temp-")
+		parentPath, err := os.MkdirTemp(rootfsParent, "build-temp-")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create build parent dir: %w", err)
 		}
@@ -229,7 +228,7 @@ func ensureGzipComp(tmpdir, mksquashfsPath string) (bool, error) {
 	s := packer.NewSquashfs()
 	s.MksquashfsPath = mksquashfsPath
 
-	srcf, err := ioutil.TempFile(tmpdir, "squashfs-gzip-comp-test-src")
+	srcf, err := os.CreateTemp(tmpdir, "squashfs-gzip-comp-test-src")
 	if err != nil {
 		return false, fmt.Errorf("while creating temporary file for squashfs source: %v", err)
 	}
@@ -237,7 +236,7 @@ func ensureGzipComp(tmpdir, mksquashfsPath string) (bool, error) {
 	srcf.Write([]byte("Test File Content"))
 	srcf.Close()
 
-	f, err := ioutil.TempFile(tmpdir, "squashfs-gzip-comp-test-")
+	f, err := os.CreateTemp(tmpdir, "squashfs-gzip-comp-test-")
 	if err != nil {
 		return false, fmt.Errorf("while creating temporary file for squashfs: %v", err)
 	}
@@ -264,7 +263,7 @@ func ensureGzipComp(tmpdir, mksquashfsPath string) (bool, error) {
 		return false, fmt.Errorf("while creating squashfs: %v", err)
 	}
 
-	content, err := ioutil.ReadFile(f.Name())
+	content, err := os.ReadFile(f.Name())
 	if err != nil {
 		return false, fmt.Errorf("while reading test squashfs: %v", err)
 	}
@@ -286,7 +285,7 @@ func ensureGzipComp(tmpdir, mksquashfsPath string) (bool, error) {
 		return false, fmt.Errorf("could not build squashfs with required gzip compression")
 	}
 
-	content, err = ioutil.ReadFile(f.Name())
+	content, err = os.ReadFile(f.Name())
 	if err != nil {
 		return false, fmt.Errorf("while reading test squashfs: %v", err)
 	}
@@ -373,7 +372,7 @@ func (b *Build) Full(ctx context.Context) error {
 
 	// build each stage one after the other
 	for i, stage := range b.stages {
-		if err := stage.runSectionScript("pre", stage.b.Recipe.BuildData.Pre); err != nil {
+		if err := stage.runHostScript("pre", stage.b.Recipe.BuildData.Pre); err != nil {
 			return err
 		}
 
@@ -426,7 +425,7 @@ func (b *Build) Full(ctx context.Context) error {
 			}
 		}
 
-		if err := stage.runSectionScript("setup", stage.b.Recipe.BuildData.Setup); err != nil {
+		if err := stage.runHostScript("setup", stage.b.Recipe.BuildData.Setup); err != nil {
 			return err
 		}
 
@@ -453,7 +452,7 @@ func (b *Build) Full(ctx context.Context) error {
 
 		// write the build configuration used for %post and %test sections
 		configFile := filepath.Join(stage.b.TmpDir, "singularity.conf")
-		if err := ioutil.WriteFile(configFile, configData, 0o644); err != nil {
+		if err := os.WriteFile(configFile, configData, 0o644); err != nil {
 			return fmt.Errorf("while creating %s: %s", configFile, err)
 		}
 		defer os.Remove(configFile)

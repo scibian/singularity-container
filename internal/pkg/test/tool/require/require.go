@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -17,11 +18,12 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/containerd/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/security/seccomp"
 	"github.com/sylabs/singularity/pkg/network"
 	"github.com/sylabs/singularity/pkg/util/fs/proc"
+	"github.com/sylabs/singularity/pkg/util/slice"
 )
 
 var (
@@ -125,26 +127,25 @@ func Network(t *testing.T) {
 // Cgroups checks that any cgroups version is enabled, if not the
 // current test is skipped with a message.
 func Cgroups(t *testing.T) {
-	mode := cgroups.Mode()
-	if mode == cgroups.Unavailable {
+	subsystems, err := cgroups.GetAllSubsystems()
+	if err != nil || len(subsystems) == 0 {
 		t.Skipf("cgroups not available")
 	}
 }
 
-// CgroupsV1 checks that cgroups v1 is enabled, if not the
+// CgroupsV1 checks that legacy cgroups is enabled, if not the
 // current test is skipped with a message.
 func CgroupsV1(t *testing.T) {
-	mode := cgroups.Mode()
-	if mode != cgroups.Legacy && mode != cgroups.Hybrid {
-		t.Skipf("cgroups v1 not available")
+	Cgroups(t)
+	if cgroups.IsCgroup2UnifiedMode() {
+		t.Skipf("cgroups v1 legacy mode not available")
 	}
 }
 
-// CgroupsV2 checks that cgroups v2 is enabled, if not the
+// CgroupsV2 checks that cgroups v2 unified mode is enabled, if not the
 // current test is skipped with a message.
-func CgroupsV2(t *testing.T) {
-	mode := cgroups.Mode()
-	if mode != cgroups.Unified {
+func CgroupsV2Unified(t *testing.T) {
+	if !cgroups.IsCgroup2UnifiedMode() {
 		t.Skipf("cgroups v2 unified mode not available")
 	}
 }
@@ -153,20 +154,56 @@ func CgroupsV2(t *testing.T) {
 // available, if not the current test is skipped with a
 // message
 func CgroupsFreezer(t *testing.T) {
-	if cgroups.Mode() == cgroups.Unified {
-		return
+	subsystems, err := cgroups.GetAllSubsystems()
+	if err != nil {
+		t.Skipf("couldn't get cgroups subsystems: %v", err)
+	}
+	if !slice.ContainsString(subsystems, "freezer") {
+		t.Skipf("no cgroups freezer subsystem available")
+	}
+}
+
+// CgroupsResourceExists checks that the requested controller and resource exist
+// in the cgroupfs.
+func CgroupsResourceExists(t *testing.T, controller string, resource string) {
+	cgs, err := cgroups.ParseCgroupFile("/proc/self/cgroup")
+	if err != nil {
+		t.Error(err)
+	}
+	cgPath, ok := cgs[controller]
+	if !ok {
+		t.Skipf("controller %s cgroup path not found", controller)
 	}
 
-	subSys, err := cgroups.V1()
+	resourcePath := filepath.Join("/sys/fs/cgroup", controller, cgPath, resource)
+	if _, err := os.Stat(resourcePath); err != nil {
+		t.Skipf("cannot stat resource %s: %s", resource, err)
+	}
+}
+
+// CroupsV2Delegated checks that the controller is delegated to users.
+func CgroupsV2Delegated(t *testing.T, controller string) {
+	CgroupsV2Unified(t)
+	cgs, err := cgroups.ParseCgroupFile("/proc/self/cgroup")
 	if err != nil {
-		t.Skipf("cgroups disabled")
+		t.Error(err)
 	}
-	for _, s := range subSys {
-		if s.Name() == "freezer" {
-			return
-		}
+
+	cgPath, ok := cgs[""]
+	if !ok {
+		t.Skipf("unified cgroup path not found")
 	}
-	t.Skipf("no cgroups freezer subsystem available")
+
+	delegatePath := filepath.Join("/sys/fs/cgroup", cgPath, "cgroup.controllers")
+
+	data, err := os.ReadFile(delegatePath)
+	if err != nil {
+		t.Skipf("while reading delegation file: %s", err)
+	}
+
+	if !strings.Contains(string(data), controller) {
+		t.Skipf("%s controller is not delegated", controller)
+	}
 }
 
 // Nvidia checks that an NVIDIA stack is available

@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -644,6 +643,7 @@ func (e *EngineOperations) prepareContainerConfig(starterConfig *starter.Config)
 
 // prepareInstanceJoinConfig is responsible for getting and
 // applying configuration to join a running instance.
+//
 //nolint:maintidx
 func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Config) error {
 	name := instance.ExtractName(e.EngineConfig.GetImage())
@@ -714,6 +714,9 @@ func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Conf
 	// in order to open namespace inodes with relative paths for the
 	// right process
 	starterConfig.SetWorkingDirectoryFd(fd)
+
+	// If our image is FUSE mounted, we need the fd to close on cleanup
+	starterConfig.SetImageFd(fd)
 
 	// enforce checks while joining an instance process with SUID workflow
 	// since instance file is stored in user home directory, we can't trust
@@ -803,7 +806,7 @@ func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Conf
 		}
 
 		// we must read "sinit\n"
-		b, err := ioutil.ReadFile("comm")
+		b, err := os.ReadFile("comm")
 		if err != nil {
 			return fmt.Errorf("failed to read %s: %s", path, err)
 		}
@@ -903,7 +906,7 @@ func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Conf
 	if file.Cgroup {
 		sylog.Debugf("Adding process to instance cgroup")
 		ppid := os.Getppid()
-		manager, err := cgroups.GetManagerFromPid(file.Pid)
+		manager, err := cgroups.GetManagerForPid(file.Pid)
 		if err != nil {
 			return fmt.Errorf("couldn't create cgroup manager: %v", err)
 		}
@@ -1143,6 +1146,9 @@ func (e *EngineOperations) loadImages(starterConfig *starter.Config) error {
 
 		// C starter code will position current working directory
 		starterConfig.SetWorkingDirectoryFd(int(img.Fd))
+
+		// If our image is FUSE mounted, we need the fd to close on cleanup
+		starterConfig.SetImageFd(int(img.Fd))
 
 		if e.EngineConfig.GetSessionLayer() == singularityConfig.OverlayLayer {
 			if err := overlay.CheckLower(img.Path); overlay.IsIncompatible(err) {

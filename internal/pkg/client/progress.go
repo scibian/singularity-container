@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -10,8 +10,8 @@ import (
 	"io"
 
 	"github.com/sylabs/singularity/pkg/sylog"
-	"github.com/vbauerster/mpb/v6"
-	"github.com/vbauerster/mpb/v6/decor"
+	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/decor"
 )
 
 func initProgressBar(totalSize int64) (*mpb.Progress, *mpb.Bar) {
@@ -52,21 +52,27 @@ func ProgressBarCallback(ctx context.Context) ProgressCallback {
 	if sylog.GetLevel() <= -1 {
 		// If we don't need a bar visible, we just copy data through the callback func
 		return func(totalSize int64, r io.Reader, w io.Writer) error {
-			return CopyWithContext(ctx, w, r)
+			_, err := CopyWithContext(ctx, w, r)
+			return err
 		}
 	}
 
 	return func(totalSize int64, r io.Reader, w io.Writer) error {
-		p, bar := initProgressBar(totalSize)
+		p, bar := initProgressBar(totalSize) //nolint:contextcheck
 
 		// create proxy reader
 		bodyProgress := bar.ProxyReader(r)
 		defer bodyProgress.Close()
 
-		err := CopyWithContext(ctx, w, bodyProgress)
+		written, err := CopyWithContext(ctx, w, bodyProgress)
 		if err != nil {
 			bar.Abort(true)
 			return err
+		}
+
+		// Must ensure bar is complete for a download with unknown size, or it will hang.
+		if totalSize <= 0 {
+			bar.SetTotal(written, true)
 		}
 		p.Wait()
 
@@ -74,12 +80,12 @@ func ProgressBarCallback(ctx context.Context) ProgressCallback {
 	}
 }
 
-func CopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+func CopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (written int64, err error) {
 	// Copy will call the Reader and Writer interface multiple time, in order
 	// to copy by chunk (avoiding loading the whole file in memory).
 	// I insert the ability to cancel before read time as it is the earliest
 	// possible in the call process.
-	_, err := io.Copy(dst, readerFunc(func(p []byte) (int, error) {
+	written, err = io.Copy(dst, readerFunc(func(p []byte) (int, error) {
 		// golang non-blocking channel: https://gobyexample.com/non-blocking-channel-operations
 		select {
 		// if context has been canceled
@@ -91,7 +97,7 @@ func CopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
 			return src.Read(p)
 		}
 	}))
-	return err
+	return written, err
 }
 
 // DownloadProgressBar is used for chunked scs-library-client downloads.

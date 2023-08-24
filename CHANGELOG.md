@@ -1,11 +1,139 @@
 # SingularityCE Changelog
 
-## Known Issues
+## 3.10.5 \[2022-01-17\]
 
-- When built with Go 1.18, some plugins fail to load (more detail available
-  [here](https://github.com/sylabs/singularity/issues/670)). This will be fixed
-  in the next minor release (3.10.x). Users utilizing plugins with
-  SingularityCE 3.9.x should use version 1.17.x of the Go toolchain.
+### Security Related Fixes
+
+- [CVE-2022-23538](https://github.com/sylabs/scs-library-client/security/advisories/GHSA-7p8m-22h4-9pj7):
+  The github.com/sylabs/scs-library-client dependency included in SingularityCE
+  \>=3.10.0, \<3.10.5 may leak user credentials to a third-party service via HTTP
+  redirect. This issue is limited to `library://` access to specific Singularity
+  Enterprise 1.x or 3rd party library configurations, which implement a
+  concurrent multi-part download flow. Access to Singularity Enterprise 2.x, or
+  Singularity Container Services (cloud.sylabs.io), does not trigger the
+  vulnerable flow. See the linked advisory for full details.
+
+## 3.10.4 \[2022-11-10\]
+
+### Bug Fixes
+
+- Ensure `make dist` doesn't include conmon binary or intermediate files.
+- Do not hang on pull from http(s) source that doesn't provide a content-length.
+- Avoid hang on fakeroot cleanup under high load seen on some
+  distributions / kernels.
+
+## 3.10.3 \[2022-10-06\]
+
+### Security Related Fixes
+
+- [CVE-2022-39237](https://github.com/sylabs/sif/security/advisories/GHSA-m5m3-46gj-wch8):
+  The github.com/sylabs/sif/v2 dependency included in SingularityCE <=3.10.3
+  does not verify that the hash algorithm(s) used are cryptographically secure
+  when verifying digital signatures. This release updates to sif v2.8.1 which
+  corrects this issue. See the linked advisory for references and a workaround.
+
+### Bug Fixes
+
+- Ensure bootstrap_history directory is populated with previous definition files,
+  present in source containers used in a build.
+
+## 3.10.2 \[2022-07-25\]
+
+### New features / functionalities
+
+- Added EL9 package builds to CI for GitHub releases.
+
+### Bug Fixes
+
+- Ensure no empty `if` branch is present in generated OCI image
+  runscripts. Would prevent execution of container by other tools that
+  are not using mvdan.cc/sh.
+
+## 3.10.1 \[2022-07-18\]
+
+### New features / functionalities
+
+- Debug output can now be enabled by setting the `SINGULARITY_DEBUG` env var.
+- Debug output is now shown for nested `singularity` calls, in wrapped
+  `unsquashfs` image extraction, and build stages.
+
+### Bug Fixes
+
+- Fix test code that implied `%test -c <shell>` was supported - it is not.
+- Fix compilation on `mipsel`.
+
+## 3.10.0 \[2022-05-17\]
+
+### Changed defaults / behaviours
+
+- `master` branch of GitHub repository has been renamed to `main`.
+- `oci mount` sets `Process.Terminal: true` when creating an OCI `config.json`,
+  so that `oci run` provides expected interactive behavior by default.
+- Default hostname for `oci mount` containers is now `singularity` instead of
+  `mrsdalloway`.
+- systemd is now supported and used as the default cgroups manager. Set
+  `systemd cgroups = no` in `singularity.conf` to manage cgroups directly via
+  the cgroupfs.
+- The `singularity oci` command group now uses `runc` to manage containers.
+- The `singularity oci` commands use `conmon` which is built from a git submodule,
+  unless `--without-conmon` is specified as an argument to `mconfig`, in which
+  case Singularity will search `PATH` for conmon. Version >=2.0.24 of conmon
+  is required.
+- The `singularity oci` flags `--sync-socket`, `--empty-process`, and
+  `--timeout` have been removed.
+- Don't prompt for y/n to overwrite an existing file when build is
+  called from a non-interactive environment. Fail with an error.
+- Plugins must be compiled from inside the SingularityCE source directory,
+  and will use the main SingularityCE `go.mod` file. Required for Go 1.18
+  support.
+- seccomp support is not disabled automatically in the absence of
+  seccomp headers at build time. Run `mconfig` using `--without-seccomp` and
+  `--without-conmon` to disable seccomp support and building of `conmon`
+  (which requires seccomp headers).
+- SingularityCE now requires squashfs-tools >=4.3, which is satisfied by
+  current EL / Ubuntu / Debian and other distributions.
+- Added `--no-eval` to the list of flags set by the OCI/Docker `--compat` mode
+  (see below).
+
+### New features / functionalities
+
+- Updated seccomp support allows use of seccomp profiles that set an error
+  return code with `errnoRet` and `defaultErrnoRet`. Previously EPERM was hard
+  coded. The example `etc/seccomp-profiles/default.json` has been updated.
+- Native cgroups v2 resource limits can be specified using the `[unified]` key
+  in a cgroups toml file applied via `--apply-cgroups`.
+- The `--no-mount` flag & `SINGULARITY_NO_MOUNT` env var can now be used to
+  disable a `bind path` entry from `singularity.conf` by specifying the
+  absolute path to the destination of the bind.
+- Non-root users can now use `--apply-cgroups` with `run/shell/exec` to limit
+  container resource usage on a system using cgroups v2 and the systemd cgroups
+  manager.
+- Added `--cpu*`, `--blkio*`, `--memory*`, `--pids-limit` flags to apply cgroups
+  resource limits to a container directly.
+- Allow experimental direct mount of SIF images with `squashfuse` in
+  user-namespace / no-setuid mode.
+- New action flag `--no-eval` which:
+  - Prevents shell evaluation of `SINGULARITYENV_ / --env / --env-file`
+    environment variables as they are injected in the container, to match OCI
+    behavior. *Applies to all containers*.
+  - Prevents shell evaluation of the values of `CMD / ENTRYPOINT` and command
+    line arguments for containers run or built directly from an OCI/Docker
+    source. *Applies to newly built containers only, use `singularity inspect`
+    to check version that container was built with*.
+- Add support for `%files` section in remote builds, when a compatible remote is
+  used.
+
+### Bug Fixes
+
+- Allow `newgidmap / newuidmap` that use capabilities instead of setuid root.
+- Corrected `key search` output for results from some servers, and keys
+  with multiple names.
+- Pass through a literal `\n` in host environment variables to container.
+- Address 401 error pulling from private library:// projects.
+- Correctly launch CleanupHost process only when needed in `--sif-fuse` flow.
+- Add specific error for unreadable image / overlay file.
+- Ensure cgroups device limits are default allow per past behavior.
+- Improve error message when remote build server does not support the `%files` section.
 
 ## v3.9.9 \[2022-04-22\]
 
@@ -14,16 +142,16 @@
 - Use HEAD request when checking digest of remote OCI image sources, with GET as
   a fall-back. Greatly reduces Singularity's impact on Docker Hub API limits.
 
+### New features / functionalities
+
+- Add package build for Ubuntu 22.04 LTS.
+
 ## v3.9.8 \[2022-04-07\]
 
 ### Bug fixes
 
 - Do not truncate environment variables with commas.
 - Fix error when pushing to host-less `library://` URIs.
-
-### New features / functionalities
-
-- Add package build for Ubuntu 22.04 LTS.
 
 ## v3.9.7 \[2022-03-23\]
 
@@ -58,7 +186,7 @@
   environment processing. Fixes regression in v3.9.2.
 - Remove subshell overhead when processing large environments on container
   startup.
-  
+
 ## v3.9.4 \[2022-01-19\]
 
 ### Bug fixes
@@ -1103,7 +1231,7 @@ This point release addresses the following issues:
   the existing container ecosystem
 - Added support for new URIs (`build` & `run/exec/shell/start`):
   - `library://` - Supports the
-    [Sylabs.io Cloud Library](https://cloud.sylabs.io/library)
+    [Sylabs Cloud Library](https://cloud.sylabs.io/library)
   - `docker-daemon:` - Supports images managed by the locally running docker
     daemon
   - `docker-archive:` - Supports archived docker images
@@ -1138,7 +1266,7 @@ This point release addresses the following issues:
 - Added `singularity capability` command to allow fine grained control over the
   capabilities of running containers
 - Added `singularity push` command to push images to the
-  [Sylabs.io Cloud Library](https://cloud.sylabs.io/library)
+  [Sylabs Cloud Library](https://cloud.sylabs.io/library)
 
 ### Changed Commands
 
@@ -1197,14 +1325,14 @@ This point release addresses the following issues:
   supports `sandbox` image types\]
 - The `singularity build` command now supports the following flags for
   integration with the
-  [Sylabs.io Cloud Library](https://cloud.sylabs.io/library):
+  [Sylabs Cloud Library](https://cloud.sylabs.io/library):
   - `-r|--remote`: Build the image remotely on the Sylabs Remote Builder
     (currently unavailable)
   - `-d|--detached`: Detach from the `stdout` of the remote build \[requires
     `--remote`\]
   - `--builder <string>`: Specifies the URL of the remote builder to access
   - `--library <string>`: Specifies the URL of the
-    [Sylabs.io Cloud Library](https://cloud.sylabs.io/library) to push the built
+    [Sylabs Cloud Library](https://cloud.sylabs.io/library) to push the built
     image to when the build command destination is in the form
     `library://<reference>`
 - The `bootstrap` keyword in the definition file now supports the following

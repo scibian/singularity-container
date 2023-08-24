@@ -114,4 +114,4 @@ debian/singularity-ce*.substvars
 debian/singularity-ce*/
 debian/tmp/
 
-LICENSE_DEPENDENCIES.csv
+.LICENSE_DEPENDENCIES.csv

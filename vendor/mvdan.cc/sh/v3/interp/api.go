@@ -4,6 +4,13 @@
 // Package interp implements an interpreter that executes shell
 // programs. It aims to support POSIX, but its support is not complete
 // yet. It also supports some Bash features.
+//
+// The interpreter generally aims to behave like Bash,
+// but it does not support all of its features.
+//
+// The interpreter currently aims to behave like a non-interactive shell,
+// which is how most shells run scripts, and is more useful to machines.
+// In the future, it may gain an option to behave like an interactive shell.
 package interp
 
 import (
@@ -19,6 +26,7 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -59,11 +67,22 @@ type Runner struct {
 
 	alias map[string]alias
 
+	// callHandler is a function allowing to replace a simple command's
+	// arguments. It may be nil.
+	callHandler CallHandlerFunc
+
 	// execHandler is a function responsible for executing programs. It must be non-nil.
 	execHandler ExecHandlerFunc
 
 	// openHandler is a function responsible for opening files. It must be non-nil.
 	openHandler OpenHandlerFunc
+
+	// readDirHandler is a function responsible for reading directories during
+	// glob expansion. It must be non-nil.
+	readDirHandler ReadDirHandlerFunc
+
+	// statHandler is a function responsible for getting file stat. It must be non-nil.
+	statHandler StatHandlerFunc
 
 	stdin  io.Reader
 	stdout io.Writer
@@ -71,6 +90,8 @@ type Runner struct {
 
 	ecfg *expand.Config
 	ectx context.Context // just so that Runner.Subshell can use it again
+
+	lastExpandExit int // used to surface exit codes while expanding fields
 
 	// didReset remembers whether the runner has ever been reset. This is
 	// used so that Reset is automatically called when running any program
@@ -159,9 +180,11 @@ func (r *Runner) optByFlag(flag byte) *bool {
 // standard output writer means that the output will be discarded.
 func New(opts ...RunnerOption) (*Runner, error) {
 	r := &Runner{
-		usedNew:     true,
-		execHandler: DefaultExecHandler(2 * time.Second),
-		openHandler: DefaultOpenHandler(),
+		usedNew:        true,
+		execHandler:    DefaultExecHandler(2 * time.Second),
+		openHandler:    DefaultOpenHandler(),
+		readDirHandler: DefaultReadDirHandler(),
+		statHandler:    DefaultStatHandler(),
 	}
 	r.dirStack = r.dirBootstrap[:0]
 	for _, opt := range opts {
@@ -169,6 +192,12 @@ func New(opts ...RunnerOption) (*Runner, error) {
 			return nil, err
 		}
 	}
+
+	// turn "on" the default Bash options
+	for i, opt := range bashOptsTable {
+		r.opts[len(shellOptsTable)+i] = opt.defaultState
+	}
+
 	// Set the default fallbacks, if necessary.
 	if r.Env == nil {
 		Env(nil)(r)
@@ -239,6 +268,13 @@ func Params(args ...string) RunnerOption {
 		fp := flagParser{remaining: args}
 		for fp.more() {
 			flag := fp.flag()
+			if flag == "-" {
+				// TODO: implement "The -x and -v options are turned off."
+				if args := fp.args(); len(args) > 0 {
+					r.Params = args
+				}
+				return nil
+			}
 			enable := flag[0] == '-'
 			if flag[1] != 'o' {
 				opt := r.optByFlag(flag[1])
@@ -251,7 +287,7 @@ func Params(args ...string) RunnerOption {
 			value := fp.value()
 			if value == "" && enable {
 				for i, opt := range &shellOptsTable {
-					r.printOptLine(opt.name, r.opts[i])
+					r.printOptLine(opt.name, r.opts[i], true)
 				}
 				continue
 			}
@@ -265,7 +301,7 @@ func Params(args ...string) RunnerOption {
 				}
 				continue
 			}
-			opt := r.optByName(value, false)
+			_, opt := r.optByName(value, false)
 			if opt == nil {
 				return fmt.Errorf("invalid option: %q", value)
 			}
@@ -285,7 +321,15 @@ func Params(args ...string) RunnerOption {
 	}
 }
 
-// ExecHandler sets command execution handler. See ExecHandlerFunc for more info.
+// CallHandler sets the call handler. See CallHandlerFunc for more info.
+func CallHandler(f CallHandlerFunc) RunnerOption {
+	return func(r *Runner) error {
+		r.callHandler = f
+		return nil
+	}
+}
+
+// ExecHandler sets the command execution handler. See ExecHandlerFunc for more info.
 func ExecHandler(f ExecHandlerFunc) RunnerOption {
 	return func(r *Runner) error {
 		r.execHandler = f
@@ -297,6 +341,22 @@ func ExecHandler(f ExecHandlerFunc) RunnerOption {
 func OpenHandler(f OpenHandlerFunc) RunnerOption {
 	return func(r *Runner) error {
 		r.openHandler = f
+		return nil
+	}
+}
+
+// ReadDirHandler sets the read directory handler. See ReadDirHandlerFunc for more info.
+func ReadDirHandler(f ReadDirHandlerFunc) RunnerOption {
+	return func(r *Runner) error {
+		r.readDirHandler = f
+		return nil
+	}
+}
+
+// StatHandler sets the stat handler. See StatHandlerFunc for more info.
+func StatHandler(f StatHandlerFunc) RunnerOption {
+	return func(r *Runner) error {
+		r.statHandler = f
 		return nil
 	}
 }
@@ -319,28 +379,38 @@ func StdIO(in io.Reader, out, err io.Writer) RunnerOption {
 	}
 }
 
-func (r *Runner) optByName(name string, bash bool) *bool {
+// optByName returns the matching runner's option index and status
+func (r *Runner) optByName(name string, bash bool) (index int, status *bool) {
 	if bash {
-		for i, optName := range bashOptsTable {
-			if optName == name {
-				return &r.opts[len(shellOptsTable)+i]
+		for i, opt := range bashOptsTable {
+			if opt.name == name {
+				index = len(shellOptsTable) + i
+				return index, &r.opts[index]
 			}
 		}
 	}
 	for i, opt := range &shellOptsTable {
 		if opt.name == name {
-			return &r.opts[i]
+			return i, &r.opts[i]
 		}
 	}
-	return nil
+	return 0, nil
 }
 
 type runnerOpts [len(shellOptsTable) + len(bashOptsTable)]bool
 
-var shellOptsTable = [...]struct {
+type shellOpt struct {
 	flag byte
 	name string
-}{
+}
+
+type bashOpt struct {
+	name         string
+	defaultState bool // Bash's default value for this option
+	supported    bool // whether we support the option's non-default state
+}
+
+var shellOptsTable = [...]shellOpt{
 	// sorted alphabetically by name; use a space for the options
 	// that have no flag form
 	{'a', "allexport"},
@@ -348,14 +418,112 @@ var shellOptsTable = [...]struct {
 	{'n', "noexec"},
 	{'f', "noglob"},
 	{'u', "nounset"},
+	{'x', "xtrace"},
 	{' ', "pipefail"},
 }
 
-var bashOptsTable = [...]string{
-	// sorted alphabetically by name
-	"expand_aliases",
-	"globstar",
-	"nullglob",
+var bashOptsTable = [...]bashOpt{
+	// supported options, sorted alphabetically by name
+	{
+		name:         "expand_aliases",
+		defaultState: false,
+		supported:    true,
+	},
+	{
+		name:         "globstar",
+		defaultState: false,
+		supported:    true,
+	},
+	{
+		name:         "nullglob",
+		defaultState: false,
+		supported:    true,
+	},
+	// unsupported options, sorted alphabetically by name
+	{name: "assoc_expand_once"},
+	{name: "autocd"},
+	{name: "cdable_vars"},
+	{name: "cdspell"},
+	{name: "checkhash"},
+	{name: "checkjobs"},
+	{
+		name:         "checkwinsize",
+		defaultState: true,
+	},
+	{
+		name:         "cmdhist",
+		defaultState: true,
+	},
+	{name: "compat31"},
+	{name: "compat32"},
+	{name: "compat40"},
+	{name: "compat41"},
+	{name: "compat42"},
+	{name: "compat44"},
+	{name: "compat43"},
+	{name: "compat44"},
+	{
+		name:         "complete_fullquote",
+		defaultState: true,
+	},
+	{name: "direxpand"},
+	{name: "dirspell"},
+	{name: "dotglob"},
+	{name: "execfail"},
+	{name: "extdebug"},
+	{name: "extglob"},
+	{
+		name:         "extquote",
+		defaultState: true,
+	},
+	{name: "failglob"},
+	{
+		name:         "force_fignore",
+		defaultState: true,
+	},
+	{name: "globasciiranges"},
+	{name: "gnu_errfmt"},
+	{name: "histappend"},
+	{name: "histreedit"},
+	{name: "histverify"},
+	{
+		name:         "hostcomplete",
+		defaultState: true,
+	},
+	{name: "huponexit"},
+	{
+		name:         "inherit_errexit",
+		defaultState: true,
+	},
+	{
+		name:         "interactive_comments",
+		defaultState: true,
+	},
+	{name: "lastpipe"},
+	{name: "lithist"},
+	{name: "localvar_inherit"},
+	{name: "localvar_unset"},
+	{name: "login_shell"},
+	{name: "mailwarn"},
+	{name: "no_empty_cmd_completion"},
+	{name: "nocaseglob"},
+	{name: "nocasematch"},
+	{
+		name:         "progcomp",
+		defaultState: true,
+	},
+	{name: "progcomp_alias"},
+	{
+		name:         "promptvars",
+		defaultState: true,
+	},
+	{name: "restricted_shell"},
+	{name: "shift_verbose"},
+	{
+		name:         "sourcepath",
+		defaultState: true,
+	},
+	{name: "xpg_echo"},
 }
 
 // To access the shell options arrays without a linear search when we
@@ -367,6 +535,7 @@ const (
 	optNoExec
 	optNoGlob
 	optNoUnset
+	optXTrace
 	optPipeFail
 
 	optExpandAliases
@@ -395,9 +564,12 @@ func (r *Runner) Reset() {
 	}
 	// reset the internal state
 	*r = Runner{
-		Env:         r.Env,
-		execHandler: r.execHandler,
-		openHandler: r.openHandler,
+		Env:            r.Env,
+		callHandler:    r.callHandler,
+		execHandler:    r.execHandler,
+		openHandler:    r.openHandler,
+		readDirHandler: r.readDirHandler,
+		statHandler:    r.statHandler,
 
 		// These can be set by functions like Dir or Params, but
 		// builtins can overwrite them; reset the fields to whatever the
@@ -545,18 +717,21 @@ func (r *Runner) Subshell() *Runner {
 	// Keep in sync with the Runner type. Manually copy fields, to not copy
 	// sensitive ones like errgroup.Group, and to do deep copies of slices.
 	r2 := &Runner{
-		Dir:         r.Dir,
-		Params:      r.Params,
-		execHandler: r.execHandler,
-		openHandler: r.openHandler,
-		stdin:       r.stdin,
-		stdout:      r.stdout,
-		stderr:      r.stderr,
-		filename:    r.filename,
-		opts:        r.opts,
-		usedNew:     r.usedNew,
-		exit:        r.exit,
-		lastExit:    r.lastExit,
+		Dir:            r.Dir,
+		Params:         r.Params,
+		callHandler:    r.callHandler,
+		execHandler:    r.execHandler,
+		openHandler:    r.openHandler,
+		readDirHandler: r.readDirHandler,
+		statHandler:    r.statHandler,
+		stdin:          r.stdin,
+		stdout:         r.stdout,
+		stderr:         r.stderr,
+		filename:       r.filename,
+		opts:           r.opts,
+		usedNew:        r.usedNew,
+		exit:           r.exit,
+		lastExit:       r.lastExit,
 
 		origStdout: r.origStdout, // used for process substitutions
 	}

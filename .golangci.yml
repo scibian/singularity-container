@@ -5,11 +5,12 @@ run:
     - containers_image_openpgp
     - e2e_test
     - fakeroot_engine
-    - oci_engine
     - seccomp
     - selinux
     - singularity_engine
     - sylog
+  skip-files:
+    - "internal/pkg/util/user/cgo_lookup_unix.go"
 
 linters:
   disable-all: true
@@ -17,7 +18,6 @@ linters:
   enable:
     - containedctx
     - contextcheck
-    - deadcode
     - decorder
     - dupl
     - gofumpt
@@ -31,6 +31,7 @@ linters:
     - nakedret
     - revive
     - staticcheck
+    - unused
 
 linters-settings:
   misspell:

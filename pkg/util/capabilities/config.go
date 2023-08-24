@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 
 	"github.com/sylabs/singularity/pkg/sylog"
 )
@@ -33,7 +32,7 @@ func ReadFrom(r io.Reader) (*Config, error) {
 	}
 
 	// read all data from r into b
-	b, err := ioutil.ReadAll(r)
+	b, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read from io.Reader: %s", err)
 	}
@@ -126,6 +125,7 @@ func (c *Config) AddGroupCaps(group string, caps []string) error {
 }
 
 // DropUserCaps drops a set of capabilities for user
+//
 //nolint:dupl
 func (c *Config) DropUserCaps(user string, caps []string) error {
 	if err := c.checkCaps(caps); err != nil {
@@ -154,6 +154,7 @@ func (c *Config) DropUserCaps(user string, caps []string) error {
 }
 
 // DropGroupCaps drops a set of capabilities for group
+//
 //nolint:dupl
 func (c *Config) DropGroupCaps(group string, caps []string) error {
 	if err := c.checkCaps(caps); err != nil {

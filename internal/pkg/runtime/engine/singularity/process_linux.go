@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -56,6 +55,7 @@ const defaultShell = "/bin/sh"
 // No additional privileges can be gained during this call (unless container
 // is executed as root intentionally) as starter will set uid/euid/suid
 // to the targetUID (PrepareConfig will set it by calling starter.Config.SetTargetUID).
+//
 //nolint:maintidx
 func (e *EngineOperations) StartProcess(masterConn net.Conn) error {
 	// Manage all signals.
@@ -401,7 +401,7 @@ func (e *EngineOperations) PostStartProcess(ctx context.Context, pid int) error 
 
 		// If we are using cgroups with this instance then mark that in the instance config.
 		// We don't store the path, as we will get the cgroup manager by Pid.
-		if e.EngineConfig.GetCgroupsPath() != "" {
+		if e.EngineConfig.GetCgroupsJSON() != "" {
 			file.Cgroup = true
 		}
 
@@ -626,7 +626,12 @@ func (b *bufferCloser) Close() error {
 // after /.singularity.d/env/99-base.sh or /environment.
 // This handler turns all SINGUALRITYENV_KEY=VAL defined variables into their form:
 // export KEY=VAL. It can be sourced only once otherwise it returns an empty content.
-func injectEnvHandler(senv map[string]string) interpreter.OpenHandler {
+// If noEval is true then exports are single quoted so their content is not evaluated
+// when the script is sourced (OCI compatible behavior).
+// If noEval is false then exports are double quoted, and their content is evaluated,
+// consuming one level of shell escaping and performing any unescaped var substitution,
+// subshell execution etc (Singularity historic behavior).
+func injectEnvHandler(senv map[string]string, noEval bool) interpreter.OpenHandler {
 	var once sync.Once
 
 	return func(_ string, _ int, _ os.FileMode) (io.ReadWriteCloser, error) {
@@ -640,22 +645,24 @@ func injectEnvHandler(senv map[string]string) interpreter.OpenHandler {
 			`
 			b.WriteString(fmt.Sprintf(defaultPathSnippet, env.DefaultPath))
 
-			// https://github.com/sylabs/singularity/issues/43
-			// We wrap the value of the export in double quotes manually, and do not use
-			// go's %q format string as it prevents passing an escaped literal $ in
-			// a SINGULARITYENV_ as \$
 			snippet := `
 			if test -v %[1]s; then
 				sylog debug "Overriding %[1]s environment variable"
 			fi
-			export %[1]s="%[2]s"
+			export %[1]s=%[2]s
 			`
 			for key, value := range senv {
 				if key == "LD_LIBRARY_PATH" && value != "" {
-					b.WriteString(fmt.Sprintf(snippet, key, value+":/.singularity.d/libs"))
-					continue
+					value = value + ":/.singularity.d/libs"
 				}
-				b.WriteString(fmt.Sprintf(snippet, key, shell.EscapeDoubleQuotes(value)))
+				if noEval {
+					// No evaluation when the export is sourced
+					value = "'" + shell.EscapeSingleQuotes(value) + "'"
+				} else {
+					// Shell evaluation when the export is sourced
+					value = "\"" + shell.EscapeDoubleQuotes(value) + "\""
+				}
+				b.WriteString(fmt.Sprintf(snippet, key, value))
 			}
 		})
 
@@ -713,11 +720,17 @@ func getAllEnvBuiltin(shell *interpreter.Shell) interpreter.ShellBuiltin {
 				sylog.Debugf("Not exporting %q to container environment: invalid key", key)
 				continue
 			}
-
-			// Because we are using IFS=\n we need to escape newlines
-			// here and unescape them in the action script when we
-			// export the var again.
-			env := strings.Replace(env, "\n", "\\n", -1)
+			// Because we are using IFS=\n we need to escape newlines here and
+			// unescape them in the action script when we export the var again.
+			//
+			// This is imperfect - it is not possible to represent a string
+			// containing a literal '\u000A' (unicode escaped newline) in it.
+			//
+			// Full escaping / unescaping requires iterative parsing of the
+			// string in the action script. This is too awkward and slow in
+			// shell code. If we can use `printf -v VAR "%b" ...` from mvdan.cc/sh
+			// in future, we may be able to revisit this.
+			env := strings.Replace(env, "\n", "\\u000A", -1)
 			fmt.Fprintf(hc.Stdout, "%s\n", env)
 		}
 		return nil
@@ -800,7 +813,7 @@ func runActionScript(engineConfig *singularityConfig.EngineConfig) ([]string, []
 
 	// inject SINGULARITYENV_ defined variables
 	senv := engineConfig.GetSingularityEnv()
-	shell.RegisterOpenHandler("/.inject-singularity-env.sh", injectEnvHandler(senv))
+	shell.RegisterOpenHandler("/.inject-singularity-env.sh", injectEnvHandler(senv, engineConfig.GetNoEval()))
 
 	shell.RegisterOpenHandler("/.singularity.d/env/99-runtimevars.sh", runtimeVarsHandler(senv))
 
@@ -851,7 +864,7 @@ func runActionScript(engineConfig *singularityConfig.EngineConfig) ([]string, []
 // getDockerRunscript returns the content as a reader of
 // the default runscript set for docker images if any.
 func getDockerRunscript(path string) (io.Reader, error) {
-	r, err := ioutil.ReadFile(path)
+	r, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("while reading %s: %s", path, err)
 	}

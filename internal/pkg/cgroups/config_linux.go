@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,9 +6,11 @@
 package cgroups
 
 import (
-	"io/ioutil"
+	"encoding/json"
+	"os"
 	"path/filepath"
 
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pelletier/go-toml"
 )
 
@@ -16,8 +18,6 @@ func Int64ptr(i int) *int64 {
 	t := int64(i)
 	return &t
 }
-
-var wildcard = Int64ptr(-1)
 
 // LinuxHugepageLimit structure corresponds to limiting kernel hugepages
 type LinuxHugepageLimit struct {
@@ -167,11 +167,30 @@ type Config struct {
 	// Limits are a set of key value pairs that define RDMA resource limits,
 	// where the key is device name and value is resource limits.
 	Rdma map[string]LinuxRdma `toml:"rdma" json:"rdma,omitempty"`
-	// TODO: Enable support for native cgroup v2 resource specifications
-	// Unified map[string]string `toml:"unified" json:"unified,omitempty"`
+	// Native cgroups v2 unified hierarchy resource limits.
+	Unified map[string]string `toml:"unified" json:"unified,omitempty"`
 }
 
-// LoadConfig opens cgroups controls config file and unmarshals it into structures
+// MarshalJSON marshals a cgroups.Config struct to a JSON string
+func (c *Config) MarshalJSON() (string, error) {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// UnmarshalJSON unmarshals a JSON string into a LinuxResources struct
+func UnmarshalJSONResources(data string) (*specs.LinuxResources, error) {
+	res := specs.LinuxResources{}
+	err := json.Unmarshal([]byte(data), &res)
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// LoadConfig loads a TOML cgroups config file into our native cgroups.Config struct
 func LoadConfig(confPath string) (config Config, err error) {
 	path, err := filepath.Abs(confPath)
 	if err != nil {
@@ -179,7 +198,7 @@ func LoadConfig(confPath string) (config Config, err error) {
 	}
 
 	// read in the Cgroups config file
-	b, err := ioutil.ReadFile(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -189,12 +208,32 @@ func LoadConfig(confPath string) (config Config, err error) {
 	return
 }
 
-// PutConfig takes the content of a CgroupsConfig struct and Marshals it to file
-func PutConfig(config Config, confPath string) (err error) {
+// SaveConfig saves a native cgroups.Config struct into a TOML file at confPath
+func SaveConfig(config Config, confPath string) (err error) {
 	data, err := toml.Marshal(config)
 	if err != nil {
 		return
 	}
 
-	return ioutil.WriteFile(confPath, data, 0o600)
+	return os.WriteFile(confPath, data, 0o600)
+}
+
+// LoadResources loads a cgroups config file into a LinuxResources struct
+func LoadResources(path string) (spec specs.LinuxResources, err error) {
+	conf, err := LoadConfig(path)
+	if err != nil {
+		return
+	}
+
+	// convert TOML structures to OCI JSON structures
+	data, err := json.Marshal(conf)
+	if err != nil {
+		return
+	}
+
+	if err = json.Unmarshal(data, &spec); err != nil {
+		return
+	}
+
+	return
 }

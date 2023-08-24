@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -19,12 +18,12 @@ import (
 )
 
 // Install installs a plugin from a SIF image under rootDir. It will:
-//     1. Check that the SIF is a valid plugin
-//     2. Use name from Manifest and calculate the installation path
-//     3. Copy the SIF into the plugin path
-//     4. Extract the binary object into the path
-//     5. Generate a default config file in the path
-//     6. Write the Meta struct onto disk in dirRoot
+//  1. Check that the SIF is a valid plugin
+//  2. Use name from Manifest and calculate the installation path
+//  3. Copy the SIF into the plugin path
+//  4. Extract the binary object into the path
+//  5. Generate a default config file in the path
+//  6. Write the Meta struct onto disk in dirRoot
 func Install(sifPath string) error {
 	sylog.Debugf("Installing plugin from SIF to %q", rootDir)
 
@@ -181,7 +180,7 @@ func Inspect(name string) (pluginapi.Manifest, error) {
 		// Replace the original name, which seems to be
 		// the name of a plugin, by the path to the
 		// installed manifest file for that plugin.
-		data, err := ioutil.ReadFile(meta.manifestName())
+		data, err := os.ReadFile(meta.manifestName())
 		if err != nil {
 			return manifest, err
 		}

@@ -6,12 +6,12 @@ orbs:
 parameters:
   go-version:
     type: string
-    default: '1.17.9'
+    default: '1.19.5'
 
 executors:
   node:
     docker:
-      - image: node:17-slim
+      - image: node:18-slim
   golang:
     parameters:
       variant:
@@ -27,6 +27,9 @@ executors:
   almalinux8:
     docker:
       - image: almalinux:8
+  almalinux9:
+    docker:
+      - image: almalinux:9
   ubuntu1804:
     docker:
       - image: ubuntu:18.04
@@ -38,12 +41,17 @@ executors:
       - image: ubuntu:22.04
   golangci-lint:
     docker:
-      - image: golangci/golangci-lint:v1.44
+      - image: golangci/golangci-lint:v1.50
   ubuntu-machine:
     machine:
       image: ubuntu-2004:202111-02
 
 commands:
+  update-submodules:
+    steps:
+      - run:
+          name: Update submodules
+          command: git submodule update --init
   check-changes:
     steps:
       - run:
@@ -92,10 +100,13 @@ commands:
     steps:
       - run:
           name: Update package indexes
-          command: <<# parameters.sudo >>sudo <</ parameters.sudo >>apt-get -q update
+          command: |-
+            # See https://discuss.circleci.com/t/heroku-gpg-issues-in-ubuntu-images/43834/1
+            <<# parameters.sudo >>sudo <</ parameters.sudo >>rm -rf /etc/apt/sources.list.d/heroku.list
+            <<# parameters.sudo >>sudo <</ parameters.sudo >>apt-get -q update
       - run:
           name: Install dependencies
-          command: <<# parameters.sudo >>sudo <</ parameters.sudo >>apt-get -q install -y build-essential squashfs-tools libseccomp-dev libssl-dev uuid-dev cryptsetup-bin
+          command: <<# parameters.sudo >>sudo <</ parameters.sudo >>apt-get -q install -y build-essential squashfs-tools libseccomp-dev libssl-dev uuid-dev cryptsetup-bin runc libglib2.0-dev squashfuse
   configure-singularity:
     steps:
       - run:
@@ -148,16 +159,6 @@ jobs:
           name: Check License Changes
           command: git diff --exit-code -- LICENSE_DEPENDENCIES.md
 
-  build-source-debian:
-    executor:
-      name: golang
-      variant: buster
-    steps:
-      - checkout
-      - install-deps-apt:
-          sudo: false
-      - build-singularity
-
   build-source-alpine:
     executor:
       name: golang
@@ -166,7 +167,8 @@ jobs:
       - checkout
       - run:
           name: Fetch deps
-          command: apk add -q --no-cache git alpine-sdk automake libtool linux-headers libarchive-dev util-linux-dev libuuid openssl-dev gawk sed cryptsetup
+          command: apk add -q --no-cache git alpine-sdk automake libtool linux-headers libarchive-dev util-linux-dev libuuid openssl-dev gawk sed cryptsetup libseccomp-dev glib-dev
+      - update-submodules
       - build-singularity
 
   lint-source:
@@ -175,6 +177,7 @@ jobs:
       - checkout
       - install-deps-apt:
           sudo: false
+      - update-submodules
       - configure-singularity
       - run:
           name: Check for Lint
@@ -189,6 +192,7 @@ jobs:
           version: << pipeline.parameters.go-version >>
       - stop-background-apt
       - install-deps-apt
+      - update-submodules
       - install-singularity
       - run:
           name: Run unit tests
@@ -203,6 +207,7 @@ jobs:
           version: << pipeline.parameters.go-version >>
       - stop-background-apt
       - install-deps-apt
+      - update-submodules
       - install-singularity
       - run:
           name: Run integration tests
@@ -218,6 +223,7 @@ jobs:
           version: << pipeline.parameters.go-version >>
       - stop-background-apt
       - install-deps-apt
+      - update-submodules
       - install-singularity
       - run:
           name: Run E2E tests
@@ -241,12 +247,13 @@ jobs:
           name: Install dependencies
           command: |-
             yum groupinstall -q -y 'Development Tools'
-            yum install -q -y cryptsetup libseccomp-devel squashfs-tools
+            yum install -q -y cryptsetup libseccomp-devel squashfs-tools glib2-devel
       - run:
           name: Install Go
           command: |-
             curl -f -L -sS "https://dl.google.com/go/go<< pipeline.parameters.go-version >>.linux-amd64.tar.gz" | tar -z -x -C /usr/local/
             echo "export PATH=$PATH:/usr/local/go/bin" >> $BASH_ENV
+      - update-submodules
       - configure-singularity
       - run:
           name: Build RPM
@@ -271,15 +278,16 @@ jobs:
           name: Install dependencies
           command: |-
             apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential git libseccomp-dev pkg-config squashfs-tools cryptsetup dh-golang devscripts fakeroot
+            DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential git libseccomp-dev pkg-config squashfs-tools cryptsetup dh-golang devscripts fakeroot libglib2.0-dev
       - run:
           name: Install Go
           command: |-
             curl -f -L -sS "https://dl.google.com/go/go<< pipeline.parameters.go-version >>.linux-amd64.tar.gz" | tar -z -x -C /usr/local/
             echo "export PATH=$PATH:/usr/local/go/bin" >> $BASH_ENV
+      - update-submodules
       - run:
           name: Build DEB
-          command: |- 
+          command: |-
             dpkg-buildpackage -b -rfakeroot -us -uc
             mkdir -p ~/deb
             cp ../*.deb ~/deb/
@@ -299,7 +307,6 @@ workflows:
       - lint-markdown
       - check-go-mod
       - check-license-dependencies
-      - build-source-debian
       - build-source-alpine
       - lint-source
       - short-unit-tests
@@ -308,8 +315,19 @@ workflows:
       - build-rpm:
           matrix:
             parameters:
-              e: ["centos7", "almalinux8"]
+              e: ["centos7", "almalinux8", "almalinux9"]
+          filters:
+            branches:
+              only:
+                - master
+                - /release-.*/
+
       - build-deb:
           matrix:
             parameters:
               e: ["ubuntu1804", "ubuntu2004", "ubuntu2204"]
+          filters:
+            branches:
+              only:
+                - master
+                - /release-.*/

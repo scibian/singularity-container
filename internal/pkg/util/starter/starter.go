@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -74,6 +74,16 @@ func LoadOverlayModule(load bool) CommandOp {
 	}
 }
 
+// CleanupHost sets CLEANUP_HOST environment variable
+// which telsl starter to spawn the unprivileged host cleanup process.
+func CleanupHost(spawn bool) CommandOp {
+	return func(c *Command) {
+		if spawn {
+			c.env = append(c.env, "CLEANUP_HOST=1")
+		}
+	}
+}
+
 // Command a starter command to execute.
 type Command struct {
 	path   string
@@ -92,6 +102,7 @@ func Exec(name string, config *config.Common, ops ...CommandOp) error {
 	}
 	sylog.Debugf("Setting GOGC=off for starter")
 	c.env = append(c.env, "GOGC=off")
+
 	err := unix.Exec(c.path, []string{name}, c.env)
 	return fmt.Errorf("while executing %s: %s", c.path, err)
 }
@@ -103,6 +114,9 @@ func Run(name string, config *config.Common, ops ...CommandOp) error {
 	if err := c.init(config, ops...); err != nil {
 		return fmt.Errorf("while initializing starter command: %s", err)
 	}
+
+	sylog.Debugf("Setting GOGC=off for starter")
+	c.env = append(c.env, "GOGC=off")
 
 	cmd := exec.Command(c.path)
 	cmd.Args = []string{name}

@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -6,7 +6,6 @@
 package sign
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,7 +16,6 @@ import (
 
 type ctx struct {
 	env             e2e.TestEnv
-	imgCache        string
 	keyringDir      string
 	passphraseInput []e2e.SingularityConsoleOp
 }
@@ -43,7 +41,7 @@ func (c ctx) singularitySignHelpOption(t *testing.T) {
 
 func (c *ctx) prepareImage(t *testing.T) (string, func(*testing.T)) {
 	// Get a refresh unsigned image
-	tempDir, err := ioutil.TempDir("", "")
+	tempDir, err := os.MkdirTemp("", "")
 	if err != nil {
 		t.Fatalf("failed to create temporary directory: %s", err)
 	}
@@ -85,7 +83,6 @@ func (c ctx) singularitySignIDOption(t *testing.T) {
 	}
 
 	c.env.KeyringDir = c.keyringDir
-	c.env.ImgCacheDir = c.imgCache
 
 	for _, tt := range tests {
 		c.env.RunSingularity(
@@ -125,7 +122,6 @@ func (c ctx) singularitySignAllOption(t *testing.T) {
 	}
 
 	c.env.KeyringDir = c.keyringDir
-	c.env.ImgCacheDir = c.imgCache
 
 	for _, tt := range tests {
 		c.env.RunSingularity(
@@ -166,7 +162,6 @@ func (c ctx) singularitySignGroupIDOption(t *testing.T) {
 	}
 
 	c.env.KeyringDir = c.keyringDir
-	c.env.ImgCacheDir = c.imgCache
 
 	for _, tt := range tests {
 		c.env.RunSingularity(
@@ -187,7 +182,6 @@ func (c ctx) singularitySignKeyidxOption(t *testing.T) {
 
 	cmdArgs := []string{"--keyidx", "0", imgPath}
 	c.env.KeyringDir = c.keyringDir
-	c.env.ImgCacheDir = c.imgCache
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.UserProfile),
@@ -231,20 +225,8 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	return testhelper.Tests{
 		"ordered": func(t *testing.T) {
 			var err error
-			// To speed up the tests, we use a common image cache (we pull the same image several times)
-			c.imgCache, err = ioutil.TempDir("", "e2e-sign-imgcache-")
-			if err != nil {
-				t.Fatalf("failed to create temporary directory: %s", err)
-			}
-			defer func() {
-				err := os.RemoveAll(c.imgCache)
-				if err != nil {
-					t.Fatalf("failed to delete temporary cache: %s", err)
-				}
-			}()
-
 			// We need one single key pair in a single keyring for all the tests
-			c.keyringDir, err = ioutil.TempDir("", "e2e-sign-keyring-")
+			c.keyringDir, err = os.MkdirTemp("", "e2e-sign-keyring-")
 			if err != nil {
 				t.Fatalf("failed to create temporary directory: %s", err)
 			}

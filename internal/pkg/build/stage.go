@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/sylabs/singularity/internal/pkg/build/files"
@@ -42,8 +41,8 @@ func (s *stage) Assemble(path string) error {
 	return s.a.Assemble(s.b, path)
 }
 
-// runSetupScript executes the stage's pre script on host.
-func (s *stage) runSectionScript(name string, script types.Script) error {
+// runHostScript executes the stage's pre or setup script on host.
+func (s *stage) runHostScript(name string, script types.Script) error {
 	if s.b.RunSection(name) && script.Script != "" {
 		if syscall.Getuid() != 0 {
 			return fmt.Errorf("attempted to build with scripts as non-root user or without --fakeroot")
@@ -109,7 +108,7 @@ func (s *stage) runPostScript(configFile, sessionResolv, sessionHosts string) er
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Dir = "/"
-		cmd.Env = currentEnvNoSingularity([]string{"NV", "NVCCLI", "ROCM", "BINDPATH", "MOUNT"})
+		cmd.Env = currentEnvNoSingularity([]string{"DEBUG", "NV", "NVCCLI", "ROCM", "BINDPATH", "MOUNT"})
 
 		sylog.Infof("Running post scriptlet")
 		return cmd.Run()
@@ -135,7 +134,7 @@ func (s *stage) runTestScript(configFile, sessionResolv, sessionHosts string) er
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Dir = "/"
-		cmd.Env = currentEnvNoSingularity([]string{"NV", "NVCCLI", "ROCM", "BINDPATH", "MOUNT", "WRITABLE_TMPFS"})
+		cmd.Env = currentEnvNoSingularity([]string{"DEBUG", "NV", "NVCCLI", "ROCM", "BINDPATH", "MOUNT", "WRITABLE_TMPFS"})
 
 		sylog.Infof("Running testscript")
 		return cmd.Run()
@@ -146,18 +145,12 @@ func (s *stage) runTestScript(configFile, sessionResolv, sessionHosts string) er
 func (s *stage) copyFilesFrom(b *Build) error {
 	def := s.b.Recipe
 	for _, f := range def.BuildData.Files {
-		// Trim comments from args
-		cleanArgs := strings.Split(f.Args, "#")[0]
-		if cleanArgs == "" {
+		stageName := f.Stage()
+		if stageName == "" {
 			continue
 		}
 
-		args := strings.Fields(cleanArgs)
-		if len(args) != 2 {
-			continue
-		}
-
-		stageIndex, err := b.findStageIndex(args[1])
+		stageIndex, err := b.findStageIndex(stageName)
 		if err != nil {
 			return err
 		}
@@ -165,7 +158,7 @@ func (s *stage) copyFilesFrom(b *Build) error {
 		srcRootfsPath := b.stages[stageIndex].b.RootfsPath
 		dstRootfsPath := s.b.RootfsPath
 
-		sylog.Debugf("Copying files from stage: %s", args[1])
+		sylog.Debugf("Copying files from stage: %s", stageName)
 
 		// iterate through filetransfers
 		for _, transfer := range f.Files {
@@ -189,9 +182,7 @@ func (s *stage) copyFiles() error {
 	def := s.b.Recipe
 	filesSection := types.Files{}
 	for _, f := range def.BuildData.Files {
-		// Trim comments from args
-		cleanArgs := strings.Split(f.Args, "#")[0]
-		if cleanArgs == "" {
+		if f.Stage() == "" {
 			filesSection.Files = append(filesSection.Files, f.Files...)
 		}
 	}

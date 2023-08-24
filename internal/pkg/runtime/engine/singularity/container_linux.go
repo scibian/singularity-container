@@ -8,7 +8,7 @@ package singularity
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,7 +54,7 @@ var (
 	networkSetup   *network.Setup
 	imageDriver    image.Driver
 	umountPoints   []string
-	cgroupsManager cgroups.Manager
+	cgroupsManager *cgroups.Manager
 )
 
 // defaultCNIConfPath is the default directory to CNI network configuration files.
@@ -297,14 +297,22 @@ func create(ctx context.Context, engine *EngineOperations, rpcOps *client.RPC, p
 		}
 	}
 
-	if os.Geteuid() == 0 && !c.userNS {
-		path := engine.EngineConfig.GetCgroupsPath()
-		if path != "" {
-			cgroupsManager, err = cgroups.NewManagerFromFile(path, pid, "")
-			if err != nil {
-				return fmt.Errorf("while applying cgroups config: %v", err)
-			}
+	cgJSON := engine.EngineConfig.GetCgroupsJSON()
+	if cgJSON != "" {
+		// Rootless cgroups setup interacts with systemd over D-Bus.
+		// The session bus address and XDG runtime dir must be set in the environment.
+		if os.Getuid() != 0 {
+			sylog.Debugf("Setting rootless XDG_RUNTIME_DIR / DBUS_SESSION_ADDRESS for cgroup manager")
+			os.Setenv("XDG_RUNTIME_DIR", engine.EngineConfig.GetXdgRuntimeDir())
+			os.Setenv("DBUS_SESSION_BUS_ADDRESS", engine.EngineConfig.GetDbusSessionBusAddress())
 		}
+
+		cgroupsManager, err = cgroups.NewManagerWithJSON(cgJSON, pid, "", engine.EngineConfig.File.SystemdCgroups)
+		if err != nil {
+			return fmt.Errorf("while applying cgroups config: %v", err)
+		}
+		os.Unsetenv("XDG_RUNTIME_DIR")
+		os.Unsetenv("DBUS_SESSION_BUS_ADDRESS")
 	}
 
 	sylog.Debugf("Chdir into / to avoid errors\n")
@@ -1519,6 +1527,8 @@ func (c *container) addBindsMount(system *mount.System) error {
 		localtimePath = "/etc/localtime"
 	)
 
+	noBinds := c.engine.EngineConfig.GetNoBinds()
+
 	if c.engine.EngineConfig.GetContain() {
 		hosts := hostsPath
 
@@ -1538,18 +1548,22 @@ func (c *container) addBindsMount(system *mount.System) error {
 			hosts, _ = c.session.GetPath(hostsPath)
 		}
 
-		// #5465 If hosts/localtime mount fails, it should not be fatal so skip-on-error
-		if err := system.Points.AddBind(mount.BindsTag, hosts, hostsPath, flags, "skip-on-error"); err != nil {
-			return fmt.Errorf("unable to add %s to mount list: %s", hosts, err)
+		if !slice.ContainsString(noBinds, hostsPath) {
+			// #5465 If hosts/localtime mount fails, it should not be fatal so skip-on-error
+			if err := system.Points.AddBind(mount.BindsTag, hosts, hostsPath, flags, "skip-on-error"); err != nil {
+				return fmt.Errorf("unable to add %s to mount list: %s", hosts, err)
+			}
+			if err := system.Points.AddRemount(mount.BindsTag, hostsPath, flags); err != nil {
+				return fmt.Errorf("unable to add %s for remount: %s", hostsPath, err)
+			}
 		}
-		if err := system.Points.AddRemount(mount.BindsTag, hostsPath, flags); err != nil {
-			return fmt.Errorf("unable to add %s for remount: %s", hostsPath, err)
-		}
-		if err := system.Points.AddBind(mount.BindsTag, localtimePath, localtimePath, flags, "skip-on-error"); err != nil {
-			return fmt.Errorf("unable to add %s to mount list: %s", localtimePath, err)
-		}
-		if err := system.Points.AddRemount(mount.BindsTag, localtimePath, flags); err != nil {
-			return fmt.Errorf("unable to add %s for remount: %s", localtimePath, err)
+		if !slice.ContainsString(noBinds, localtimePath) {
+			if err := system.Points.AddBind(mount.BindsTag, localtimePath, localtimePath, flags, "skip-on-error"); err != nil {
+				return fmt.Errorf("unable to add %s to mount list: %s", localtimePath, err)
+			}
+			if err := system.Points.AddRemount(mount.BindsTag, localtimePath, flags); err != nil {
+				return fmt.Errorf("unable to add %s for remount: %s", localtimePath, err)
+			}
 		}
 		return nil
 	}
@@ -1565,6 +1579,11 @@ func (c *container) addBindsMount(system *mount.System) error {
 		}
 
 		sylog.Verbosef("Found 'bind path' = %s, %s", src, dst)
+
+		if slice.ContainsString(noBinds, dst) {
+			sylog.Debugf("Skipping bind to %s at user request", dst)
+			continue
+		}
 
 		// #5465 If hosts/localtime mount fails, it should not be fatal so skip-on-error
 		bindOpt := ""
@@ -2190,7 +2209,7 @@ func (c *container) addResolvConfMount(system *mount.System) error {
 			if err != nil {
 				return err
 			}
-			content, err = ioutil.ReadAll(r)
+			content, err = io.ReadAll(r)
 			r.Close()
 			if err != nil {
 				return err

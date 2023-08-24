@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,7 +8,6 @@ package instance
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,8 +19,6 @@ import (
 )
 
 const (
-	// OciSubDir represents directory where OCI instance files are stored
-	OciSubDir = "oci"
 	// SingSubDir represents directory where Singularity instance files are stored
 	SingSubDir = "sing"
 	// LogSubDir represents directory where Singularity instance log files are stored
@@ -214,7 +211,7 @@ func (i *File) isExited() bool {
 		// we would have obtained permission denied error,
 		// now check if it's an instance parent process
 		cmdline := fmt.Sprintf("/proc/%d/cmdline", i.PPid)
-		d, err := ioutil.ReadFile(cmdline)
+		d, err := os.ReadFile(cmdline)
 		if err != nil {
 			// this is racy and not accurate but as the process
 			// may have exited during above read, check again
