@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -6,6 +6,9 @@
 package singularity
 
 import (
+	"context"
+
+	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sylabs/sif/v2/pkg/integrity"
 	"github.com/sylabs/sif/v2/pkg/sif"
 	"github.com/sylabs/singularity/pkg/sypgp"
@@ -17,6 +20,14 @@ type signer struct {
 
 // SignOpt are used to configure s.
 type SignOpt func(s *signer) error
+
+// OptSignWithSigner specifies ss be used to generate signature(s).
+func OptSignWithSigner(ss signature.Signer) SignOpt {
+	return func(s *signer) error {
+		s.opts = append(s.opts, integrity.OptSignWithSigner(ss))
+		return nil
+	}
+}
 
 // OptSignEntitySelector specifies f be used to select (and decrypt, if necessary) the entity to
 // use to generate signature(s).
@@ -57,9 +68,13 @@ func OptSignObjects(ids ...uint32) SignOpt {
 //
 // By default, one digital signature is added per object group in f. To override this behavior,
 // consider using OptSignGroup and/or OptSignObject.
-func Sign(path string, opts ...SignOpt) error {
+func Sign(ctx context.Context, path string, opts ...SignOpt) error {
 	// Apply options to signer.
-	s := signer{}
+	s := signer{
+		opts: []integrity.SignerOpt{
+			integrity.OptSignWithContext(ctx),
+		},
+	}
 	for _, opt := range opts {
 		if err := opt(&s); err != nil {
 			return err

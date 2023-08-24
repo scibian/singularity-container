@@ -42,12 +42,14 @@ type File struct {
 	AllowContainerSquashfs  bool     `default:"yes" authorized:"yes,no" directive:"allow container squashfs"`
 	AllowContainerExtfs     bool     `default:"yes" authorized:"yes,no" directive:"allow container extfs"`
 	AllowContainerDir       bool     `default:"yes" authorized:"yes,no" directive:"allow container dir"`
+	AllowKernelSquashfs     bool     `default:"yes" authorized:"yes,no" directive:"allow kernel squashfs"`
+	AllowKernelExtfs        bool     `default:"yes" authorized:"yes,no" directive:"allow kernel extfs"`
 	AlwaysUseNv             bool     `default:"no" authorized:"yes,no" directive:"always use nv"`
 	UseNvCCLI               bool     `default:"no" authorized:"yes,no" directive:"use nvidia-container-cli"`
 	AlwaysUseRocm           bool     `default:"no" authorized:"yes,no" directive:"always use rocm"`
 	SharedLoopDevices       bool     `default:"no" authorized:"yes,no" directive:"shared loop devices"`
 	MaxLoopDevices          uint     `default:"256" directive:"max loop devices"`
-	SessiondirMaxSize       uint     `default:"16" directive:"sessiondir max size"`
+	SessiondirMaxSize       uint     `default:"64" directive:"sessiondir max size"`
 	MountDev                string   `default:"yes" authorized:"yes,no,minimal" directive:"mount dev"`
 	EnableOverlay           string   `default:"try" authorized:"yes,no,try,driver" directive:"enable overlay"`
 	BindPath                []string `default:"/etc/localtime,/etc/hosts" directive:"bind path"`
@@ -69,12 +71,13 @@ type File struct {
 	MksquashfsMem           string   `directive:"mksquashfs mem"`
 	NvidiaContainerCliPath  string   `directive:"nvidia-container-cli path"`
 	UnsquashfsPath          string   `directive:"unsquashfs path"`
-	ImageDriver             string   `directive:"image driver"`
-	DownloadConcurrency     uint     `default:"3" directive:"download concurrency"`
-	DownloadPartSize        uint     `default:"5242880" directive:"download part size"`
-	DownloadBufferSize      uint     `default:"32768" directive:"download buffer size"`
-	SystemdCgroups          bool     `default:"yes" authorized:"yes,no" directive:"systemd cgroups"`
-	SIFFUSE                 bool     `default:"no" authorized:"yes,no" directive:"sif fuse"`
+	// Deprecated: ImageDriver is deprecated and will be removed in 4.0.
+	ImageDriver         string `directive:"image driver"`
+	DownloadConcurrency uint   `default:"3" directive:"download concurrency"`
+	DownloadPartSize    uint   `default:"5242880" directive:"download part size"`
+	DownloadBufferSize  uint   `default:"32768" directive:"download buffer size"`
+	SystemdCgroups      bool   `default:"yes" authorized:"yes,no" directive:"systemd cgroups"`
+	SIFFUSE             bool   `default:"no" authorized:"yes,no" directive:"sif fuse"`
 }
 
 const TemplateAsset = `# SINGULARITY.CONF
@@ -227,10 +230,11 @@ enable underlay = {{ if eq .EnableUnderlay true }}yes{{ else }}no{{ end }}
 mount slave = {{ if eq .MountSlave true }}yes{{ else }}no{{ end }}
 
 # SESSIONDIR MAXSIZE: [STRING]
-# DEFAULT: 16
-# This specifies how large the default sessiondir should be (in MB) and it will
-# only affect users who use the "--contain" options and don't also specify a
-# location to do default read/writes to (e.g. "--workdir" or "--home").
+# DEFAULT: 64
+# This specifies how large the default tmpfs sessiondir should be (in MB).
+# The sessiondir is used to hold data written to isolated directories when
+# running with --contain, ephemeral changes when running with --writable-tmpfs.
+# In --oci mode, each tmpfs mount in the container can be up to this size.
 sessiondir max size = {{ .SessiondirMaxSize }}
 
 # LIMIT CONTAINER OWNERS: [STRING]
@@ -282,6 +286,20 @@ allow container encrypted = {{ if eq .AllowContainerEncrypted true }}yes{{ else 
 allow container squashfs = {{ if eq .AllowContainerSquashfs true }}yes{{ else }}no{{ end }}
 allow container extfs = {{ if eq .AllowContainerExtfs true }}yes{{ else }}no{{ end }}
 allow container dir = {{ if eq .AllowContainerDir true }}yes{{ else }}no{{ end }}
+
+# ALLOW KERNEL SQUASHFS: [BOOL]
+# DEFAULT: yes
+# If set to no, Singularity will not perform any kernel mounts of squashfs filesystems.
+# This affects both stand-alone image files and filesystems embedded in a SIF file.
+# Applicable to setuid mode only.
+allow kernel squashfs = {{ if eq .AllowKernelSquashfs true }}yes{{ else }}no{{ end }}
+
+# ALLOW KERNEL EXTFS: [BOOL]
+# DEFAULT: yes
+# If set to no, Singularity will not perform any kernel mounts of extfs filesystems.
+# This affects both stand-alone image files and filesystems embedded in a SIF file.
+# Applicable to setuid mode only.
+allow kernel extfs = {{ if eq .AllowKernelExtfs true }}yes{{ else }}no{{ end }}
 
 # ALLOW NET USERS: [STRING]
 # DEFAULT: NULL
@@ -343,7 +361,8 @@ always use rocm = {{ if eq .AlwaysUseRocm true }}yes{{ else }}no{{ end }}
 # DEFAULT: full
 # Define default root capability set kept during runtime
 # - full: keep all capabilities (same as --keep-privs)
-# - file: keep capabilities configured in ${prefix}/etc/singularity/capabilities/user.root
+# - file: keep capabilities configured for root in
+#         ${prefix}/etc/singularity/capability.json
 # - no: no capabilities (same as --no-privs)
 root default capabilities = {{ .RootDefaultCapabilities }}
 
@@ -440,6 +459,9 @@ shared loop devices = {{ if eq .SharedLoopDevices true }}yes{{ else }}no{{ end }
 
 # IMAGE DRIVER: [STRING]
 # DEFAULT: Undefined
+#
+# DEPRECATED - Will be removed in 4.0.
+#
 # This option specifies the name of an image driver provided by a plugin that
 # will be used to handle image mounts. If the 'enable overlay' option is set
 # to 'driver' the driver name specified here will also be used to handle

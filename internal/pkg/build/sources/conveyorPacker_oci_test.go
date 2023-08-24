@@ -209,11 +209,7 @@ func TestOCIConveyorOCILayout(t *testing.T) {
 
 	// We need to extract the oci archive to a directory
 	// Don't want to implement untar routines here, so use system tar
-	dir, err := os.MkdirTemp("", "oci-test")
-	if err != nil {
-		t.Fatalf("Could not create temporary directory: %v", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 	cmd := exec.Command("tar", "-C", dir, "-xf", archive)
 	err = cmd.Run()
 	if err != nil {

@@ -1,4 +1,4 @@
-// Copyright (c) 2021-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2021-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -29,11 +29,8 @@ func TestCopyWithTar(t *testing.T) {
 }
 
 func testCopyWithTar(t *testing.T) {
-	srcRoot, err := os.MkdirTemp("", "copywithtar-src-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(srcRoot)
+	srcRoot := t.TempDir()
+	t.Logf("srcRoot location: %s\n", srcRoot)
 
 	// Source Files
 	srcFile := filepath.Join(srcRoot, "srcFile")
@@ -51,16 +48,13 @@ func testCopyWithTar(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dstRoot, err := os.MkdirTemp("", "copywithtar-dst-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dstRoot)
+	dstRoot := t.TempDir()
+	t.Logf("dstRoot location: %s\n", dstRoot)
 
 	// Perform the actual copy to a subdir of our dst tempdir.
 	// This ensures CopyWithTar has to create the dest directory, which is
 	// where the non-wrapped call would fail for unprivileged users.
-	err = CopyWithTar(srcRoot, path.Join(dstRoot, "dst"))
+	err := CopyWithTar(srcRoot, path.Join(dstRoot, "dst"), false)
 	if err != nil {
 		t.Fatalf("Error during CopyWithTar: %v", err)
 	}

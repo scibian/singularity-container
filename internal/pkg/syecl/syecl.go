@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -11,6 +11,7 @@
 package syecl
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -19,7 +20,7 @@ import (
 	"strings"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	toml "github.com/pelletier/go-toml"
+	toml "github.com/pelletier/go-toml/v2"
 	"github.com/sylabs/sif/v2/pkg/integrity"
 	"github.com/sylabs/sif/v2/pkg/sif"
 )
@@ -31,9 +32,9 @@ var (
 
 // EclConfig describes the structure of an execution control list configuration file
 type EclConfig struct {
-	Activated  bool        `toml:"activated"`      // toggle the activation of the ECL rules
-	Legacy     bool        `toml:"legacyinsecure"` // Legacy (insecure) signature mode
-	ExecGroups []Execgroup `toml:"execgroup"`      // Slice of all execution groups
+	Activated  bool        `toml:"activated"`           // toggle the activation of the ECL rules
+	Legacy     bool        `toml:"legacyinsecure"`      // Legacy (insecure) signature mode
+	ExecGroups []Execgroup `toml:"execgroup,omitempty"` // Slice of all execution groups
 }
 
 // Execgroup describes an execution group, the main unit of configuration:
@@ -186,7 +187,7 @@ func checkBlackList(v *integrity.Verifier, egroup *Execgroup) (ok bool, err erro
 	return true, nil
 }
 
-func shouldRun(ecl *EclConfig, fp *os.File, kr openpgp.KeyRing) (ok bool, err error) {
+func shouldRun(ctx context.Context, ecl *EclConfig, fp *os.File, kr openpgp.KeyRing) (ok bool, err error) {
 	var egroup *Execgroup
 
 	// look what execgroup a container is part of
@@ -219,7 +220,10 @@ func shouldRun(ecl *EclConfig, fp *os.File, kr openpgp.KeyRing) (ok bool, err er
 	}
 	defer f.UnloadContainer()
 
-	opts := []integrity.VerifierOpt{integrity.OptVerifyWithKeyRing(kr)}
+	opts := []integrity.VerifierOpt{
+		integrity.OptVerifyWithContext(ctx),
+		integrity.OptVerifyWithKeyRing(kr),
+	}
 	if ecl.Legacy {
 		// Legacy behavior is to verify the primary partition only.
 		od, err := f.GetDescriptor(sif.WithPartitionType(sif.PartPrimSys))
@@ -253,7 +257,7 @@ func shouldRun(ecl *EclConfig, fp *os.File, kr openpgp.KeyRing) (ok bool, err er
 }
 
 // ShouldRun determines if a container should run according to its execgroup rules
-func (ecl *EclConfig) ShouldRun(cpath string, kr openpgp.KeyRing) (ok bool, err error) {
+func (ecl *EclConfig) ShouldRun(ctx context.Context, cpath string, kr openpgp.KeyRing) (ok bool, err error) {
 	// look if ECL rules are activated
 	if !ecl.Activated {
 		return true, nil
@@ -265,15 +269,15 @@ func (ecl *EclConfig) ShouldRun(cpath string, kr openpgp.KeyRing) (ok bool, err 
 	}
 	defer fp.Close()
 
-	return shouldRun(ecl, fp, kr)
+	return shouldRun(ctx, ecl, fp, kr)
 }
 
 // ShouldRunFp determines if an already opened container should run according to its execgroup rules
-func (ecl *EclConfig) ShouldRunFp(fp *os.File, kr openpgp.KeyRing) (ok bool, err error) {
+func (ecl *EclConfig) ShouldRunFp(ctx context.Context, fp *os.File, kr openpgp.KeyRing) (ok bool, err error) {
 	// look if ECL rules are activated
 	if !ecl.Activated {
 		return true, nil
 	}
 
-	return shouldRun(ecl, fp, kr)
+	return shouldRun(ctx, ecl, fp, kr)
 }

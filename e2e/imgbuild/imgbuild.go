@@ -1,4 +1,6 @@
 // Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -9,10 +11,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -51,28 +51,32 @@ func (c imgBuildTests) tempDir(t *testing.T, namespace string) (string, func()) 
 }
 
 func (c imgBuildTests) buildFrom(t *testing.T) {
-	e2e.EnsureRegistry(t)
+	e2e.EnsureORASImage(t, c.env)
 
 	// use a trailing slash in tests for sandbox intentionally to make sure
 	// `singularity build -s /tmp/sand/ <URI>` works,
 	// see https://github.com/sylabs/singularity/issues/4407
 	tt := []struct {
-		name        string
-		dependency  string
-		buildSpec   string
-		requireArch string
+		name         string
+		dependency   string
+		buildSpec    string
+		requirements func(t *testing.T)
 	}{
 		// Disabled due to frequent download failures of the busybox tgz
 		// {
 		// 	name:      "BusyBox",
 		// 	buildSpec: "../examples/busybox/Singularity",
 		// 	// TODO: example has arch hard coded in download URL
-		// 	requireArch: "amd64",
+		//  requirements: func(t *testing.T) {
+		//   require.Arch(t, "amd64")
+		//  },
 		// },
 		{
-			name:       "Debootstrap",
-			dependency: "debootstrap",
-			buildSpec:  "../examples/debian/Singularity",
+			name:      "Debootstrap",
+			buildSpec: "../examples/debian/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "debootstrap")
+			},
 		},
 		// TODO(mem): reenable this; disabled while shub is down
 		// {
@@ -85,6 +89,10 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 		// 	buildSpec:  "../examples/shub/Singularity",
 		// },
 		{
+			name:      "LibraryURI",
+			buildSpec: "library://alpine:3.11.5",
+		},
+		{
 			name:      "LibraryDefFile",
 			buildSpec: "../examples/library/Singularity",
 		},
@@ -93,28 +101,83 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 			buildSpec: c.env.OrasTestImage,
 		},
 		{
-			name:        "Yum",
-			dependency:  "yum",
-			buildSpec:   "../examples/centos/Singularity",
-			requireArch: "amd64",
+			name:      "Yum CentOS7",
+			buildSpec: "../examples/centos/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "yum")
+				require.RPMMacro(t, "_db_backend", "bdb")
+				require.RPMMacro(t, "_dbpath", "/var/lib/rpm")
+				require.Arch(t, "amd64")
+			},
 		},
 		{
-			name:        "YumArm64",
-			dependency:  "yum",
-			buildSpec:   "../examples/centos-arm64/Singularity",
-			requireArch: "arm64",
+			name:       "YumArm64 CentOS 7",
+			dependency: "yum",
+			buildSpec:  "../examples/centos-arm64/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "yum")
+				require.RPMMacro(t, "_db_backend", "bdb")
+				require.RPMMacro(t, "_dbpath", "/var/lib/rpm")
+				require.Arch(t, "arm64")
+			},
 		},
 		{
-			name:        "Zypper",
-			dependency:  "zypper",
-			buildSpec:   "../examples/opensuse/Singularity",
-			requireArch: "amd64",
+			name:      "Dnf AlmaLinux 9",
+			buildSpec: "../examples/almalinux/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "dnf")
+				require.RPMMacro(t, "_db_backend", "sqlite")
+				require.RPMMacro(t, "_dbpath", "/var/lib/rpm")
+				require.Arch(t, "amd64")
+			},
 		},
 		{
-			name:        "ZypperArm64",
-			dependency:  "zypper",
-			buildSpec:   "../examples/opensuse-arm64/Singularity",
-			requireArch: "arm64",
+			name:       "DnfArm64 AlmaLinux 9",
+			dependency: "yum",
+			buildSpec:  "../examples/almalinux-arm64/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "dnf")
+				require.RPMMacro(t, "_db_backend", "sqlite")
+				require.RPMMacro(t, "_dbpath", "/var/lib/rpm")
+				require.Arch(t, "arm64")
+			},
+		},
+		{
+			name:      "Dnf Fedora 37",
+			buildSpec: "../examples/fedora/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "dnf")
+				require.RPMMacro(t, "_db_backend", "sqlite")
+				require.RPMMacro(t, "_dbpath", "/usr/lib/sysimage/rpm")
+				require.Arch(t, "amd64")
+			},
+		},
+		{
+			name:       "DnfArm64 Fedora 37",
+			dependency: "yum",
+			buildSpec:  "../examples/fedora-arm64/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "dnf")
+				require.RPMMacro(t, "_db_backend", "sqlite")
+				require.RPMMacro(t, "_dbpath", "/usr/lib/sysimage/rpm")
+				require.Arch(t, "arm64")
+			},
+		},
+		{
+			name:      "Zypper",
+			buildSpec: "../examples/opensuse/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "zypper")
+				require.Arch(t, "amd64")
+			},
+		},
+		{
+			name:      "ZypperArm64",
+			buildSpec: "../examples/opensuse-arm64/Singularity",
+			requirements: func(t *testing.T) {
+				require.Command(t, "zypper")
+				require.Arch(t, "arm64")
+			},
 		},
 	}
 
@@ -124,8 +187,13 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 
 		t.Run(profile.String(), func(t *testing.T) {
 			for _, tc := range tt {
+
 				dn, cleanup := c.tempDir(t, "build-from")
-				defer cleanup()
+				t.Cleanup(func() {
+					if !t.Failed() {
+						cleanup()
+					}
+				})
 
 				imagePath := path.Join(dn, "sandbox")
 
@@ -139,24 +207,18 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 					e2e.WithProfile(profile),
 					e2e.WithCommand("build"),
 					e2e.WithArgs(args...),
-					e2e.PreRun(func(t *testing.T) {
-						require.Arch(t, tc.requireArch)
-
-						if tc.dependency == "" {
-							return
-						}
-
-						if _, err := exec.LookPath(tc.dependency); err != nil {
-							t.Skipf("%v not found in path", tc.dependency)
-						}
-					}),
+					e2e.PreRun(tc.requirements),
 					e2e.PostRun(func(t *testing.T) {
 						if t.Failed() {
 							return
 						}
 
-						defer os.RemoveAll(imagePath)
-						c.env.ImageVerify(t, imagePath, profile)
+						t.Cleanup(func() {
+							if !t.Failed() {
+								os.RemoveAll(imagePath)
+							}
+						})
+						c.env.ImageVerify(t, imagePath)
 					}),
 					e2e.ExpectExit(0),
 				)
@@ -166,6 +228,7 @@ func (c imgBuildTests) buildFrom(t *testing.T) {
 }
 
 func (c imgBuildTests) nonRootBuild(t *testing.T) {
+	busyboxSIF := e2e.BusyboxSIF(t)
 	tt := []struct {
 		name        string
 		buildSpec   string
@@ -174,11 +237,11 @@ func (c imgBuildTests) nonRootBuild(t *testing.T) {
 	}{
 		{
 			name:      "local sif",
-			buildSpec: "testdata/busybox_" + runtime.GOARCH + ".sif",
+			buildSpec: busyboxSIF,
 		},
 		{
 			name:      "local sif to sandbox",
-			buildSpec: "testdata/busybox_" + runtime.GOARCH + ".sif",
+			buildSpec: busyboxSIF,
 			args:      []string{"--sandbox"},
 		},
 		{
@@ -199,7 +262,11 @@ func (c imgBuildTests) nonRootBuild(t *testing.T) {
 
 	for _, tc := range tt {
 		dn, cleanup := c.tempDir(t, "non-root-build")
-		defer cleanup()
+		t.Cleanup(func() {
+			if !t.Failed() {
+				cleanup()
+			}
+		})
 
 		imagePath := path.Join(dn, "container")
 
@@ -218,7 +285,7 @@ func (c imgBuildTests) nonRootBuild(t *testing.T) {
 			}),
 
 			e2e.PostRun(func(t *testing.T) {
-				c.env.ImageVerify(t, imagePath, e2e.UserProfile)
+				c.env.ImageVerify(t, imagePath)
 			}),
 			e2e.ExpectExit(0),
 		)
@@ -230,13 +297,21 @@ func (c imgBuildTests) buildLocalImage(t *testing.T) {
 
 	tmpdir, cleanup := c.tempDir(t, "build-local-image")
 
-	defer cleanup()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
 
 	liDefFile := e2e.PrepareDefFile(e2e.DefFileDetails{
 		Bootstrap: "localimage",
 		From:      c.env.ImagePath,
 	})
-	defer os.Remove(liDefFile)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			os.Remove(liDefFile)
+		}
+	})
 
 	labels := make(map[string]string)
 	labels["FOO"] = "bar"
@@ -245,7 +320,11 @@ func (c imgBuildTests) buildLocalImage(t *testing.T) {
 		From:      c.env.ImagePath,
 		Labels:    labels,
 	})
-	defer os.Remove(liLabelDefFile)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			os.Remove(liLabelDefFile)
+		}
+	})
 
 	sandboxImage := path.Join(tmpdir, "test-sandbox")
 
@@ -255,7 +334,7 @@ func (c imgBuildTests) buildLocalImage(t *testing.T) {
 		e2e.WithCommand("build"),
 		e2e.WithArgs("--sandbox", sandboxImage, c.env.ImagePath),
 		e2e.PostRun(func(t *testing.T) {
-			c.env.ImageVerify(t, sandboxImage, e2e.UserProfile)
+			c.env.ImageVerify(t, sandboxImage)
 		}),
 		e2e.ExpectExit(0),
 	)
@@ -265,7 +344,11 @@ func (c imgBuildTests) buildLocalImage(t *testing.T) {
 		From:      sandboxImage,
 		Labels:    labels,
 	})
-	defer os.Remove(localSandboxDefFile)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			os.Remove(localSandboxDefFile)
+		}
+	})
 
 	tt := []struct {
 		name      string
@@ -295,8 +378,12 @@ func (c imgBuildTests) buildLocalImage(t *testing.T) {
 						if t.Failed() {
 							return
 						}
-						defer os.RemoveAll(imagePath)
-						c.env.ImageVerify(t, imagePath, profile)
+						t.Cleanup(func() {
+							if !t.Failed() {
+								os.RemoveAll(imagePath)
+							}
+						})
+						c.env.ImageVerify(t, imagePath)
 					}),
 					e2e.ExpectExit(0),
 				)
@@ -307,7 +394,11 @@ func (c imgBuildTests) buildLocalImage(t *testing.T) {
 
 func (c imgBuildTests) badPath(t *testing.T) {
 	dn, cleanup := c.tempDir(t, "bad-path")
-	defer cleanup()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
 
 	imagePath := path.Join(dn, "container")
 
@@ -321,11 +412,16 @@ func (c imgBuildTests) badPath(t *testing.T) {
 }
 
 func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
+	busyboxSIF := e2e.BusyboxSIF(t)
 	tmpfile, err := e2e.WriteTempFile(c.env.TestDir, "testFile-", testFileContent)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.Remove(tmpfile) // clean up
+	t.Cleanup(func() {
+		if !t.Failed() {
+			os.Remove(tmpfile)
+		}
+	})
 
 	tests := []struct {
 		name    string
@@ -337,8 +433,8 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 			name: "FileCopySimple",
 			dfd: []e2e.DefFileDetails{
 				{
-					Bootstrap: "library",
-					From:      "alpine:3.11.5",
+					Bootstrap: "localimage",
+					From:      busyboxSIF,
 					Stage:     "one",
 					Files: []e2e.FilePair{
 						{
@@ -352,8 +448,8 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 					},
 				},
 				{
-					Bootstrap: "library",
-					From:      "alpine:3.11.5",
+					Bootstrap: "localimage",
+					From:      busyboxSIF,
 					FilesFrom: []e2e.FileSection{
 						{
 							Stage: "one",
@@ -389,8 +485,8 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 			name: "FileCopyComplex",
 			dfd: []e2e.DefFileDetails{
 				{
-					Bootstrap: "library",
-					From:      "alpine:3.11.5",
+					Bootstrap: "localimage",
+					From:      busyboxSIF,
 					Stage:     "one",
 					Files: []e2e.FilePair{
 						{
@@ -404,8 +500,8 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 					},
 				},
 				{
-					Bootstrap: "library",
-					From:      "alpine:3.11.5",
+					Bootstrap: "localimage",
+					From:      busyboxSIF,
 					Stage:     "two",
 					Files: []e2e.FilePair{
 						{
@@ -419,8 +515,8 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 					},
 				},
 				{
-					Bootstrap: "library",
-					From:      "alpine:3.11.5",
+					Bootstrap: "localimage",
+					From:      busyboxSIF,
 					Stage:     "three",
 					FilesFrom: []e2e.FileSection{
 						{
@@ -452,8 +548,8 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 					},
 				},
 				{
-					Bootstrap: "library",
-					From:      "alpine:3.11.5",
+					Bootstrap: "localimage",
+					From:      busyboxSIF,
 					FilesFrom: []e2e.FileSection{
 						{
 							Stage: "three",
@@ -504,7 +600,11 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 
 	for _, tt := range tests {
 		dn, cleanup := c.tempDir(t, "multi-stage-definition")
-		defer cleanup()
+		t.Cleanup(func() {
+			if !t.Failed() {
+				cleanup()
+			}
+		})
 
 		imagePath := path.Join(dn, "container")
 
@@ -519,7 +619,11 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 			e2e.WithCommand("build"),
 			e2e.WithArgs(args...),
 			e2e.PostRun(func(t *testing.T) {
-				defer os.Remove(defFile)
+				t.Cleanup(func() {
+					if !t.Failed() {
+						os.Remove(defFile)
+					}
+				})
 
 				e2e.DefinitionImageVerify(t, c.env.CmdPath, imagePath, tt.correct)
 			}),
@@ -530,20 +634,25 @@ func (c imgBuildTests) buildMultiStageDefinition(t *testing.T) {
 
 //nolint:maintidx
 func (c imgBuildTests) buildDefinition(t *testing.T) {
+	busyboxSIF := e2e.BusyboxSIF(t)
 	tmpfile, err := e2e.WriteTempFile(c.env.TestDir, "testFile-", testFileContent)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.Remove(tmpfile) // clean up
+	t.Cleanup(func() {
+		if !t.Failed() {
+			os.Remove(tmpfile)
+		}
+	})
 
 	tt := map[string]e2e.DefFileDetails{
 		"Empty": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 		},
 		"Help": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Help: []string{
 				"help info line 1",
 				"help info line 2",
@@ -551,8 +660,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"Files": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Files: []e2e.FilePair{
 				{
 					Src: tmpfile,
@@ -565,8 +674,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"Test": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Test: []string{
 				"echo testscript line 1",
 				"echo testscript line 2",
@@ -574,8 +683,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"Startscript": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			StartScript: []string{
 				"echo startscript line 1",
 				"echo startscript line 2",
@@ -583,8 +692,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"Runscript": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			RunScript: []string{
 				"echo runscript line 1",
 				"echo runscript line 2",
@@ -592,8 +701,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"Env": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Env: []string{
 				"testvar1=one",
 				"testvar2=two",
@@ -601,8 +710,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"Labels": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Labels: map[string]string{
 				"customLabel1": "one",
 				"customLabel2": "two",
@@ -610,29 +719,29 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"Pre": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Pre: []string{
 				filepath.Join(c.env.TestDir, "PreFile1"),
 			},
 		},
 		"Setup": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Setup: []string{
 				filepath.Join(c.env.TestDir, "SetupFile1"),
 			},
 		},
 		"Post": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Post: []string{
 				"PostFile1",
 			},
 		},
 		"AppHelp": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Apps: []e2e.AppDetail{
 				{
 					Name: "foo",
@@ -653,8 +762,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"AppEnv": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Apps: []e2e.AppDetail{
 				{
 					Name: "foo",
@@ -675,8 +784,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"AppLabels": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Apps: []e2e.AppDetail{
 				{
 					Name: "foo",
@@ -697,8 +806,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"AppFiles": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Apps: []e2e.AppDetail{
 				{
 					Name: "foo",
@@ -729,8 +838,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"AppInstall": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Apps: []e2e.AppDetail{
 				{
 					Name: "foo",
@@ -747,8 +856,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"AppRun": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Apps: []e2e.AppDetail{
 				{
 					Name: "foo",
@@ -769,8 +878,8 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 			},
 		},
 		"AppTest": {
-			Bootstrap: "library",
-			From:      "alpine:3.11.5",
+			Bootstrap: "localimage",
+			From:      busyboxSIF,
 			Apps: []e2e.AppDetail{
 				{
 					Name: "foo",
@@ -799,7 +908,11 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 		t.Run(profile.String(), func(t *testing.T) {
 			for name, dfd := range tt {
 				dn, cleanup := c.tempDir(t, "build-definition")
-				defer cleanup()
+				t.Cleanup(func() {
+					if !t.Failed() {
+						cleanup()
+					}
+				})
 
 				imagePath := path.Join(dn, "container")
 
@@ -815,7 +928,11 @@ func (c imgBuildTests) buildDefinition(t *testing.T) {
 						if t.Failed() {
 							return
 						}
-						defer os.Remove(defFile)
+						t.Cleanup(func() {
+							if !t.Failed() {
+								os.Remove(defFile)
+							}
+						})
 						e2e.DefinitionImageVerify(t, c.env.CmdPath, imagePath, dfd)
 					}),
 					e2e.ExpectExit(0),
@@ -841,6 +958,8 @@ func (c *imgBuildTests) ensureImageIsEncrypted(t *testing.T, imgPath string) {
 }
 
 func (c imgBuildTests) buildEncryptPemFile(t *testing.T) {
+	busyboxSIF := e2e.BusyboxSIF(t)
+
 	// Expected results for a successful command execution
 	expectedExitCode := 0
 	expectedStderr := ""
@@ -848,7 +967,11 @@ func (c imgBuildTests) buildEncryptPemFile(t *testing.T) {
 	// We create a temporary directory to store the image, making sure tests
 	// will not pollute each other
 	dn, cleanup := c.tempDir(t, "pem-encryption")
-	defer cleanup()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
 
 	// Generate the PEM file
 	pemFile, _ := e2e.GeneratePemFiles(t, c.env.TestDir)
@@ -866,7 +989,7 @@ func (c imgBuildTests) buildEncryptPemFile(t *testing.T) {
 
 	// First with the command line argument
 	imgPath1 := filepath.Join(dn, "encrypted_cmdline_option.sif")
-	cmdArgs := []string{"--encrypt", "--pem-path", pemFile, imgPath1, "library://alpine:latest"}
+	cmdArgs := []string{"--encrypt", "--pem-path", pemFile, imgPath1, busyboxSIF}
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.RootProfile),
@@ -885,7 +1008,7 @@ func (c imgBuildTests) buildEncryptPemFile(t *testing.T) {
 	// Second with the environment variable
 	pemEnvVar := fmt.Sprintf("%s=%s", "SINGULARITY_ENCRYPTION_PEM_PATH", pemFile)
 	imgPath2 := filepath.Join(dn, "encrypted_env_var.sif")
-	cmdArgs = []string{"--encrypt", imgPath2, "library://alpine:latest"}
+	cmdArgs = []string{"--encrypt", imgPath2, busyboxSIF}
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.RootProfile),
@@ -907,6 +1030,8 @@ func (c imgBuildTests) buildEncryptPemFile(t *testing.T) {
 // while using a passphrase. Note that it covers both the normal case and when the
 // version of cryptsetup available is not compliant.
 func (c imgBuildTests) buildEncryptPassphrase(t *testing.T) {
+	busyboxSIF := e2e.BusyboxSIF(t)
+
 	// Expected results for a successful command execution
 	expectedExitCode := 0
 	expectedStderr := ""
@@ -914,7 +1039,11 @@ func (c imgBuildTests) buildEncryptPassphrase(t *testing.T) {
 	// We create a temporary directory to store the image, making sure tests
 	// will not pollute each other
 	dn, cleanup := c.tempDir(t, "passphrase-encryption")
-	defer cleanup()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
 
 	// If the version of cryptsetup is not compatible with Singularity encryption,
 	// the build commands are expected to fail
@@ -930,7 +1059,7 @@ func (c imgBuildTests) buildEncryptPassphrase(t *testing.T) {
 	}
 	cmdlineTestImgPath := filepath.Join(dn, "encrypted_cmdline_option.sif")
 	// The image is deleted during cleanup of the temporary directory
-	cmdArgs := []string{"--passphrase", cmdlineTestImgPath, "library://alpine:latest"}
+	cmdArgs := []string{"--passphrase", cmdlineTestImgPath, busyboxSIF}
 	c.env.RunSingularity(
 		t,
 		e2e.AsSubtest("passphrase flag"),
@@ -950,7 +1079,7 @@ func (c imgBuildTests) buildEncryptPassphrase(t *testing.T) {
 
 	// With the command line argument, using --encrypt and --passphrase
 	cmdlineTest2ImgPath := filepath.Join(dn, "encrypted_cmdline2_option.sif")
-	cmdArgs = []string{"--encrypt", "--passphrase", cmdlineTest2ImgPath, "library://alpine:latest"}
+	cmdArgs = []string{"--encrypt", "--passphrase", cmdlineTest2ImgPath, busyboxSIF}
 	c.env.RunSingularity(
 		t,
 		e2e.AsSubtest("encrypt and passphrase flags"),
@@ -971,7 +1100,7 @@ func (c imgBuildTests) buildEncryptPassphrase(t *testing.T) {
 	// With the environment variable
 	passphraseEnvVar := fmt.Sprintf("%s=%s", "SINGULARITY_ENCRYPTION_PASSPHRASE", e2e.Passphrase)
 	envvarImgPath := filepath.Join(dn, "encrypted_env_var.sif")
-	cmdArgs = []string{"--encrypt", envvarImgPath, "library://alpine:latest"}
+	cmdArgs = []string{"--encrypt", envvarImgPath, busyboxSIF}
 	c.env.RunSingularity(
 		t,
 		e2e.AsSubtest("passphrase env var"),
@@ -991,7 +1120,7 @@ func (c imgBuildTests) buildEncryptPassphrase(t *testing.T) {
 
 	// Finally a test that must fail: try to specify the passphrase on the command line
 	dummyImgPath := filepath.Join(dn, "dummy_encrypted_env_var.sif")
-	cmdArgs = []string{"--encrypt", "--passphrase", e2e.Passphrase, dummyImgPath, "library://alpine:latest"}
+	cmdArgs = []string{"--encrypt", "--passphrase", e2e.Passphrase, dummyImgPath, busyboxSIF}
 	c.env.RunSingularity(
 		t,
 		e2e.AsSubtest("passphrase on cmdline"),
@@ -1012,7 +1141,11 @@ func (c imgBuildTests) buildUpdateSandbox(t *testing.T) {
 	const badSandbox = "/bad/sandbox/path"
 
 	testDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "build-sandbox-", "")
-	defer e2e.Privileged(cleanup)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			e2e.Privileged(cleanup)
+		}
+	})
 
 	tests := []struct {
 		name     string
@@ -1061,10 +1194,10 @@ func (c imgBuildTests) buildUpdateSandbox(t *testing.T) {
 // buildWithFingerprint checks that we correctly verify a source image fingerprint when specified
 func (c imgBuildTests) buildWithFingerprint(t *testing.T) {
 	tmpDir, remove := e2e.MakeTempDir(t, "", "imgbuild-fingerprint-", "")
-	defer func() {
+	t.Cleanup(func() {
 		c.env.KeyringDir = ""
 		remove(t)
-	}()
+	})
 
 	pgpDir, _ := e2e.MakeSyPGPDir(t, tmpDir)
 	c.env.KeyringDir = pgpDir
@@ -1100,7 +1233,7 @@ func (c imgBuildTests) buildWithFingerprint(t *testing.T) {
 		{
 			name:    "build single signed source image",
 			command: "build",
-			args:    []string{singleSigned, "library://busybox"},
+			args:    []string{singleSigned, e2e.BusyboxSIF(t)},
 		},
 		{
 			name:    "build double signed source image",
@@ -1228,7 +1361,11 @@ func (c imgBuildTests) buildWithFingerprint(t *testing.T) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer os.Remove(defFile)
+		t.Cleanup(func() {
+			if !t.Failed() {
+				os.Remove(defFile)
+			}
+		})
 		c.env.RunSingularity(t,
 			e2e.AsSubtest(tt.name),
 			e2e.WithProfile(e2e.RootProfile),
@@ -1246,7 +1383,11 @@ func (c imgBuildTests) buildBindMount(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
 	tmpdir, cleanup := c.tempDir(t, "build-local-image")
-	defer cleanup()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
 
 	dir, _ := e2e.MakeTempDir(t, tmpdir, "mount", "")
 
@@ -1414,7 +1555,11 @@ func (c imgBuildTests) testWritableTmpfs(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
 	tmpdir, cleanup := c.tempDir(t, "build-writabletmpfs-test")
-	defer cleanup()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
 
 	// Definition will attempt to touch a file in /var/test during %test.
 	// This would fail without a writable tmpfs.
@@ -1438,14 +1583,18 @@ func (c imgBuildTests) buildLibraryHost(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
 	tmpdir, cleanup := c.tempDir(t, "build-libraryhost-test")
-	defer cleanup()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
 
 	// Library hostname in the From URI
 	// The hostname is invalid, and we should get an error to that effect.
 	definition := "Bootstrap: library\nFrom: library.example.com/test/test/test:latest\n"
 
 	defFile := e2e.RawDefFile(t, tmpdir, strings.NewReader(definition))
-	imagePath := filepath.Join(tmpdir, "image-libaryhost")
+	imagePath := filepath.Join(tmpdir, "image-libraryhost")
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(e2e.RootProfile),
@@ -1455,7 +1604,179 @@ func (c imgBuildTests) buildLibraryHost(t *testing.T) {
 			os.Remove(defFile)
 		}),
 		e2e.ExpectExit(255,
-			e2e.ExpectError(e2e.ContainMatch, "dial tcp: lookup library.example.com: no such host"),
+			e2e.ExpectError(e2e.ContainMatch, "no such host"),
+		),
+	)
+}
+
+// Limited tests to exercise non-root builds with proot and a %post and %test.
+// Does not support distro bootstraps. Build to SIF to ensure no issue,
+// (e.g. perms) when converting the temporary sandbox into SIF.
+func (c imgBuildTests) buildProot(t *testing.T) {
+	require.Command(t, "proot")
+
+	tt := []struct {
+		name      string
+		buildSpec string
+	}{
+		{
+			name:      "Alpine",
+			buildSpec: "testdata/proot_alpine.def",
+		},
+		{
+			name:      "CentOS",
+			buildSpec: "testdata/proot_centos.def",
+		},
+		{
+			name:      "Ubuntu",
+			buildSpec: "testdata/proot_ubuntu.def",
+		},
+		// See: https://github.com/sylabs/singularity/issues/1643
+		{
+			name:      "MultiStage",
+			buildSpec: "testdata/proot_multistage.def",
+		},
+	}
+
+	profiles := []e2e.Profile{e2e.UserProfile}
+	for _, profile := range profiles {
+		profile := profile
+
+		t.Run(profile.String(), func(t *testing.T) {
+			for _, tc := range tt {
+				dn, cleanup := c.tempDir(t, "build-proot")
+				t.Cleanup(func() {
+					if !t.Failed() {
+						cleanup()
+					}
+				})
+
+				imagePath := path.Join(dn, "image.sif")
+
+				// Pass --sandbox because sandboxes take less time to
+				// build by skipping the SIF creation step.
+				args := []string{"--force", imagePath, tc.buildSpec}
+
+				c.env.RunSingularity(
+					t,
+					e2e.AsSubtest(tc.name),
+					e2e.WithProfile(profile),
+					e2e.WithCommand("build"),
+					e2e.WithArgs(args...),
+					e2e.PostRun(func(t *testing.T) {
+						if t.Failed() {
+							return
+						}
+
+						t.Cleanup(func() {
+							if !t.Failed() {
+								os.RemoveAll(imagePath)
+							}
+						})
+						c.env.ImageVerify(t, imagePath)
+					}),
+					e2e.ExpectExit(0),
+				)
+			}
+		})
+	}
+}
+
+// Check that test and runscript that specify a custom #! use it as the interpreter.
+func (c imgBuildTests) buildCustomShebang(t *testing.T) {
+	tmpdir, cleanup := c.tempDir(t, "build-shebang-test")
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
+
+	definition := `Bootstrap: localimage
+From: %s
+
+%%test
+#!/bin/busybox sh
+cat /proc/$$/cmdline
+
+%%runscript
+#!/bin/busybox sh
+cat /proc/$$/cmdline`
+
+	definition = fmt.Sprintf(definition, e2e.BusyboxSIF(t))
+
+	defFile := e2e.RawDefFile(t, tmpdir, strings.NewReader(definition))
+	imagePath := filepath.Join(tmpdir, "image-shebang")
+
+	// build time %test script
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.RootProfile),
+		e2e.WithCommand("build"),
+		e2e.WithArgs("-F", imagePath, defFile),
+		e2e.PostRun(func(t *testing.T) {
+			os.Remove(defFile)
+		}),
+		e2e.ExpectExit(0,
+			e2e.ExpectOutput(e2e.ContainMatch, "/bin/busybox"),
+		),
+	)
+	// runtime %runscript
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("run"),
+		e2e.WithArgs(imagePath),
+		e2e.ExpectExit(0,
+			e2e.ExpectOutput(e2e.ContainMatch, "/bin/busybox"),
+		),
+	)
+	// runtime %test script
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("test"),
+		e2e.WithArgs(imagePath),
+		e2e.ExpectExit(0,
+			e2e.ExpectOutput(e2e.ContainMatch, "/bin/busybox"),
+		),
+	)
+}
+
+// actionNoSetgoups checks that supplementary groups are visible, mapped to
+// nobody, in the container with --fakeroot --no-setgroups.
+func (c imgBuildTests) buildNoSetgroups(t *testing.T) {
+	tmpdir, cleanup := c.tempDir(t, "build-nosetgroups-test")
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup()
+		}
+	})
+
+	definition := `Bootstrap: localimage
+From: %s
+
+%%post
+    groups`
+
+	definition = fmt.Sprintf(definition, e2e.BusyboxSIF(t))
+
+	defFile := e2e.RawDefFile(t, tmpdir, strings.NewReader(definition))
+	imagePath := filepath.Join(tmpdir, "image-nosetgroups")
+
+	// Inside the e2e-tests we will be a member of our user group + single supplementary group.
+	// With `--fakeroot --no-setgroups` we should see these map to:
+	//    root nobody
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.FakerootProfile),
+		e2e.WithCommand("build"),
+		e2e.WithArgs("--no-setgroups", "-F", imagePath, defFile),
+		e2e.PostRun(func(t *testing.T) {
+			os.Remove(defFile)
+			os.Remove(imagePath)
+		}),
+		e2e.ExpectExit(0,
+			e2e.ExpectOutput(e2e.ExactMatch, "root nobody"),
 		),
 	)
 }
@@ -1480,6 +1801,9 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"build with bind mount":           c.buildBindMount,            // build image with bind mount
 		"test with writable tmpfs":        c.testWritableTmpfs,         // build image, using writable tmpfs in the test step
 		"library host":                    c.buildLibraryHost,          // build image with hostname in library URI
+		"proot":                           c.buildProot,                // build image as an unpriv user with proot
+		"customShebang":                   c.buildCustomShebang,        // build image with custom #! in %test and %runscript
+		"no-setgroups":                    c.buildNoSetgroups,          // build with --fakeroot --no-setgroups
 		"issue 3848":                      c.issue3848,                 // https://github.com/hpcng/singularity/issues/3848
 		"issue 4203":                      c.issue4203,                 // https://github.com/sylabs/singularity/issues/4203
 		"issue 4407":                      c.issue4407,                 // https://github.com/sylabs/singularity/issues/4407
@@ -1494,5 +1818,6 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"issue 5435":                      c.issue5435,                 // https://github.com/hpcng/singularity/issues/5435
 		"issue 5668":                      c.issue5668,                 // https://github.com/hpcng/singularity/issues/5435
 		"issue 5690":                      c.issue5690,                 // https://github.com/hpcng/singularity/issues/5690
+		"issue 1273":                      c.issue1273,                 // https://github.com/sylabs/singularity/issues/1273
 	}
 }

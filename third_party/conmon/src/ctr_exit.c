@@ -13,16 +13,10 @@
 #include <glib-unix.h>
 #include <signal.h>
 #include <stdlib.h>
-#include <sys/prctl.h>
 #include <unistd.h>
 
 volatile pid_t container_pid = -1;
 volatile pid_t create_pid = -1;
-
-void on_sigchld(G_GNUC_UNUSED int signal)
-{
-	raise(SIGUSR1);
-}
 
 void on_sig_exit(int signal)
 {
@@ -83,9 +77,13 @@ gboolean check_child_processes_cb(gpointer user_data)
 	return G_SOURCE_REMOVE;
 }
 
-gboolean on_sigusr1_cb(gpointer user_data)
+gboolean on_signalfd_cb(gint fd, G_GNUC_UNUSED GIOCondition condition, gpointer user_data)
 {
 	struct pid_check_data *data = (struct pid_check_data *)user_data;
+
+	/* drop the signal from the signalfd */
+	drop_signal_event(fd);
+
 	check_child_processes(data->pid_to_handler, data->exit_status_cache);
 	return G_SOURCE_CONTINUE;
 }
@@ -151,7 +149,7 @@ void do_exit_command()
 	 * Unfortunately, that also means that any new subchildren from
 	 * still running processes could also get lost
 	 */
-	if (prctl(PR_SET_CHILD_SUBREAPER, 0) != 0) {
+	if (set_subreaper(false) != 0) {
 		nwarn("Failed to disable self subreaper attribute - might wait for indirect children a long time");
 	}
 

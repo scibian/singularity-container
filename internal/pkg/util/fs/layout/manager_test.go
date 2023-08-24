@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -33,11 +33,7 @@ func TestLayout(t *testing.T) {
 		}
 	}
 
-	dir, err := os.MkdirTemp("", "session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	if err := session.AddDir("/etc"); err == nil {
 		t.Errorf("should have failed with uninitialized root path")

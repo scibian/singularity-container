@@ -23,12 +23,12 @@ func getHypervisorArgs(sifImage, bzImage, initramfs, singAction, cliExtra string
 	// Setup some needed variables
 	appendArgs := fmt.Sprintf("root=/dev/ram0 console=ttyS0 quiet singularity_action=%s singularity_arguments=\"%s\"", singAction, cliExtra)
 
-	args := []string{"/usr/libexec/qemu-kvm", "-cpu", "host", "-smp", VMCPU, "-enable-kvm", "-device", "virtio-rng-pci", "-display", "none", "-realtime", "mlock=on", "-hda", sifImage, "-serial", "stdio", "-kernel", bzImage, "-initrd", initramfs, "-m", VMRAM, "-append", appendArgs}
+	args := []string{"/usr/libexec/qemu-kvm", "-cpu", "host", "-smp", vmCPU, "-enable-kvm", "-device", "virtio-rng-pci", "-display", "none", "-realtime", "mlock=on", "-hda", sifImage, "-serial", "stdio", "-kernel", bzImage, "-initrd", initramfs, "-m", vmRAM, "-append", appendArgs}
 
 	return args
 }
 
-func execVM(cmd *cobra.Command, image string, args []string) {
+func execVM(cmd *cobra.Command, image string, containerCmd string, containerArgs []string) {
 	// SIF image we are running
 	sifImage := image
 
@@ -42,8 +42,8 @@ func execVM(cmd *cobra.Command, image string, args []string) {
 		isInternal = true
 	} else {
 		// Get our "action" (run, exec, shell) based on the action script being called
-		singAction = filepath.Base(args[0])
-		cliExtra = strings.Join(args[1:], " ")
+		singAction = filepath.Base(containerCmd)
+		cliExtra = strings.Join(containerArgs, " ")
 	}
 
 	if err := startVM(sifImage, singAction, cliExtra, isInternal); err != nil {
@@ -81,7 +81,7 @@ func startVM(sifImage, singAction, cliExtra string, isInternal bool) error {
 	cmd.Env = os.Environ()
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
-	if VMErr || debug {
+	if vmErr || debug {
 		cmd.Stderr = os.Stderr
 	}
 

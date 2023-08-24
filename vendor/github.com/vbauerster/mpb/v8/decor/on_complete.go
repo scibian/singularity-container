@@ -1,5 +1,10 @@
 package decor
 
+var (
+	_ Decorator = (*onCompleteWrapper)(nil)
+	_ Wrapper   = (*onCompleteWrapper)(nil)
+)
+
 // OnComplete returns decorator, which wraps provided decorator with
 // sole purpose to display provided message on complete event.
 //
@@ -28,12 +33,11 @@ type onCompleteWrapper struct {
 
 func (d *onCompleteWrapper) Decor(s Statistics) string {
 	if s.Completed {
-		wc := d.GetConf()
-		return wc.FormatMsg(d.msg)
+		return d.GetConf().FormatMsg(d.msg)
 	}
 	return d.Decorator.Decor(s)
 }
 
-func (d *onCompleteWrapper) Base() Decorator {
+func (d *onCompleteWrapper) Unwrap() Decorator {
 	return d.Decorator
 }

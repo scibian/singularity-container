@@ -6,7 +6,7 @@ orbs:
 parameters:
   go-version:
     type: string
-    default: '1.19.5'
+    default: '1.20.5'
 
 executors:
   node:
@@ -30,9 +30,6 @@ executors:
   almalinux9:
     docker:
       - image: almalinux:9
-  ubuntu1804:
-    docker:
-      - image: ubuntu:18.04
   ubuntu2004:
     docker:
       - image: ubuntu:20.04
@@ -41,10 +38,14 @@ executors:
       - image: ubuntu:22.04
   golangci-lint:
     docker:
-      - image: golangci/golangci-lint:v1.50
+      - image: golangci/golangci-lint:v1.51.1
   ubuntu-machine:
     machine:
-      image: ubuntu-2004:202111-02
+      image: ubuntu-2204:2022.10.2
+  ubuntu-machine-large:
+    machine:
+      image: ubuntu-2204:2022.10.2
+    resource_class: large
 
 commands:
   update-submodules:
@@ -106,7 +107,30 @@ commands:
             <<# parameters.sudo >>sudo <</ parameters.sudo >>apt-get -q update
       - run:
           name: Install dependencies
-          command: <<# parameters.sudo >>sudo <</ parameters.sudo >>apt-get -q install -y build-essential squashfs-tools libseccomp-dev libssl-dev uuid-dev cryptsetup-bin runc libglib2.0-dev squashfuse
+          command: <<# parameters.sudo >>sudo <</ parameters.sudo >>DEBIAN_FRONTEND=noninteractive apt-get -q install -y build-essential squashfs-tools libseccomp-dev libssl-dev uuid-dev cryptsetup-bin libglib2.0-dev squashfuse dbus-user-session uidmap
+      - run:
+          name: Install proot
+          command: |-
+            <<# parameters.sudo >>sudo <</ parameters.sudo >>curl -L -o /usr/local/bin/proot https://proot.gitlab.io/proot/bin/proot
+            <<# parameters.sudo >>sudo <</ parameters.sudo >>chmod +x /usr/local/bin/proot
+      - run:
+          name: Install crun
+          command: |-
+            <<# parameters.sudo >>sudo <</ parameters.sudo >>curl -L -o /usr/local/bin/crun https://github.com/containers/crun/releases/download/1.6/crun-1.6-linux-amd64
+            <<# parameters.sudo >>sudo <</ parameters.sudo >>chmod +x /usr/local/bin/crun
+
+  cgroups-delegation:
+    steps:
+      - run:
+          name: Enable full cgroups v2 delegation
+          command: |-
+            sudo mkdir -p /etc/systemd/system/user@.service.d
+            cat \<<EOF | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+            [Service]
+            Delegate=cpu cpuset io memory pids
+            EOF
+            sudo systemctl daemon-reload
+
   configure-singularity:
     steps:
       - run:
@@ -147,6 +171,17 @@ jobs:
       - run:
           name: Check Module Tidiness
           command: git diff --exit-code -- go.mod go.sum
+
+  check-test-corpus:
+    executor: golang
+    steps:
+      - checkout
+      - run:
+          name: Generate Certificates
+          command: pushd test/certs/ && go run ./gen_certs.go && popd
+      - run:
+          name: Check Test Corpus Tidiness
+          command: git diff --exit-code --
 
   check-license-dependencies:
     executor: golang
@@ -215,7 +250,7 @@ jobs:
           command: make -C ./builddir integration-test
 
   e2e-tests:
-    executor: ubuntu-machine
+    executor: ubuntu-machine-large
     steps:
       - checkout
       - check-changes
@@ -223,16 +258,28 @@ jobs:
           version: << pipeline.parameters.go-version >>
       - stop-background-apt
       - install-deps-apt
+      - cgroups-delegation
       - update-submodules
       - install-singularity
       - run:
           name: Run E2E tests
           no_output_timeout: 35m
           command: |-
-            export E2E_PARALLEL=8 && \
-            export E2E_DOCKER_USERNAME=$CIRCLE_CI_DOCKER_USERNAME && \
-            export E2E_DOCKER_PASSWORD=$CIRCLE_CI_DOCKER_PASSWORD && \
-            make -C ./builddir e2e-test
+            # CircleCI image sets DBUS_SESSION_BUS_ADDRESS to /dev/null to avoid
+            # issues with headless browser testing tools, but we must have a
+            # working dbus for cgroups tests.
+            systemctl --user daemon-reload
+            systemctl --user start dbus
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID/bus
+            
+            # CircleCI agent starts our command in a cgroup with resource files
+            # owned by root. For rootless cgroup tests, we must be in a cgroup
+            # owned by ourselves.
+            systemd-run --user --scope sh -c ' \
+              export E2E_PARALLEL=8 && \
+              export E2E_DOCKER_USERNAME=$CIRCLE_CI_DOCKER_USERNAME && \
+              export E2E_DOCKER_PASSWORD=$CIRCLE_CI_DOCKER_PASSWORD && \
+              make -C ./builddir e2e-test'
       - store_artifacts:
           path: builddir/e2e-cmd-report.txt
 
@@ -306,6 +353,7 @@ workflows:
     jobs:
       - lint-markdown
       - check-go-mod
+      - check-test-corpus
       - check-license-dependencies
       - build-source-alpine
       - lint-source
@@ -319,15 +367,37 @@ workflows:
           filters:
             branches:
               only:
-                - master
+                - main
                 - /release-.*/
 
       - build-deb:
           matrix:
             parameters:
-              e: ["ubuntu1804", "ubuntu2004", "ubuntu2204"]
+              e: ["ubuntu2004", "ubuntu2204"]
           filters:
             branches:
               only:
-                - master
+                - main
                 - /release-.*/
+
+  tagged-release:
+    jobs:
+      - build-rpm:
+          matrix:
+            parameters:
+              e: ["centos7", "almalinux8", "almalinux9"]
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /v[0-9]+(\.[0-9]+)*(-.*)*/
+
+      - build-deb:
+          matrix:
+            parameters:
+              e: ["ubuntu2004", "ubuntu2204"]
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /v[0-9]+(\.[0-9]+)*(-.*)*/

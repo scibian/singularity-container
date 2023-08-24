@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -24,6 +24,7 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/cache"
 	"github.com/sylabs/singularity/internal/pkg/remote/endpoint"
 	fakerootConfig "github.com/sylabs/singularity/internal/pkg/runtime/engine/fakeroot/config"
+	"github.com/sylabs/singularity/internal/pkg/util/bin"
 	"github.com/sylabs/singularity/internal/pkg/util/fs"
 	"github.com/sylabs/singularity/internal/pkg/util/interactive"
 	"github.com/sylabs/singularity/internal/pkg/util/starter"
@@ -79,10 +80,11 @@ func fakerootExec(cmdArgs []string) {
 	os.Setenv("_CONTAINERS_ROOTLESS_UID", strconv.Itoa(os.Getuid()))
 
 	engineConfig := &fakerootConfig.EngineConfig{
-		Args:     args,
-		Envs:     os.Environ(),
-		Home:     user.Dir,
-		BuildEnv: true,
+		Args:        args,
+		Envs:        os.Environ(),
+		Home:        user.Dir,
+		BuildEnv:    true,
+		NoSetgroups: buildArgs.noSetgroups,
 	}
 
 	cfg := &config.Common{
@@ -146,6 +148,18 @@ func runBuild(cmd *cobra.Command, args []string) {
 
 	dest := args[0]
 	spec := args[1]
+
+	// Non-remote build with def file as source
+	rootNeeded := !buildArgs.remote && fs.IsFile(spec) && !isImage(spec)
+
+	if rootNeeded && syscall.Getuid() != 0 && !buildArgs.fakeroot {
+		prootPath, err := bin.FindBin("proot")
+		if err != nil {
+			sylog.Fatalf("--remote, --fakeroot, or the proot command are required to build this source as a non-root user")
+		}
+		os.Setenv("SINGULARITY_PROOT", prootPath)
+		sylog.Infof("Using proot to build unprivileged. Not all builds are supported. If build fails, use --remote or --fakeroot.")
+	}
 
 	// check if target collides with existing file
 	if err := checkBuildTarget(dest); err != nil {
@@ -291,7 +305,7 @@ func runBuildLocal(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 		if err != nil {
 			sylog.Fatalf("While handling encryption material: %v", err)
 		}
-		keyInfo = &k
+		keyInfo = k
 	} else {
 		_, passphraseEnvOK := os.LookupEnv("SINGULARITY_ENCRYPTION_PASSPHRASE")
 		_, pemPathEnvOK := os.LookupEnv("SINGULARITY_ENCRYPTION_PEM_PATH")
@@ -303,10 +317,6 @@ func runBuildLocal(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 	imgCache := getCacheHandle(cache.Config{Disable: disableCache})
 	if imgCache == nil {
 		sylog.Fatalf("Failed to create an image cache handle")
-	}
-
-	if syscall.Getuid() != 0 && !buildArgs.fakeroot && fs.IsFile(spec) && !isImage(spec) {
-		sylog.Fatalf("You must be the root user, however you can use --remote or --fakeroot to build from a Singularity recipe file")
 	}
 
 	err := checkSections()
@@ -392,6 +402,7 @@ func runBuildLocal(ctx context.Context, cmd *cobra.Command, dst, spec string) {
 				LibraryAuthToken:  authToken,
 				KeyServerOpts:     ko,
 				DockerAuthConfig:  authConf,
+				DockerDaemonHost:  dockerHost,
 				EncryptionKeyInfo: keyInfo,
 				FixPerms:          buildArgs.fixPerms,
 				SandboxTarget:     sandboxTarget,
@@ -439,7 +450,7 @@ func isImage(spec string) bool {
 // passed to the crypt package for handling.
 // This handles the SINGULARITY_ENCRYPTION_PASSPHRASE/PEM_PATH envvars outside of cobra in order to
 // enforce the unique flag/env precedence for the encryption flow
-func getEncryptionMaterial(cmd *cobra.Command) (cryptkey.KeyInfo, error) {
+func getEncryptionMaterial(cmd *cobra.Command) (*cryptkey.KeyInfo, error) {
 	passphraseFlag := cmd.Flags().Lookup("passphrase")
 	PEMFlag := cmd.Flags().Lookup("pem-path")
 	passphraseEnv, passphraseEnvOK := os.LookupEnv("SINGULARITY_ENCRYPTION_PASSPHRASE")
@@ -447,7 +458,7 @@ func getEncryptionMaterial(cmd *cobra.Command) (cryptkey.KeyInfo, error) {
 
 	// checks for no flags/envvars being set
 	if !(PEMFlag.Changed || pemPathEnvOK || passphraseFlag.Changed || passphraseEnvOK) {
-		sylog.Fatalf("Unable to use container encryption. Must supply encryption material through environment variables or flags.")
+		return nil, nil
 	}
 
 	// order of precedence:
@@ -480,19 +491,19 @@ func getEncryptionMaterial(cmd *cobra.Command) (cryptkey.KeyInfo, error) {
 			}
 		}
 
-		return cryptkey.KeyInfo{Format: cryptkey.PEM, Path: encryptionPEMPath}, nil
+		return &cryptkey.KeyInfo{Format: cryptkey.PEM, Path: encryptionPEMPath}, nil
 	}
 
 	if passphraseFlag.Changed {
 		sylog.Verbosef("Using interactive passphrase entry for encrypted container")
 		passphrase, err := interactive.AskQuestionNoEcho("Enter encryption passphrase: ")
 		if err != nil {
-			return cryptkey.KeyInfo{}, err
+			return nil, err
 		}
 		if passphrase == "" {
 			sylog.Fatalf("Cannot encrypt container with empty passphrase")
 		}
-		return cryptkey.KeyInfo{Format: cryptkey.Passphrase, Material: passphrase}, nil
+		return &cryptkey.KeyInfo{Format: cryptkey.Passphrase, Material: passphrase}, nil
 	}
 
 	if pemPathEnvOK {
@@ -506,13 +517,13 @@ func getEncryptionMaterial(cmd *cobra.Command) (cryptkey.KeyInfo, error) {
 		}
 
 		sylog.Verbosef("Using pem path environment variable for encrypted container")
-		return cryptkey.KeyInfo{Format: cryptkey.PEM, Path: pemPathEnv}, nil
+		return &cryptkey.KeyInfo{Format: cryptkey.PEM, Path: pemPathEnv}, nil
 	}
 
 	if passphraseEnvOK {
 		sylog.Verbosef("Using passphrase environment variable for encrypted container")
-		return cryptkey.KeyInfo{Format: cryptkey.Passphrase, Material: passphraseEnv}, nil
+		return &cryptkey.KeyInfo{Format: cryptkey.Passphrase, Material: passphraseEnv}, nil
 	}
 
-	return cryptkey.KeyInfo{}, nil
+	return nil, nil
 }

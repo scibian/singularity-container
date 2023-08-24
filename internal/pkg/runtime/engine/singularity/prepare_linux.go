@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -8,6 +8,7 @@ package singularity
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,7 +177,7 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 		return err
 	}
 
-	if sendFd || e.EngineConfig.File.ImageDriver != "" {
+	if sendFd || e.EngineConfig.File.ImageDriver != "" { // nolint:staticcheck
 		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 		if err != nil {
 			return fmt.Errorf("failed to create socketpair to pass file descriptor: %s", err)
@@ -597,6 +598,7 @@ func (e *EngineOperations) prepareContainerConfig(starterConfig *starter.Config)
 
 		starterConfig.SetHybridWorkflow(true)
 		starterConfig.SetAllowSetgroups(true)
+		starterConfig.SetNoSetgroups(e.EngineConfig.GetNoSetgroups())
 
 		starterConfig.SetTargetUID(0)
 		starterConfig.SetTargetGID([]int{0})
@@ -903,6 +905,10 @@ func (e *EngineOperations) prepareInstanceJoinConfig(starterConfig *starter.Conf
 		e.EngineConfig.OciConfig.Linux.Seccomp = instanceEngineConfig.OciConfig.Linux.Seccomp
 	}
 
+	// Note - in non-root flow without userns the CLI process joined the cgroup
+	// early in execStarter because we don't have permission to move a parent
+	// process into the cgroup here. In that case, this code is a no-op that
+	// just enforces that actually happened.
 	if file.Cgroup {
 		sylog.Debugf("Adding process to instance cgroup")
 		ppid := os.Getppid()
@@ -1019,7 +1025,7 @@ func (e *EngineOperations) setSessionLayer(img *image.Image) error {
 
 	// overlay is handled by the image driver
 	if overlayDriver {
-		if e.EngineConfig.File.ImageDriver == "" {
+		if e.EngineConfig.File.ImageDriver == "" { // nolint:staticcheck
 			return fmt.Errorf("you need to specify an image driver with 'enable overlay = driver'")
 		}
 		if !writableImage || hasSIFOverlay {
@@ -1034,8 +1040,7 @@ func (e *EngineOperations) setSessionLayer(img *image.Image) error {
 	// https://github.com/hpcng/singularity/issues/5315
 	userNS, _ := namespaces.IsInsideUserNamespace(os.Getpid())
 
-	// NEED FIX: on ubuntu until 4.15 kernel it was possible to mount overlay
-	// with the current workflow, since 4.18 we get an operation not permitted
+	// Check for explicit user namespace request
 	if !userNS {
 		for _, ns := range e.EngineConfig.OciConfig.Linux.Namespaces {
 			if ns.Type == specs.UserNamespace {
@@ -1045,7 +1050,21 @@ func (e *EngineOperations) setSessionLayer(img *image.Image) error {
 		}
 	}
 
-	if userNS {
+	// Check for kernel rootless overlay support if userNS in effect
+	rootlessOverlay := false
+	useOverlay := e.EngineConfig.File.EnableOverlay == "yes" || e.EngineConfig.File.EnableOverlay == "try"
+	if userNS && useOverlay {
+		err := overlay.CheckRootless()
+		if err == nil {
+			rootlessOverlay = true
+		}
+		if err != nil && err != overlay.ErrNoRootlessOverlay {
+			sylog.Warningf("While checking for rootless overlay support: %s", err)
+		}
+	}
+
+	// If rootless overlay is not supported for userns, we can only try underlay.
+	if userNS && !rootlessOverlay {
 		if !e.EngineConfig.File.EnableUnderlay {
 			sylog.Debugf("Not attempting to use underlay with user namespace: disabled by configuration ('enable underlay = no')")
 			return nil
@@ -1059,8 +1078,9 @@ func (e *EngineOperations) setSessionLayer(img *image.Image) error {
 		return nil
 	}
 
-	// starter was forced to load overlay module, now check if there
-	// is an overlay entry in /proc/filesystems
+	// Now check if there is an overlay entry in /proc/filesystems
+	// Setuid starter will force module load.
+	// Rootless overlay mount check will also force module load.
 	if has, _ := proc.HasFilesystem("overlay"); has {
 		sylog.Debugf("Overlay seems supported and allowed by kernel")
 		switch e.EngineConfig.File.EnableOverlay {
@@ -1200,7 +1220,7 @@ func (e *EngineOperations) loadImages(starterConfig *starter.Config) error {
 				}
 			}
 
-			if ok, err := ecl.ShouldRunFp(img.File, kr); err != nil {
+			if ok, err := ecl.ShouldRunFp(context.TODO(), img.File, kr); err != nil {
 				return fmt.Errorf("while checking container image with ECL: %s", err)
 			} else if !ok {
 				return errors.New("image prohibited by ECL")

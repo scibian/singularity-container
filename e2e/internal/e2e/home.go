@@ -1,4 +1,6 @@
 // Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -16,14 +18,6 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
 	"github.com/sylabs/singularity/internal/pkg/util/user"
 )
-
-// rpmMacrosContent contains required content to
-// place in $HOME/.rpmmacros file for yum bootstrap
-// build
-var rpmMacrosContent = `
-%_var /var
-%_dbpath %{_var}/lib/rpm
-`
 
 // SetupHomeDirectories creates temporary home directories for
 // privileged and unprivileged users and bind mount those directories
@@ -127,52 +121,5 @@ func SetupHomeDirectories(t *testing.T) {
 			err = errors.Wrapf(err, "change working directory to %s", cwd)
 			t.Fatalf("failed to change working directory: %+v", err)
 		}
-
-		// create .rpmmacros files for yum bootstrap builds
-		macrosFile := filepath.Join(unprivSessionHome, ".rpmmacros")
-		if err := os.WriteFile(macrosFile, []byte(rpmMacrosContent), 0o444); err != nil {
-			err = errors.Wrapf(err, "writing macros file at %s", macrosFile)
-			t.Fatalf("could not write macros file: %+v", err)
-		}
-		macrosFile = filepath.Join(privSessionHome, ".rpmmacros")
-		if err := os.WriteFile(macrosFile, []byte(rpmMacrosContent), 0o444); err != nil {
-			err = errors.Wrapf(err, "writing macros file at %s", macrosFile)
-			t.Fatalf("could not write macros file: %+v", err)
-		}
 	})(t)
-}
-
-// shadowInstanceDirectory creates a temporary instances directory which
-// will be bound on top of current user home directory in order to execute
-// a "shadow" instance (eg: docker registry).
-func shadowInstanceDirectory(t *testing.T, env TestEnv) func(t *testing.T) {
-	u := CurrentUser(t)
-
-	// $TESTDIR/.singularity directory
-	fakeSingularityDir := filepath.Join(env.TestDir, ".singularity")
-	// $TESTDIR/.singularity/instances symlink
-	fakeInstanceSymlink := filepath.Join(fakeSingularityDir, "instances")
-
-	// create directory $TESTDIR/.singularity
-	if err := os.Mkdir(fakeSingularityDir, 0o755); err != nil && !os.IsExist(err) {
-		err = errors.Wrapf(err, "create temporary singularity data directory at %q", fakeSingularityDir)
-		t.Fatalf("failed to create fake singularity directory: %+v", err)
-	}
-	// mount $TESTDIR on top of $HOME
-	if err := syscall.Mount(env.TestDir, u.Dir, "", syscall.MS_BIND, ""); err != nil {
-		err = errors.Wrapf(err, "mounting temporary singularity data directory from %q to %q", env.TestDir, u.Dir)
-		t.Fatalf("failed to mount directory: %+v", err)
-	}
-	// create symlink $HOME/.singularity/instances -> $TESTDIR/.singularity
-	if err := os.Symlink(fakeSingularityDir, fakeInstanceSymlink); err != nil && !os.IsExist(err) {
-		err = errors.Wrapf(err, "symlink temporary singularity data directory from %q to %q", fakeSingularityDir, fakeInstanceSymlink)
-		t.Fatalf("failed to create symlink: %+v", err)
-	}
-
-	return func(t *testing.T) {
-		if err := syscall.Unmount(u.Dir, syscall.MNT_DETACH); err != nil {
-			err = errors.Wrapf(err, "unmount directory %q", u.Dir)
-			t.Fatalf("failed to unmount directory: %+v", err)
-		}
-	}
 }

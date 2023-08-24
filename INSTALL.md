@@ -10,7 +10,7 @@ For full instructions on installation, including building RPMs, please check the
 
 You must first install development tools and libraries to your host.
 
-On Debian-based systems, including Ubuntu:
+On Debian-based systems, including Ubuntu 20.04 and above:
 
 ```sh
 # Ensure repositories are up-to-date
@@ -23,10 +23,25 @@ sudo apt-get install -y \
     pkg-config \
     squashfs-tools \
     cryptsetup \
-    runc
+    crun \
+    uidmap
 ```
 
-On CentOS/RHEL:
+On CentOS/RHEL 8 and above:
+
+```sh
+# Install basic tools for compiling
+sudo yum groupinstall -y 'Development Tools'
+# Install RPM packages for dependencies
+sudo yum install -y \
+    libseccomp-devel \
+    glib2-devel \
+    squashfs-tools \
+    cryptsetup \
+    crun
+```
+
+On CentOS/RHEL 7:
 
 ```sh
 # Install basic tools for compiling
@@ -40,8 +55,8 @@ sudo yum install -y \
     runc
 ```
 
-_Note - `runc` can be ommitted if you will not use the `singularity oci`
-commands._
+_Note - `crun` / `runc` can be omitted if you will not use the `singularity oci`
+commands, or the `--oci` execution mode._
 
 ## Install Go
 
@@ -56,7 +71,7 @@ _**NOTE:** if you are updating Go from a older version, make sure you remove
 `/usr/local/go` before reinstalling it._
 
 ```sh
-export VERSION=1.19.5 OS=linux ARCH=amd64  # change this as you need
+export VERSION=1.20.5 OS=linux ARCH=amd64  # change this as you need
 
 wget -O /tmp/go${VERSION}.${OS}-${ARCH}.tar.gz \
   https://dl.google.com/go/go${VERSION}.${OS}-${ARCH}.tar.gz
@@ -114,11 +129,11 @@ cd singularity
 By default your clone will be on the `main` branch which is where development
 of SingularityCE happens. To build a specific version of SingularityCE, check
 out a [release tag](https://github.com/sylabs/singularity/tags) before
-compiling. E.g. to build the 3.10.5 release checkout the
-`v3.10.5` tag:
+compiling. E.g. to build the 3.11.4 release, checkout the
+`v3.11.4` tag:
 
 ```sh
-git checkout --recurse-submodules v3.10.5
+git checkout --recurse-submodules v3.11.4
 ```
 
 ## Compiling SingularityCE
@@ -169,7 +184,7 @@ build and install the RPM like this:
 <!-- markdownlint-disable MD013 -->
 
 ```sh
-export VERSION=3.10.5  # this is the singularity version, change as you need
+export VERSION=3.11.4  # this is the singularity version, change as you need
 
 # Fetch the source
 wget https://github.com/sylabs/singularity/releases/download/v${VERSION}/singularity-ce-${VERSION}.tar.gz

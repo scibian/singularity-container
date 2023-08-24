@@ -7,9 +7,11 @@ package docker
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sylabs/singularity/e2e/internal/e2e"
@@ -71,18 +73,16 @@ func (c ctx) issue4943(t *testing.T) {
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs("--force", "/dev/null", image),
+		e2e.WithArgs("--disable-cache", "--force", "/dev/null", image),
 		e2e.ExpectExit(0),
 	)
 }
 
 func (c ctx) issue5172(t *testing.T) {
-	e2e.EnsureRegistry(t)
-
 	u := e2e.UserProfile.HostUser(t)
 
 	// create $HOME/.config/containers/registries.conf
-	regImage := "docker://localhost:5000/my-busybox"
+	regImage := "docker://" + c.env.TestRegistry + "/my-busybox"
 	regDir := filepath.Join(u.Dir, ".config", "containers")
 	regFile := filepath.Join(regDir, "registries.conf")
 	imagePath := filepath.Join(c.env.TestDir, "issue-5172")
@@ -103,7 +103,7 @@ func (c ctx) issue5172(t *testing.T) {
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs("--sandbox", imagePath, regImage),
+		e2e.WithArgs("--disable-cache", "--sandbox", imagePath, regImage),
 		e2e.PostRun(func(t *testing.T) {
 			if !t.Failed() {
 				os.RemoveAll(imagePath)
@@ -116,7 +116,7 @@ func (c ctx) issue5172(t *testing.T) {
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("pull"),
-		e2e.WithArgs(imagePath, regImage),
+		e2e.WithArgs("--disable-cache", imagePath, regImage),
 		e2e.PostRun(func(t *testing.T) {
 			if !t.Failed() {
 				os.RemoveAll(imagePath)
@@ -158,12 +158,13 @@ From: continuumio/miniconda3:latest
 		t.Fatalf("Unable to create test definition file: %v", err)
 	}
 
+	// Run build with cache disabled, so we can be a parallel test (we are slooow!)
 	c.env.RunSingularity(
 		t,
 		e2e.AsSubtest("build"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs(imagePath, defFile),
+		e2e.WithArgs("--disable-cache", imagePath, defFile),
 		e2e.ExpectExit(0),
 	)
 	// An exec of `conda info` in the container should show environment active, no errors.
@@ -179,4 +180,122 @@ From: continuumio/miniconda3:latest
 			e2e.ExpectError(e2e.ExactMatch, ""),
 		),
 	)
+}
+
+// https://github.com/sylabs/singularity/issues/1704 Ensure that trailing "n"s
+// aren't lopped off by the internal sandbox inspect call that is part of the
+// SIF-building process.
+func (c ctx) issue1704(t *testing.T) {
+	tmpDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "issue1704-", "")
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup(t)
+		}
+	})
+
+	defPath := filepath.Join("..", "test", "defs", "issue1704.def")
+	sifPath := filepath.Join(tmpDir, "issue1704.sif")
+	bytes, err := os.ReadFile(defPath)
+	if err != nil {
+		t.Fatalf("could not read contents of def file %q: %s", defPath, err)
+	}
+	defFileContents := string(bytes)
+
+	c.env.RunSingularity(
+		t,
+		e2e.AsSubtest("Build"),
+		e2e.WithProfile(e2e.RootProfile),
+		e2e.WithCommand("build"),
+		e2e.WithArgs(sifPath, defPath),
+		e2e.ExpectExit(0),
+	)
+
+	if t.Failed() {
+		return
+	}
+
+	c.env.RunSingularity(
+		t,
+		e2e.AsSubtest("Inspect"),
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("inspect"),
+		e2e.WithArgs("-d", sifPath),
+		e2e.ExpectExit(0, e2e.ExpectOutput(e2e.ContainMatch, strings.TrimSpace(defFileContents))),
+	)
+}
+
+// https://github.com/sylabs/singularity/issues/1286
+// Ensure the bare docker://hello-world image runs in all modes
+func (c ctx) issue1286(t *testing.T) {
+	for _, profile := range e2e.AllProfiles() {
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(profile.String()),
+			e2e.WithProfile(profile),
+			e2e.WithCommand("run"),
+			e2e.WithArgs("docker://hello-world"),
+			e2e.ExpectExit(0,
+				e2e.ExpectOutput(e2e.ContainMatch, "Hello from Docker!"),
+			),
+		)
+	}
+}
+
+// https://github.com/sylabs/singularity/issues/1528
+// Check that host's TERM value gets passed to OCI container.
+func (c ctx) issue1528(t *testing.T) {
+	e2e.EnsureOCIArchive(t, c.env)
+
+	imageRef := "oci-archive:" + c.env.OCIArchivePath
+
+	_, wasHostTermSet := os.LookupEnv("TERM")
+	if !wasHostTermSet {
+		if err := os.Setenv("TERM", "xterm"); err != nil {
+			t.Errorf("could not set TERM environment variable on host")
+		}
+		defer os.Unsetenv("TERM")
+	}
+
+	singEnvTermPrevious, wasHostSingEnvTermSet := os.LookupEnv("SINGULARITYENV_TERM")
+	if wasHostSingEnvTermSet {
+		if err := os.Unsetenv("SINGULARITYENV_TERM"); err != nil {
+			t.Errorf("could not unset SINGULARITYENV_TERM environment variable on host")
+		}
+		defer os.Setenv("SINGULARITYENV_TERM", singEnvTermPrevious)
+	} else {
+		defer os.Unsetenv("SINGULARITYENV_TERM")
+	}
+
+	envTerm := os.Getenv("TERM")
+	wantTermString := fmt.Sprintf("TERM=%s\n", envTerm)
+	for _, profile := range e2e.OCIProfiles {
+		t.Run(profile.String(), func(t *testing.T) {
+			c.env.RunSingularity(
+				t,
+				e2e.AsSubtest("issue1528"),
+				e2e.WithProfile(profile),
+				e2e.WithCommand("exec"),
+				e2e.WithArgs(imageRef, "env"),
+				e2e.ExpectExit(0, e2e.ExpectOutput(e2e.ContainMatch, wantTermString)),
+			)
+		})
+	}
+
+	singEnvTerm := envTerm + "testsuffix"
+	if err := os.Setenv("SINGULARITYENV_TERM", singEnvTerm); err != nil {
+		t.Errorf("could not set SINGULARITYENV_TERM environment variable on host")
+	}
+	wantTermString = fmt.Sprintf("TERM=%s\n", singEnvTerm)
+	for _, profile := range e2e.OCIProfiles {
+		t.Run(profile.String(), func(t *testing.T) {
+			c.env.RunSingularity(
+				t,
+				e2e.AsSubtest("issue1528override"),
+				e2e.WithProfile(profile),
+				e2e.WithCommand("exec"),
+				e2e.WithArgs(imageRef, "env"),
+				e2e.ExpectExit(0, e2e.ExpectOutput(e2e.ContainMatch, wantTermString)),
+			)
+		})
+	}
 }

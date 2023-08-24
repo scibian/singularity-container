@@ -6,9 +6,14 @@
 package cli
 
 import (
+	"errors"
+	"os"
+	"os/exec"
+
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
+	"github.com/sylabs/singularity/internal/pkg/runtime/launcher/oci"
 	"github.com/sylabs/singularity/pkg/cmdline"
 	"github.com/sylabs/singularity/pkg/sylog"
 )
@@ -96,12 +101,22 @@ var ociUpdateFromFileFlag = cmdline.Flag{
 	EnvKeys:      []string{"FROM_FILE"},
 }
 
+// --writable-tmpfs (run-wrapped internal option)
+var ociWritableTmpfs = cmdline.Flag{
+	ID:           "ociWritableTmpfs",
+	Value:        &ociArgs.WritableTmpfs,
+	DefaultValue: false,
+	Name:         "writable-tmpfs",
+	Usage:        "Enable writable-tmpfs for oci run-wrapped",
+}
+
 func init() {
 	addCmdInit(func(cmdManager *cmdline.CommandManager) {
 		cmdManager.RegisterCmd(OciCmd)
 		cmdManager.RegisterSubCmd(OciCmd, OciStartCmd)
 		cmdManager.RegisterSubCmd(OciCmd, OciCreateCmd)
 		cmdManager.RegisterSubCmd(OciCmd, OciRunCmd)
+		cmdManager.RegisterSubCmd(OciCmd, OciRunWrappedCmd)
 		cmdManager.RegisterSubCmd(OciCmd, OciDeleteCmd)
 		cmdManager.RegisterSubCmd(OciCmd, OciKillCmd)
 		cmdManager.RegisterSubCmd(OciCmd, OciStateCmd)
@@ -113,7 +128,7 @@ func init() {
 		cmdManager.RegisterSubCmd(OciCmd, OciMountCmd)
 		cmdManager.RegisterSubCmd(OciCmd, OciUmountCmd)
 
-		cmdManager.SetCmdGroup("create_run", OciCreateCmd, OciRunCmd)
+		cmdManager.SetCmdGroup("create_run", OciCreateCmd, OciRunCmd, OciRunWrappedCmd)
 		createRunCmd := cmdManager.GetCmdGroup("create_run")
 
 		cmdManager.RegisterFlagForCmd(&ociBundleFlag, createRunCmd...)
@@ -123,6 +138,8 @@ func init() {
 		cmdManager.RegisterFlagForCmd(&ociKillForceFlag, OciKillCmd)
 		cmdManager.RegisterFlagForCmd(&ociKillSignalFlag, OciKillCmd)
 		cmdManager.RegisterFlagForCmd(&ociUpdateFromFileFlag, OciUpdateCmd)
+
+		cmdManager.RegisterFlagForCmd(&ociWritableTmpfs, OciRunWrappedCmd)
 	})
 }
 
@@ -149,6 +166,10 @@ var OciRunCmd = &cobra.Command{
 	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := singularity.OciRun(cmd.Context(), args[0], &ociArgs); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				os.Exit(exitErr.ExitCode())
+			}
 			sylog.Fatalf("%s", err)
 		}
 	},
@@ -156,6 +177,25 @@ var OciRunCmd = &cobra.Command{
 	Short:   docs.OciRunShort,
 	Long:    docs.OciRunLong,
 	Example: docs.OciRunExample,
+}
+
+// OciRunWrappedCmd is for internal OCI launcher use.
+// Executes an oci run, wrapped with preparation / cleanup code.
+var OciRunWrappedCmd = &cobra.Command{
+	Args:                  cobra.ExactArgs(1),
+	DisableFlagsInUseLine: true,
+	PreRun:                CheckRoot,
+	Run: func(cmd *cobra.Command, args []string) {
+		if err := singularity.OciRunWrapped(cmd.Context(), args[0], &ociArgs); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				os.Exit(exitErr.ExitCode())
+			}
+			sylog.Fatalf("%s", err)
+		}
+	},
+	Use:    docs.OciRunWrappedUse,
+	Hidden: true,
 }
 
 // OciStartCmd represents oci start command.
@@ -237,7 +277,7 @@ var OciAttachCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
 	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := singularity.OciAttach(cmd.Context(), args[0]); err != nil {
+		if err := oci.Attach(cmd.Context(), args[0]); err != nil {
 			sylog.Fatalf("%s", err)
 		}
 	},
@@ -317,7 +357,7 @@ var OciMountCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
 	PreRun:                CheckRoot,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := singularity.OciMount(args[0], args[1]); err != nil {
+		if err := singularity.OciMount(cmd.Context(), args[0], args[1]); err != nil {
 			sylog.Fatalf("%s", err)
 		}
 	},

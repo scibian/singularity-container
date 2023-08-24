@@ -20,6 +20,7 @@ func (c ctx) testOverlayCreate(t *testing.T) {
 	require.Filesystem(t, "overlay")
 	require.MkfsExt3(t)
 	e2e.EnsureImage(t, c.env)
+	busyboxSIF := e2e.BusyboxSIF(t)
 
 	tmpDir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "overlay", "")
 	defer cleanup(t)
@@ -29,6 +30,7 @@ func (c ctx) testOverlayCreate(t *testing.T) {
 
 	sifSignedImage := filepath.Join(tmpDir, "signed.sif")
 	sifImage := filepath.Join(tmpDir, "unsigned.sif")
+	ext3SparseImage := filepath.Join(tmpDir, "image.sparse.ext3")
 	ext3Image := filepath.Join(tmpDir, "image.ext3")
 	ext3DirImage := filepath.Join(tmpDir, "imagedir.ext3")
 
@@ -37,7 +39,7 @@ func (c ctx) testOverlayCreate(t *testing.T) {
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs(sifSignedImage, "library://busybox:1.31.1"),
+		e2e.WithArgs(sifSignedImage, busyboxSIF),
 		e2e.ExpectExit(0),
 	)
 
@@ -64,7 +66,7 @@ func (c ctx) testOverlayCreate(t *testing.T) {
 		t,
 		e2e.WithProfile(e2e.UserProfile),
 		e2e.WithCommand("build"),
-		e2e.WithArgs(sifImage, "library://busybox:1.31.1"),
+		e2e.WithArgs(sifImage, busyboxSIF),
 		e2e.ExpectExit(0),
 	)
 
@@ -83,6 +85,13 @@ func (c ctx) testOverlayCreate(t *testing.T) {
 			command: "overlay",
 			args:    []string{"create", "--size", "1", ext3Image},
 			exit:    255,
+		},
+		{
+			name:    "create ext3 sparse overlay image",
+			profile: e2e.UserProfile,
+			command: "overlay",
+			args:    []string{"create", "--size", "128", "--sparse", ext3SparseImage},
+			exit:    0,
 		},
 		{
 			name:    "create ext3 overlay image",
@@ -153,7 +162,7 @@ func (c ctx) testOverlayCreate(t *testing.T) {
 			t,
 			e2e.WithProfile(e2e.RootProfile),
 			e2e.WithCommand("build"),
-			e2e.WithArgs("--encrypt", sifEncryptedImage, "library://busybox:1.31.1"),
+			e2e.WithArgs("--encrypt", sifEncryptedImage, busyboxSIF),
 			e2e.WithEnv(append(os.Environ(), passphraseEnvVar)),
 			e2e.ExpectExit(0),
 		)

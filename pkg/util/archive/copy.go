@@ -1,4 +1,4 @@
-// Copyright (c) 2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2021-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -21,7 +21,7 @@ import (
 // cannot modify to pass a context.
 //
 // nolint:contextcheck
-func CopyWithTar(src, dst string) error {
+func CopyWithTar(src, dst string, disableIDMapping bool) error {
 	ar := da.NewDefaultArchiver()
 
 	// If we are running unprivileged, then squash uid / gid as necessary.
@@ -30,14 +30,14 @@ func CopyWithTar(src, dst string) error {
 	// ownership to be preserved.
 	euid := os.Geteuid()
 	egid := os.Getgid()
-	if euid != 0 || egid != 0 {
+	if (euid != 0 || egid != 0) && !disableIDMapping {
 		sylog.Debugf("Using unprivileged CopyWithTar (uid=%d, gid=%d)", euid, egid)
 		// The docker CopytWithTar function assumes it should create the top-level of dst as the
 		// container root user. If we are unprivileged this means setting up an ID mapping
 		// from UID/GID 0 to our host UID/GID.
-		ar.IDMapping = idtools.NewIDMappingsFromMaps(
+		ar.IDMapping = idtools.IdentityMapping{
 			// Single entry mapping of container root (0) to current uid only
-			[]idtools.IDMap{
+			UIDMaps: []idtools.IDMap{
 				{
 					ContainerID: 0,
 					HostID:      euid,
@@ -45,14 +45,14 @@ func CopyWithTar(src, dst string) error {
 				},
 			},
 			// Single entry mapping of container root (0) to current gid only
-			[]idtools.IDMap{
+			GIDMaps: []idtools.IDMap{
 				{
 					ContainerID: 0,
 					HostID:      egid,
 					Size:        1,
 				},
 			},
-		)
+		}
 		// Actual extraction of files needs to be *always* squashed to our current uid & gid.
 		// This requires clearing the IDMaps, and setting a forced UID/GID with ChownOpts for
 		// the lower level Untar func called by the archiver.
@@ -61,8 +61,7 @@ func CopyWithTar(src, dst string) error {
 			GID: egid,
 		}
 		ar.Untar = func(tarArchive io.Reader, dest string, options *da.TarOptions) error {
-			options.UIDMaps = nil
-			options.GIDMaps = nil
+			options.IDMap = idtools.IdentityMapping{}
 			options.ChownOpts = eIdentity
 			return da.Untar(tarArchive, dest, options)
 		}

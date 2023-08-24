@@ -1,4 +1,6 @@
-// Copyright (c) 2019-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2023, Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -95,7 +97,11 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 
 	g.AddOrReplaceLinuxNamespace(specs.UserNamespace, "")
 	g.AddOrReplaceLinuxNamespace(specs.MountNamespace, "")
-	g.AddOrReplaceLinuxNamespace(specs.PIDNamespace, "")
+
+	// If we enter a PID NS in the --oci action -> oci run flow, then crun / runc will fail.
+	if !e.EngineConfig.NoPIDNS {
+		g.AddOrReplaceLinuxNamespace(specs.PIDNamespace, "")
+	}
 
 	uid := uint32(os.Getuid())
 	gid := uint32(os.Getgid())
@@ -131,6 +137,7 @@ func (e *EngineOperations) PrepareConfig(starterConfig *starter.Config) error {
 
 	starterConfig.SetHybridWorkflow(true)
 	starterConfig.SetAllowSetgroups(true)
+	starterConfig.SetNoSetgroups(e.EngineConfig.NoSetgroups)
 
 	starterConfig.SetTargetUID(0)
 	starterConfig.SetTargetGID([]int{0})
@@ -159,12 +166,75 @@ func (e *EngineOperations) CreateContainer(context.Context, int, net.Conn) error
 // set the return value to 0 for mknod and mknodat syscalls. It
 // allows build bootstrap like yum to work with fakeroot.
 func fakerootSeccompProfile() *specs.LinuxSeccomp {
+	// sets filters allowing to create file/pipe/socket
+	// and turns mknod/mknodat as no-op syscalls for block
+	// devices and character devices having a device number
+	// greater than 0
 	zero := uint(0)
 	syscalls := []specs.LinuxSyscall{
 		{
-			Names:    []string{"mknod", "mknodat"},
+			Names:    []string{"mknod"},
 			Action:   specs.ActErrno,
 			ErrnoRet: &zero,
+			Args: []specs.LinuxSeccompArg{
+				{
+					Index:    1,
+					Value:    syscall.S_IFBLK,
+					ValueTwo: syscall.S_IFBLK,
+					Op:       specs.OpMaskedEqual,
+				},
+			},
+		},
+		{
+			Names:    []string{"mknod"},
+			Action:   specs.ActErrno,
+			ErrnoRet: &zero,
+			Args: []specs.LinuxSeccompArg{
+				{
+					Index:    1,
+					Value:    syscall.S_IFCHR,
+					ValueTwo: syscall.S_IFCHR,
+					Op:       specs.OpMaskedEqual,
+				},
+				{
+					Index:    2,
+					Value:    0,
+					ValueTwo: 0,
+					Op:       specs.OpNotEqual,
+				},
+			},
+		},
+		{
+			Names:    []string{"mknodat"},
+			Action:   specs.ActErrno,
+			ErrnoRet: &zero,
+			Args: []specs.LinuxSeccompArg{
+				{
+					Index:    2,
+					Value:    syscall.S_IFBLK,
+					ValueTwo: syscall.S_IFBLK,
+					Op:       specs.OpMaskedEqual,
+				},
+			},
+		},
+		{
+			Names:    []string{"mknodat"},
+			Action:   specs.ActErrno,
+			ErrnoRet: &zero,
+			Args: []specs.LinuxSeccompArg{
+				{
+					Index:    2,
+					Value:    syscall.S_IFCHR,
+					ValueTwo: syscall.S_IFCHR,
+					Op:       specs.OpMaskedEqual,
+				},
+				{
+					Index:    3,
+					Value:    0,
+					ValueTwo: 0,
+					Op:       specs.OpNotEqual,
+				},
+			},
 		},
 	}
 

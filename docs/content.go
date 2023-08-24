@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2017-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -562,10 +562,13 @@ Enterprise Performance Computing (EPC)`
 	InstanceStatsLong  string = `
   The instance stats command allows you to get statistics for a named instance,
   either printed to the terminal or in json. If you are root, you can optionally
-  ask for statistics for a container instance belonging to a specific user.`
+  ask for statistics for a container instance belonging to a specific user. If
+  you add --no-stream, you will only see one timepoint. Asking for json implies
+  the same.`
 	InstanceStatsExample string = `
   $ singularity instance stats mysql
   $ singularity instance stats --json mysql
+  $ singularity instance stats --no-stream mysql
   $ sudo singularity instance stats --user <username> user-mysql`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -733,29 +736,37 @@ Enterprise Performance Computing (EPC)`
 	// sign
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	SignUse   string = `sign [sign options...] <image path>`
-	SignShort string = `Attach digital signature(s) to an image`
+	SignShort string = `Add digital signature(s) to an image`
 	SignLong  string = `
   The sign command allows a user to add one or more digital signatures to a SIF
   image. By default, one digital signature is added for each object group in
   the file.
-  
-  To generate a key pair, see 'singularity help key newpair'`
+
+  Key material can be provided via PEM-encoded file, or an entity in the PGP
+  keyring. To manage the PGP keyring, see 'singularity help key'.`
 	SignExample string = `
+  Sign with a private key:
+  $ singularity sign --key private.pem container.sif
+
+  Sign with PGP:
   $ singularity sign container.sif`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// verify
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	VerifyUse   string = `verify [verify options...] <image path>`
-	VerifyShort string = `Verify cryptographic signatures attached to an image`
+	VerifyShort string = `Verify digital signature(s) within an image`
 	VerifyLong  string = `
-  The verify command allows a user to verify cryptographic signatures on SIF 
-  container files. There may be multiple signatures for data objects and 
-  multiple data objects signed. By default the command searches for the primary 
-  partition signature. If found, a list of all verification blocks applied on 
-  the primary partition is gathered so that data integrity (hashing) and 
-  signature verification is done for all those blocks.`
+  The verify command allows a user to verify one or more digital signatures
+  within a SIF image.
+
+  Key material can be provided via PEM-encoded file, or via the PGP keyring. To
+  manage the PGP keyring, see 'singularity help key'.`
 	VerifyExample string = `
+  Verify with a public key:
+  $ singularity verify --key public.pem container.sif
+
+  Verify with PGP:
   $ singularity verify container.sif`
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -965,6 +976,9 @@ Enterprise Performance Computing (EPC)`
   $ singularity oci attach mycontainer
   $ singularity oci delete mycontainer`
 
+	// Internal oci launcher use only - no user-facing docs
+	OciRunWrappedUse string = `run-wrapped -b <bundle_path> [run options...] <container_ID>`
+
 	OciUpdateUse   string = `update [update options...] <container_ID>`
 	OciUpdateShort string = `Update container cgroups resources (root user only)`
 	OciUpdateLong  string = `
@@ -1077,7 +1091,10 @@ Enterprise Performance Computing (EPC)`
   $ singularity overlay create --size 1024 /tmp/image.sif
 
   To create a single EXT3 writable overlay image:
-  $ singularity overlay create --size 1024 /tmp/my_overlay.img`
+  $ singularity overlay create --size 1024 /tmp/my_overlay.img
+
+  To create a sparse overlay when creating a new ext3 file system image:
+  $ singularity overlay create --size 1024 --sparse /tmp/ext3_overlay.img`
 )
 
 // Documentation for sif/siftool command.

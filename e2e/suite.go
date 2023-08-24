@@ -1,5 +1,7 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
 // Copyright (c) 2019-2022 Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -14,6 +16,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -50,10 +54,46 @@ import (
 	"github.com/sylabs/singularity/e2e/internal/e2e"
 	"github.com/sylabs/singularity/e2e/internal/testhelper"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
+	"github.com/sylabs/singularity/pkg/util/slice"
 	useragent "github.com/sylabs/singularity/pkg/util/user-agent"
 )
 
-var runDisabled = flag.Bool("run_disabled", false, "run tests that have been temporarily disabled")
+var (
+	runDisabled = flag.Bool("run_disabled", false, "run tests that have been temporarily disabled")
+	runGroups   = flag.String("e2e_groups", "", "specify a comma separated list of e2e groups to run")
+	runTests    = flag.String("e2e_tests", "", "specify a regex matching e2e tests to run")
+)
+
+var e2eGroups = map[string]testhelper.Group{
+	"ACTIONS":    actions.E2ETests,
+	"BUILDCFG":   e2ebuildcfg.E2ETests,
+	"BUILD":      imgbuild.E2ETests,
+	"CACHE":      cache.E2ETests,
+	"CGROUPS":    cgroups.E2ETests,
+	"CMDENVVARS": cmdenvvars.E2ETests,
+	"CONFIG":     config.E2ETests,
+	"DELETE":     delete.E2ETests,
+	"DOCKER":     docker.E2ETests,
+	"ECL":        ecl.E2ETests,
+	"ENV":        singularityenv.E2ETests,
+	"GPU":        gpu.E2ETests,
+	"HELP":       help.E2ETests,
+	"INSPECT":    inspect.E2ETests,
+	"INSTANCE":   instance.E2ETests,
+	"KEY":        key.E2ETests,
+	"OCI":        oci.E2ETests,
+	"OVERLAY":    overlay.E2ETests,
+	"PLUGIN":     plugin.E2ETests,
+	"PULL":       pull.E2ETests,
+	"PUSH":       push.E2ETests,
+	"REMOTE":     remote.E2ETests,
+	"RUN":        run.E2ETests,
+	"RUNHELP":    runhelp.E2ETests,
+	"SECURITY":   security.E2ETests,
+	"SIGN":       sign.E2ETests,
+	"VERIFY":     verify.E2ETests,
+	"VERSION":    version.E2ETests,
+}
 
 // Run is the main func for the test framework, initializes the required vars
 // and sets the environment for the RunE2ETests framework
@@ -131,6 +171,7 @@ func Run(t *testing.T) {
 	// create an empty ECL configuration and empty global keyring
 	e2e.SetupSystemECLAndGlobalKeyRing(t, testenv.TestDir)
 
+	// Creates '$HOME/.singularity/docker-config.json' with credentials
 	e2e.SetupDockerHubCredentials(t)
 
 	// Ensure config files are installed
@@ -143,75 +184,67 @@ func Run(t *testing.T) {
 
 	for _, cf := range configFiles {
 		if fi, err := os.Stat(cf); err != nil {
-			log.Fatalf("%s is not installed on this system: %v", cf, err)
+			t.Fatalf("%s is not installed on this system: %v", cf, err)
 		} else if !fi.Mode().IsRegular() {
-			log.Fatalf("%s is not a regular file", cf)
+			t.Fatalf("%s is not a regular file", cf)
 		} else if fi.Sys().(*syscall.Stat_t).Uid != 0 {
-			log.Fatalf("%s must be owned by root", cf)
+			t.Fatalf("%s must be owned by root", cf)
 		}
 	}
 
-	// Build a base image for tests
+	// Provision local registry
+	testenv.TestRegistry = e2e.StartRegistry(t, testenv)
+	testenv.TestRegistryImage = fmt.Sprintf("docker://%s/my-busybox:latest", testenv.TestRegistry)
+
+	// Copy small test image (busybox:latest) into local registry from DockerHub
+	insecureSource := false
+	insecureValue := os.Getenv("E2E_DOCKER_MIRROR_INSECURE")
+	if insecureValue != "" {
+		insecureSource, err = strconv.ParseBool(insecureValue)
+		if err != nil {
+			t.Fatalf("could not convert E2E_DOCKER_MIRROR_INSECURE=%s: %s", insecureValue, err)
+		}
+	}
+	e2e.CopyOCIImage(t, "docker://busybox:latest", testenv.TestRegistryImage, insecureSource, true)
+
+	// SIF base test path, built on demand by e2e.EnsureImage
 	imagePath := path.Join(name, "test.sif")
 	t.Log("Path to test image:", imagePath)
 	testenv.ImagePath = imagePath
-	defer os.Remove(imagePath)
 
-	// WARNING(Sylabs-team): Please DO NOT add a call to e2e.EnsureImage here.
-	// If you need the test image, add the call at the top of your
-	// own test.
+	// OCI Archive test image path, built on demand by e2e.EnsureOCIArchive
+	ociArchivePath := path.Join(name, "oci.tar")
+	t.Log("Path to test OCI archive:", ociArchivePath)
+	testenv.OCIArchivePath = ociArchivePath
 
-	if os.Getenv("SINGULARITY_E2E_NO_PID_NS") != "" {
-		// e2e tests that will run in a mount namespace only
-		// They do not currently require the OCI registry instance.
-		suite := testhelper.NewSuite(t, testenv)
-		suite.AddGroup("CGROUPS", cgroups.E2ETests)
-		suite.AddGroup("OCI", oci.E2ETests)
-		suite.Run()
-		return
-	}
+	// Docker Archive test image path, built on demand by e2e.EnsureDockerArhive
+	dockerArchivePath := path.Join(name, "docker.tar")
+	t.Log("Path to test Docker archive:", dockerArchivePath)
+	testenv.DockerArchivePath = dockerArchivePath
 
-	// e2e tests that will run in a mount and PID namespace are below
-
-	// Because tests are parallelized, and PrepRegistry temporarily masks
-	// the Singularity instance directory we *must* now call it before we
-	// start running tests which could use instance and oci functionality.
-	// See: https://github.com/hpcng/singularity/issues/5744
-	testenv.TestRegistry = "localhost:5000"
+	// Local registry ORAS SIF image, built on demand by e2e.EnsureORASImage
 	testenv.OrasTestImage = fmt.Sprintf("oras://%s/oras_test_sif:latest", testenv.TestRegistry)
-	t.Run("PrepRegistry", func(t *testing.T) {
-		e2e.PrepRegistry(t, testenv)
+
+	t.Cleanup(func() {
+		if !t.Failed() {
+			os.Remove(imagePath)
+			os.Remove(ociArchivePath)
+			os.Remove(dockerArchivePath)
+		}
 	})
-	// e2e.KillRegistry is called here to ensure that the registry
-	// is stopped after tests run.
-	defer e2e.KillRegistry(t, testenv)
 
 	suite := testhelper.NewSuite(t, testenv)
-	suite.AddGroup("ACTIONS", actions.E2ETests)
-	suite.AddGroup("BUILDCFG", e2ebuildcfg.E2ETests)
-	suite.AddGroup("BUILD", imgbuild.E2ETests)
-	suite.AddGroup("CACHE", cache.E2ETests)
-	suite.AddGroup("CMDENVVARS", cmdenvvars.E2ETests)
-	suite.AddGroup("CONFIG", config.E2ETests)
-	suite.AddGroup("DELETE", delete.E2ETests)
-	suite.AddGroup("DOCKER", docker.E2ETests)
-	suite.AddGroup("ECL", ecl.E2ETests)
-	suite.AddGroup("ENV", singularityenv.E2ETests)
-	suite.AddGroup("GPU", gpu.E2ETests)
-	suite.AddGroup("HELP", help.E2ETests)
-	suite.AddGroup("INSPECT", inspect.E2ETests)
-	suite.AddGroup("INSTANCE", instance.E2ETests)
-	suite.AddGroup("KEY", key.E2ETests)
-	suite.AddGroup("OVERLAY", overlay.E2ETests)
-	suite.AddGroup("PLUGIN", plugin.E2ETests)
-	suite.AddGroup("PULL", pull.E2ETests)
-	suite.AddGroup("PUSH", push.E2ETests)
-	suite.AddGroup("REMOTE", remote.E2ETests)
-	suite.AddGroup("RUN", run.E2ETests)
-	suite.AddGroup("RUNHELP", runhelp.E2ETests)
-	suite.AddGroup("SECURITY", security.E2ETests)
-	suite.AddGroup("SIGN", sign.E2ETests)
-	suite.AddGroup("VERIFY", verify.E2ETests)
-	suite.AddGroup("VERSION", version.E2ETests)
-	suite.Run()
+
+	groups := []string{}
+	if runGroups != nil && *runGroups != "" {
+		groups = strings.Split(*runGroups, ",")
+	}
+
+	for key, val := range e2eGroups {
+		if len(groups) == 0 || slice.ContainsString(groups, key) {
+			suite.AddGroup(key, val)
+		}
+	}
+
+	suite.Run(runTests)
 }

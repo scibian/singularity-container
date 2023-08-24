@@ -1,4 +1,6 @@
-// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2023, Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -107,6 +109,15 @@ func create(ctx context.Context, engine *EngineOperations, rpcOps *client.RPC, p
 		return fmt.Errorf("unable to parse singularity.conf file: %s", err)
 	}
 
+	// Authorize permitted kernel mounts
+	if engine.EngineConfig.File.AllowKernelSquashfs {
+		mount.AuthorizeImageFS("squashfs")
+		mount.AuthorizeImageFS("encrypted_squashfs")
+	}
+	if engine.EngineConfig.File.AllowKernelExtfs {
+		mount.AuthorizeImageFS("ext3")
+	}
+
 	c := &container{
 		engine:        engine,
 		rpcOps:        rpcOps,
@@ -153,18 +164,18 @@ func create(ctx context.Context, engine *EngineOperations, rpcOps *client.RPC, p
 	}
 
 	// load image driver plugins
-	callbackType := (singularitycallback.RegisterImageDriver)(nil)
+	callbackType := (singularitycallback.RegisterImageDriver)(nil) // nolint:staticcheck
 	callbacks, err := plugin.LoadCallbacks(callbackType)
 	if err != nil {
 		return fmt.Errorf("while loading plugins callbacks '%T': %s", callbackType, err)
 	}
 	for _, callback := range callbacks {
-		if err := callback.(singularitycallback.RegisterImageDriver)(c.userNS); err != nil {
+		if err := callback.(singularitycallback.RegisterImageDriver)(c.userNS); err != nil { // nolint:staticcheck
 			return fmt.Errorf("while registering image driver: %s", err)
 		}
 	}
 
-	driverName := c.engine.EngineConfig.File.ImageDriver
+	driverName := c.engine.EngineConfig.File.ImageDriver // nolint:staticcheck
 	imageDriver = image.GetDriver(driverName)
 	if driverName != "" && imageDriver == nil {
 		return fmt.Errorf("%q: no such image driver", driverName)
@@ -497,7 +508,7 @@ func (c *container) setupImageDriver(system *mount.System) error {
 
 			umountPoints = append(umountPoints, sp)
 
-			sylog.Debugf("Starting image driver %s", c.engine.EngineConfig.File.ImageDriver)
+			sylog.Debugf("Starting image driver %s", c.engine.EngineConfig.File.ImageDriver) // nolint:staticcheck
 			if err := imageDriver.Start(params); err != nil {
 				return fmt.Errorf("failed to start driver: %s", err)
 			}
@@ -511,7 +522,7 @@ func (c *container) setupImageDriver(system *mount.System) error {
 		if params.UsernsFd != -1 {
 			defer unix.Close(params.UsernsFd)
 		}
-		sylog.Debugf("Starting image driver %s", c.engine.EngineConfig.File.ImageDriver)
+		sylog.Debugf("Starting image driver %s", c.engine.EngineConfig.File.ImageDriver) // nolint:staticcheck
 		if err := imageDriver.Start(params); err != nil {
 			return fmt.Errorf("failed to start driver: %s", err)
 		}
@@ -684,6 +695,10 @@ mount:
 				sylog.Verbosef("Overlay mount failed with %s, mounting with index=off", err)
 				optsString = fmt.Sprintf("%s,index=off", optsString)
 				goto mount
+			} else if mnt.Type == "overlay" && err == syscall.EINVAL {
+				sylog.Verbosef("Overlay mount failed with %s, mounting without xino option", err)
+				optsString = strings.Replace(optsString, ",xino=on", "", -1)
+				goto mount
 			}
 			// mount error for other filesystems is considered fatal
 			return fmt.Errorf("can't mount %s filesystem to %s: %s", mnt.Type, mnt.Destination, err)
@@ -735,7 +750,7 @@ func (c *container) mountImage(mnt *mount.Point) error {
 
 	mountType := mnt.Type
 
-	if mountType == "encryptfs" {
+	if mountType == "encrypted_squashfs" {
 		key, err = mount.GetKey(mnt.InternalOptions)
 		if err != nil {
 			return err
@@ -780,7 +795,7 @@ func (c *container) mountImage(mnt *mount.Point) error {
 
 	sylog.Debugf("Mounting loop device %s to %s of type %s\n", path, mnt.Destination, mnt.Type)
 
-	if mountType == "encryptfs" {
+	if mountType == "encrypted_squashfs" {
 		// pass the master processus ID only if a container IPC
 		// namespace was requested because cryptsetup requires
 		// to run in the host IPC namespace
@@ -797,7 +812,6 @@ func (c *container) mountImage(mnt *mount.Point) error {
 
 		path = cryptDev
 
-		// Currently we only support encrypted squashfs file system
 		mountType = "squashfs"
 	}
 
@@ -851,7 +865,7 @@ func (c *container) addRootfsMount(system *mount.System) error {
 	case image.EXT3:
 		mountType = "ext3"
 	case image.ENCRYPTSQUASHFS:
-		mountType = "encryptfs"
+		mountType = "encrypted_squashfs"
 		key = c.engine.EngineConfig.GetEncryptionKey()
 	case image.SANDBOX:
 		sylog.Debugf("Mounting directory rootfs: %v\n", rootfs)
@@ -1001,8 +1015,18 @@ func (c *container) addOverlayMount(system *mount.System) error {
 				}
 				ov.AddLowerDir(dst)
 			case image.SANDBOX:
+				// In setuid mode, only root user may mount a directory overlay, as the mount
+				// will take place privileged, and could be abused.
 				allowed := os.Geteuid() == 0
 
+				// In non-setuid mode (user namespace) then we can proceed, as the overlay mount
+				// will be attempted unprivileged. This will succeed if kernel supports it.
+				if c.userNS {
+					allowed = true
+				}
+
+				// If a (deprecated) image driver plugin is enabled, then proceed with the mount.
+				// The image driver will be responsible for handling priv / unpriv concerns.
 				if c.engine.EngineConfig.File.EnableOverlay == "driver" {
 					if imageDriver != nil && imageDriver.Features()&image.OverlayFeature != 0 {
 						allowed = true
@@ -1010,7 +1034,7 @@ func (c *container) addOverlayMount(system *mount.System) error {
 				}
 
 				if !allowed {
-					return fmt.Errorf("only root user can use sandbox as overlay")
+					return fmt.Errorf("only root user can use sandbox as overlay in setuid mode")
 				}
 
 				flags := uintptr(c.suidFlag | syscall.MS_NODEV)
@@ -1439,7 +1463,7 @@ func (c *container) addDevMount(system *mount.System) error {
 		}
 
 		if c.engine.EngineConfig.GetRocm() {
-			devs, err := gpu.RocmDevices(true)
+			devs, err := gpu.RocmDevices()
 			if err != nil {
 				return fmt.Errorf("failed to get rocm devices: %v", err)
 			}
@@ -1527,7 +1551,8 @@ func (c *container) addBindsMount(system *mount.System) error {
 		localtimePath = "/etc/localtime"
 	)
 
-	noBinds := c.engine.EngineConfig.GetNoBinds()
+	skipBinds := c.engine.EngineConfig.GetSkipBinds()
+	skipAllBinds := slice.ContainsString(skipBinds, "*")
 
 	if c.engine.EngineConfig.GetContain() {
 		hosts := hostsPath
@@ -1548,7 +1573,7 @@ func (c *container) addBindsMount(system *mount.System) error {
 			hosts, _ = c.session.GetPath(hostsPath)
 		}
 
-		if !slice.ContainsString(noBinds, hostsPath) {
+		if !skipAllBinds && !slice.ContainsString(skipBinds, hostsPath) {
 			// #5465 If hosts/localtime mount fails, it should not be fatal so skip-on-error
 			if err := system.Points.AddBind(mount.BindsTag, hosts, hostsPath, flags, "skip-on-error"); err != nil {
 				return fmt.Errorf("unable to add %s to mount list: %s", hosts, err)
@@ -1557,7 +1582,7 @@ func (c *container) addBindsMount(system *mount.System) error {
 				return fmt.Errorf("unable to add %s for remount: %s", hostsPath, err)
 			}
 		}
-		if !slice.ContainsString(noBinds, localtimePath) {
+		if !skipAllBinds && !slice.ContainsString(skipBinds, localtimePath) {
 			if err := system.Points.AddBind(mount.BindsTag, localtimePath, localtimePath, flags, "skip-on-error"); err != nil {
 				return fmt.Errorf("unable to add %s to mount list: %s", localtimePath, err)
 			}
@@ -1580,7 +1605,7 @@ func (c *container) addBindsMount(system *mount.System) error {
 
 		sylog.Verbosef("Found 'bind path' = %s, %s", src, dst)
 
-		if slice.ContainsString(noBinds, dst) {
+		if skipAllBinds || slice.ContainsString(skipBinds, dst) {
 			sylog.Debugf("Skipping bind to %s at user request", dst)
 			continue
 		}
@@ -2279,7 +2304,6 @@ func (c *container) prepareNetworkSetup(system *mount.System, pid int) (func(con
 		sessionNetNs = "/netns"
 	)
 
-	fakeroot := c.engine.EngineConfig.GetFakeroot()
 	net := c.engine.EngineConfig.GetNetwork()
 
 	// If we haven't requested a network namespace, or we have but with no config, we are done here
@@ -2287,10 +2311,21 @@ func (c *container) prepareNetworkSetup(system *mount.System, pid int) (func(con
 		return nil, nil
 	}
 
-	// Otherwise start checking what's permitted for the current user
+	// In fakeroot mode only permit the `fakeroot` CNI config, overriding any other request.
 	euid := os.Geteuid()
+	fakeroot := c.engine.EngineConfig.GetFakeroot()
+	forceFakerootNet := false
+	if fakeroot && euid != 0 && net != fakerootNet {
+		sylog.Warningf("Only --network=%s is permitted in --fakeroot mode. You requested '%s'.", fakerootNet, net)
+		sylog.Warningf("Overriding with --network=%s", fakerootNet)
+	}
+	if fakeroot && euid != 0 {
+		forceFakerootNet = true
+		net = fakerootNet
+	}
+
 	allowedNetUnpriv := false
-	if euid != 0 {
+	if euid != 0 && !forceFakerootNet {
 		// Is the user permitted in the list of unpriv users / groups permitted to use CNI?
 		allowedNetUser, err := user.UIDInList(euid, c.engine.EngineConfig.File.AllowNetUsers)
 		if err != nil {
@@ -2303,7 +2338,11 @@ func (c *container) prepareNetworkSetup(system *mount.System, pid int) (func(con
 		// Is/are the requested network(s) in the list of networks allowed for unpriv CNI?
 		allowedNetNetwork := false
 		for _, n := range strings.Split(net, ",") {
-			allowedNetNetwork = slice.ContainsString(c.engine.EngineConfig.File.AllowNetNetworks, n)
+			// Allowed in singularity.conf
+			adminPermitted := slice.ContainsString(c.engine.EngineConfig.File.AllowNetNetworks, n)
+			// 'fakeroot' network is always allowed in --fakeroot mode
+			fakerootPermitted := fakeroot && net == fakerootNet
+			allowedNetNetwork = adminPermitted || fakerootPermitted
 			// If any one requested network is not allowed, disallow the whole config
 			if !allowedNetNetwork {
 				sylog.Errorf("Network %s is not permitted for unprivileged users.", n)
@@ -2328,14 +2367,7 @@ func (c *container) prepareNetworkSetup(system *mount.System, pid int) (func(con
 	if err := system.Points.AddBind(mount.SharedTag, procNetNs, nspath, 0); err != nil {
 		return nil, fmt.Errorf("could not hold network namespace reference: %s", err)
 	}
-	networks := strings.Split(c.engine.EngineConfig.GetNetwork(), ",")
-
-	// In fakeroot mode only permit the `fakeroot` CNI config
-	if fakeroot && euid != 0 && net != fakerootNet {
-		// set as debug message to avoid annoying warning
-		sylog.Debugf("only '%s' network is allowed for regular user, you requested '%s'", fakerootNet, net)
-		networks = []string{fakerootNet}
-	}
+	networks := strings.Split(net, ",")
 
 	cniPath := &network.CNIPath{}
 
