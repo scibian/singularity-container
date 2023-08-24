@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -105,7 +104,7 @@ func (r *SingularityCmdResult) expectMatch(mt MatchType, stream streamType, patt
 		// get rid of the trailing newline
 		if strings.TrimSuffix(output, "\n") != pattern {
 			return errors.Errorf(
-				"Command %q:\nExpect %s stream exact match:\n%s\nCommand %s output:\n%s",
+				"Command %q:\nExpect %s stream exact match:\n%s\nCommand %s stream:\n%s",
 				r.FullCmd, streamName, pattern, streamName, output,
 			)
 		}
@@ -119,7 +118,7 @@ func (r *SingularityCmdResult) expectMatch(mt MatchType, stream streamType, patt
 	case UnwantedExactMatch:
 		if strings.TrimSuffix(output, "\n") == pattern {
 			return errors.Errorf(
-				"Command %q:\nExpect %s stream not matching:\n%s\nCommand %s output:\n%s",
+				"Command %q:\nExpect %s stream not matching:\n%s\nCommand %s stream:\n%s",
 				r.FullCmd, streamName, pattern, streamName, output,
 			)
 		}
@@ -133,7 +132,7 @@ func (r *SingularityCmdResult) expectMatch(mt MatchType, stream streamType, patt
 		}
 		if !matched {
 			return errors.Errorf(
-				"Command %q:\nExpect %s stream match regular expression:\n%s\nCommand %s output:\n%s",
+				"Command %q:\nExpect %s stream match regular expression:\n%s\nCommand %s stream:\n%s",
 				r.FullCmd, streamName, pattern, streamName, output,
 			)
 		}
@@ -493,8 +492,8 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 	// a profile is required
 	if s.profile.name == "" {
 		i := 0
-		availableProfiles := make([]string, len(Profiles))
-		for profile := range Profiles {
+		availableProfiles := make([]string, len(NativeProfiles))
+		for profile := range NativeProfiles {
 			availableProfiles[i] = profile
 			i++
 		}
@@ -530,6 +529,20 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 		cmd.Env = s.envs
 		if len(cmd.Env) == 0 {
 			cmd.Env = os.Environ()
+		}
+
+		// Clear user-specific DBUS / XDG vars when we are using a priv profile,
+		// as they don't make sense for the root user... and wouldn't be set in a
+		// real root user session.
+		if privileged {
+			i := 0
+			for _, e := range cmd.Env {
+				if !(strings.HasPrefix(e, "DBUS_SESSION_BUS_ADDRESS=") || strings.HasPrefix(e, "XDG_RUNTIME_DIR=")) {
+					cmd.Env[i] = e
+					i++
+				}
+			}
+			cmd.Env = cmd.Env[:i]
 		}
 
 		// By default, each E2E command shares a temporary image cache
@@ -631,9 +644,6 @@ func (env TestEnv) RunSingularity(t *testing.T, cmdOps ...SingularityCmdOp) {
 			defer s.postFn(t)
 		}
 
-		if os.Getenv("SINGULARITY_E2E_COVERAGE") != "" {
-			log.Printf("COVERAGE: %q", s.result.FullCmd)
-		}
 		t.Logf("Running command %q", s.result.FullCmd)
 
 		if err := cmd.Start(); err != nil {

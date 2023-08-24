@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2021, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -224,11 +224,7 @@ func TestEnsureDirPrivate(t *testing.T) {
 	test.DropPrivilege(t)
 	defer test.ResetPrivilege(t)
 
-	tmpdir, err := os.MkdirTemp("", "test-ensure-dir-private")
-	if err != nil {
-		t.Fatalf("Cannot create temporary directory")
-	}
-	defer os.RemoveAll(tmpdir)
+	tmpdir := t.TempDir()
 
 	cases := []struct {
 		name        string
@@ -472,11 +468,7 @@ func TestGenKeyPair(t *testing.T) {
 	}
 
 	// Create a temporary directory to store the keyring
-	dir, err := os.MkdirTemp("", "")
-	if err != nil {
-		t.Fatalf("failed to create temporary directory")
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	keyring := NewHandle(dir)
 
@@ -773,11 +765,7 @@ func TestRemoveKey(t *testing.T) {
 }
 
 func TestGlobalKeyRing(t *testing.T) {
-	dir, err := os.MkdirTemp("", "global-keyring-")
-	if err != nil {
-		t.Fatalf("could not create temporary global keyring: %s", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	keypairOptions := GenKeyPairOptions{
 		Name:      "test",
@@ -787,7 +775,7 @@ func TestGlobalKeyRing(t *testing.T) {
 
 	keyring := NewHandle(dir, GlobalHandleOpt())
 
-	_, err = keyring.GenKeyPair(keypairOptions)
+	_, err := keyring.GenKeyPair(keypairOptions)
 	if err == nil {
 		t.Errorf("unexpected success while generating keypair for global keyring")
 	}

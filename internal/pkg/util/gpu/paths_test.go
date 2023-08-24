@@ -39,7 +39,7 @@ func TestLdCache(t *testing.T) {
 	if len(gotCache) == 0 {
 		t.Error("ldCache() gave no results")
 	}
-	for path, name := range gotCache {
+	for name, path := range gotCache {
 		if strings.HasPrefix(name, "ld-linux") {
 			if strings.Contains(path, "ld-linux") {
 				return
@@ -69,10 +69,7 @@ func TestSoLinks(t *testing.T) {
 	//   - soLinks(a.so) should give both of these symlinks
 	// a.so.2 -> b.so
 	//   - this should *not* get included, as it doesn't resolve back to a.so
-	tmpDir, err := os.MkdirTemp("", "test-solinks")
-	if err != nil {
-		t.Fatalf("Could not create tempDir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	aFile := filepath.Join(tmpDir, "a.so")
 	a1Link := filepath.Join(tmpDir, "a.so.1")
 	a12Link := filepath.Join(tmpDir, "a.so.1.2")
@@ -86,7 +83,7 @@ func TestSoLinks(t *testing.T) {
 		t.Fatalf("Could not symlink: %v", err)
 	}
 	bFile := filepath.Join(tmpDir, "b.so")
-	err = os.WriteFile(bFile, nil, 0o644)
+	err := os.WriteFile(bFile, nil, 0o644)
 	if err != nil {
 		t.Fatalf("Could not create file: %v", err)
 	}

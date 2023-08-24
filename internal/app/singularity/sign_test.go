@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -6,17 +6,55 @@
 package singularity
 
 import (
+	"context"
+	"crypto"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/sigstore/sigstore/pkg/cryptoutils"
+	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sylabs/sif/v2/pkg/integrity"
 	"github.com/sylabs/singularity/pkg/sypgp"
 )
+
+// getTestSigner returns a fixed test Signer.
+func getTestSigner(t *testing.T, file string) signature.Signer {
+	t.Helper()
+
+	path := filepath.Join("..", "..", "..", "test", "keys", file)
+
+	sv, err := signature.LoadSignerFromPEMFile(path, crypto.SHA256, cryptoutils.SkipPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return sv
+}
+
+// getTestEntity returns a fixed test PGP entity.
+func getTestEntity(t *testing.T) *openpgp.Entity {
+	t.Helper()
+
+	f, err := os.Open(filepath.Join("..", "..", "..", "test", "keys", "pgp-private.asc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	el, err := openpgp.ReadArmoredKeyRing(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := len(el), 1; got != want {
+		t.Fatalf("got %v entities, want %v", got, want)
+	}
+	return el[0]
+}
 
 // tempFileFrom copies the file at path to a temporary file, and returns a reference to it.
 func tempFileFrom(path string) (string, error) {
@@ -26,12 +64,7 @@ func tempFileFrom(path string) (string, error) {
 	}
 	defer f.Close()
 
-	pattern := "*"
-	if ext := filepath.Ext(path); ext != "" {
-		pattern = fmt.Sprintf("*.%s", ext)
-	}
-
-	tf, err := os.CreateTemp("", pattern)
+	tf, err := os.CreateTemp("", "*.sif")
 	if err != nil {
 		return "", err
 	}
@@ -53,7 +86,10 @@ func mockEntitySelector(t *testing.T) sypgp.EntitySelector {
 }
 
 func TestSign(t *testing.T) {
-	mockEntityOpt := OptSignEntitySelector(mockEntitySelector(t))
+	ecdsa := getTestSigner(t, "ecdsa-private.pem")
+	ed25519 := getTestSigner(t, "ed25519-private.pem")
+	rsa := getTestSigner(t, "rsa-private.pem")
+	es := mockEntitySelector(t)
 
 	tests := []struct {
 		name    string
@@ -63,23 +99,38 @@ func TestSign(t *testing.T) {
 	}{
 		{
 			name:    "ErrNoKeyMaterial",
-			path:    filepath.Join("testdata", "images", "one-group.sif"),
+			path:    filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
 			wantErr: integrity.ErrNoKeyMaterial,
 		},
 		{
-			name: "Defaults",
-			path: filepath.Join("testdata", "images", "one-group.sif"),
-			opts: []SignOpt{mockEntityOpt},
+			name: "OptSignWithSignerECDSA",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
+			opts: []SignOpt{OptSignWithSigner(ecdsa)},
+		},
+		{
+			name: "OptSignWithSignerEd25519",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
+			opts: []SignOpt{OptSignWithSigner(ed25519)},
+		},
+		{
+			name: "OptSignWithSignerRSA",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
+			opts: []SignOpt{OptSignWithSigner(rsa)},
+		},
+		{
+			name: "OptSignEntitySelector",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
+			opts: []SignOpt{OptSignEntitySelector(es)},
 		},
 		{
 			name: "OptSignGroup",
-			path: filepath.Join("testdata", "images", "one-group.sif"),
-			opts: []SignOpt{mockEntityOpt, OptSignGroup(1)},
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
+			opts: []SignOpt{OptSignWithSigner(ed25519), OptSignGroup(1)},
 		},
 		{
 			name: "OptSignObjects",
-			path: filepath.Join("testdata", "images", "one-group.sif"),
-			opts: []SignOpt{mockEntityOpt, OptSignObjects(1)},
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
+			opts: []SignOpt{OptSignWithSigner(ed25519), OptSignObjects(1)},
 		},
 	}
 
@@ -93,7 +144,7 @@ func TestSign(t *testing.T) {
 			}
 			defer os.Remove(path)
 
-			if got, want := Sign(path, tt.opts...), tt.wantErr; !errors.Is(got, want) {
+			if got, want := Sign(context.Background(), path, tt.opts...), tt.wantErr; !errors.Is(got, want) {
 				t.Errorf("got error %v, want %v", got, want)
 			}
 		})

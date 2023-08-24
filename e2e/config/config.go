@@ -20,14 +20,16 @@ import (
 )
 
 type configTests struct {
-	env            e2e.TestEnv
-	sifImage       string
-	encryptedImage string
-	squashfsImage  string
-	ext3Image      string
-	sandboxImage   string
-	pemPublic      string
-	pemPrivate     string
+	env              e2e.TestEnv
+	sifImage         string
+	encryptedImage   string
+	squashfsImage    string
+	ext3Image        string
+	sandboxImage     string
+	ext3OverlayImage string
+	sifOverlayImage  string
+	pemPublic        string
+	pemPrivate       string
 }
 
 // prepImages creates containers covering all image formats to test the
@@ -90,6 +92,31 @@ func (c *configTests) prepImages(t *testing.T) (cleanup func(t *testing.T)) {
 			t.Fatalf("Error creating squashfs image: %v: %s", err, out)
 		}
 	})
+
+	// An extfs writable overlay (standalone)
+	c.ext3OverlayImage = filepath.Join(tmpDir, "overlay.img")
+	c.env.RunSingularity(
+		t,
+		e2e.AsSubtest("PrepareExt3Overlay"),
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("overlay"),
+		e2e.WithArgs("create", "--size", "64", c.ext3OverlayImage),
+		e2e.ExpectExit(0),
+	)
+
+	// A SIF with embedded writable overlay (embedded ext3)
+	c.sifOverlayImage = filepath.Join(tmpDir, "overlay.sif")
+	if err := fs.CopyFile(c.sifImage, c.sifOverlayImage, 0o755); err != nil {
+		t.Fatalf("Error copying %q to %q: %v", c.sifImage, c.sifOverlayImage, err)
+	}
+	c.env.RunSingularity(
+		t,
+		e2e.AsSubtest("PrepareSIFOverlay"),
+		e2e.WithProfile(e2e.UserProfile),
+		e2e.WithCommand("overlay"),
+		e2e.WithArgs("create", "--size", "64", c.sifOverlayImage),
+		e2e.ExpectExit(0),
+	)
 
 	return cleanup
 }
@@ -353,23 +380,6 @@ func (c configTests) configGlobal(t *testing.T) {
 			directiveValue: "no",
 			exit:           1,
 		},
-		// use user namespace profile to force underlay use
-		{
-			name:           "EnableUnderlayNo",
-			argv:           []string{"--bind", "/etc/passwd:/passwd", c.env.ImagePath, "test", "-f", "/passwd"},
-			profile:        e2e.UserNamespaceProfile,
-			directive:      "enable underlay",
-			directiveValue: "no",
-			exit:           255,
-		},
-		{
-			name:           "EnableUnderlayYes",
-			argv:           []string{"--bind", "/etc/passwd:/passwd", c.env.ImagePath, "test", "-f", "/passwd"},
-			profile:        e2e.UserNamespaceProfile,
-			directive:      "enable underlay",
-			directiveValue: "yes",
-			exit:           0,
-		},
 		// test image is owned by root:root
 		{
 			name:           "LimitContainerOwnersUser",
@@ -499,6 +509,159 @@ func (c configTests) configGlobal(t *testing.T) {
 			directiveValue: "yes",
 			exit:           0,
 		},
+		// Standalone squashfs rootfs
+		{
+			name:           "AllowKernelSquashfsNo_Container",
+			argv:           []string{c.squashfsImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelSquashfsYes_Container",
+			argv:           []string{c.squashfsImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// Standalone ext3 rootfs
+		{
+			name:           "AllowKernelExtfsNo_Container",
+			argv:           []string{c.ext3Image, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelExtfsYes_Container",
+			argv:           []string{c.ext3Image, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// Standalone squashfs as an overlay
+		{
+			name:           "AllowKernelSquashfsNo_Overlay",
+			argv:           []string{"--overlay", c.squashfsImage, c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelSquashfsYes_Overlay",
+			argv:           []string{"--overlay", c.squashfsImage, c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// Standalone ext3 as an overlay
+		{
+			name:           "AllowKernelExtfsNo_Overlay",
+			argv:           []string{"--overlay", c.ext3OverlayImage, c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelExtfsYes_Overlay",
+			argv:           []string{"--overlay", c.ext3OverlayImage, c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// Standalone squashfs as an image bind
+		{
+			name:           "AllowKernelSquashfsNo_Bind",
+			argv:           []string{"--bind", fmt.Sprintf("%s:/image-bind:image-src=/", c.squashfsImage), c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelSquashfsYes_Bind",
+			argv:           []string{"--bind", fmt.Sprintf("%s:/image-bind:image-src=/", c.squashfsImage), c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// Standalone ext3 as an image bind
+		{
+			name:           "AllowKernelExtfsNo_Bind",
+			argv:           []string{"--bind", fmt.Sprintf("%s:/image-bind:image-src=/", c.ext3Image), c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelExtfsYes_Bind",
+			argv:           []string{"--bind", fmt.Sprintf("%s:/image-bind:image-src=/", c.ext3Image), c.sandboxImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// squashFS rootfs in SIF
+		{
+			name:           "AllowKernelSquashfsNo_SIF",
+			argv:           []string{c.sifImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelSquashfsYes_SIF",
+			argv:           []string{c.sifImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// Encrypted squashFS rootfs in SIF
+		{
+			name:           "AllowKernelSquashfsNo_Encrypted",
+			argv:           []string{"--pem-path", c.pemPrivate, c.encryptedImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelSquashfsYes_Encrypted",
+			argv:           []string{"--pem-path", c.pemPrivate, c.encryptedImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel squashfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
+		// ext3 writable overlay in SIF
+		{
+			name:           "AllowKernelExtfsNo_SIF",
+			argv:           []string{c.sifOverlayImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "no",
+			exit:           255,
+		},
+		{
+			name:           "AllowKernelExtfsYes_SIF",
+			argv:           []string{c.sifOverlayImage, "true"},
+			profile:        e2e.UserProfile,
+			directive:      "allow kernel extfs",
+			directiveValue: "yes",
+			exit:           0,
+		},
 		// FIXME
 		// The e2e tests currently run inside a PID namespace.
 		//   (see internal/init/init_linux.go)
@@ -615,9 +778,10 @@ func (c configTests) configGlobalCombination(t *testing.T) {
 			exit: 255,
 		},
 		{
-			name:    "AllowNetUsersUserOK",
-			argv:    []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
-			profile: e2e.UserProfile,
+			name:              "AllowNetUsersUserOK",
+			addRequirementsFn: e2e.Privileged(require.Network),
+			argv:              []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
+			profile:           e2e.UserProfile,
 			directives: map[string]string{
 				"allow net users":    u.Name,
 				"allow net networks": "bridge",
@@ -625,9 +789,10 @@ func (c configTests) configGlobalCombination(t *testing.T) {
 			exit: 0,
 		},
 		{
-			name:    "AllowNetUsersUIDOK",
-			argv:    []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
-			profile: e2e.UserProfile,
+			name:              "AllowNetUsersUIDOK",
+			addRequirementsFn: e2e.Privileged(require.Network),
+			argv:              []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
+			profile:           e2e.UserProfile,
 			directives: map[string]string{
 				"allow net users":    fmt.Sprintf("%d", u.UID),
 				"allow net networks": "bridge",
@@ -662,9 +827,10 @@ func (c configTests) configGlobalCombination(t *testing.T) {
 			exit: 255,
 		},
 		{
-			name:    "AllowNetGroupsGroupOK",
-			argv:    []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
-			profile: e2e.UserProfile,
+			name:              "AllowNetGroupsGroupOK",
+			addRequirementsFn: e2e.Privileged(require.Network),
+			argv:              []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
+			profile:           e2e.UserProfile,
 			directives: map[string]string{
 				"allow net groups":   g.Name,
 				"allow net networks": "bridge",
@@ -672,9 +838,10 @@ func (c configTests) configGlobalCombination(t *testing.T) {
 			exit: 0,
 		},
 		{
-			name:    "AllowNetGroupsGIDOK",
-			argv:    []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
-			profile: e2e.UserProfile,
+			name:              "AllowNetGroupsGIDOK",
+			addRequirementsFn: e2e.Privileged(require.Network),
+			argv:              []string{"--net", "--network", "bridge", c.env.ImagePath, "true"},
+			profile:           e2e.UserProfile,
 			directives: map[string]string{
 				"allow net groups":   fmt.Sprintf("%d", g.GID),
 				"allow net networks": "bridge",
@@ -682,7 +849,8 @@ func (c configTests) configGlobalCombination(t *testing.T) {
 			exit: 0,
 		},
 		{
-			name: "AllowNetNetworksMultiMulti",
+			name:              "AllowNetNetworksMultiMulti",
+			addRequirementsFn: e2e.Privileged(require.Network),
 			// Two networks allowed, asking for both
 			argv:    []string{"--net", "--network", "bridge,ptp", c.env.ImagePath, "true"},
 			profile: e2e.UserProfile,
@@ -694,9 +862,10 @@ func (c configTests) configGlobalCombination(t *testing.T) {
 		},
 		{
 			// Two networks allowed, asking for one
-			name:    "AllowNetNetworksMultiOne",
-			argv:    []string{"--net", "--network", "ptp", c.env.ImagePath, "true"},
-			profile: e2e.UserProfile,
+			name:              "AllowNetNetworksMultiOne",
+			addRequirementsFn: e2e.Privileged(require.Network),
+			argv:              []string{"--net", "--network", "ptp", c.env.ImagePath, "true"},
+			profile:           e2e.UserProfile,
 			directives: map[string]string{
 				"allow net users":    u.Name,
 				"allow net networks": "bridge,ptp",
@@ -723,6 +892,28 @@ func (c configTests) configGlobalCombination(t *testing.T) {
 				"allow net users": u.Name,
 			},
 			exit: 255,
+		},
+		// disable overlay to force underlay
+		{
+			name:    "EnableUnderlayNo",
+			argv:    []string{"--bind", "/etc/passwd:/passwd", c.env.ImagePath, "test", "-f", "/passwd"},
+			profile: e2e.UserProfile,
+			directives: map[string]string{
+				"enable overlay":  "no",
+				"enable underlay": "no",
+			},
+
+			exit: 255,
+		},
+		{
+			name:    "EnableUnderlayYes",
+			argv:    []string{"--bind", "/etc/passwd:/passwd", c.env.ImagePath, "test", "-f", "/passwd"},
+			profile: e2e.UserProfile,
+			directives: map[string]string{
+				"enable overlay":  "no",
+				"enable underlay": "yes",
+			},
+			exit: 0,
 		},
 	}
 
@@ -820,5 +1011,6 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 		"config file":               c.configFile,                  // test --config file option
 		"config global":             np(c.configGlobal),            // test various global configuration
 		"config global combination": np(c.configGlobalCombination), // test various global configuration with combination
+		"oci config global":         np(c.ociConfigGlobal),         // test various global configuration for OCI mode
 	}
 }

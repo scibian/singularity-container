@@ -104,13 +104,7 @@ func TestCheckExt3Header(t *testing.T) {
 	b := make([]byte, bufferSize)
 
 	// Create a fake ext3 file
-	dir, err := os.MkdirTemp("", "headerTesting-")
-	if err != nil {
-		t.Fatalf("impossible to create temporary directory: %s\n", err)
-	}
-	defer os.RemoveAll(dir)
-
-	path := dir + "ext3.fs"
+	path := t.TempDir() + "ext3.fs"
 
 	createFullVirtualBlockDevice(t, path, "ext3")
 
@@ -220,11 +214,7 @@ func TestInitializer(t *testing.T) {
 	}
 
 	// Error case when a directory is passed in to initializer()
-	path, err = os.MkdirTemp("", "")
-	if err != nil {
-		t.Fatalf("Cannot create a temporary directory: %s\n", err)
-	}
-	defer os.RemoveAll(path)
+	path = t.TempDir()
 	resolvedPath, err = ResolvePath(path)
 	if err != nil {
 		t.Fatalf("failed to retrieve path for %s: %s\n", resolvedPath, err)

@@ -11,6 +11,8 @@ package pull
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +37,7 @@ type testStruct struct {
 	desc             string // case description
 	srcURI           string // source URI for image
 	library          string // use specific library, XXX(mem): not tested yet
+	arch             string // architecture to force, if any
 	force            bool   // pass --force
 	createDst        bool   // create destination file before pull
 	unauthenticated  bool   // pass --allow-unauthenticated
@@ -48,181 +51,25 @@ type testStruct struct {
 	envVars          []string
 }
 
-var tests = []testStruct{
-	{
-		desc:             "non existent image",
-		srcURI:           "library://sylabs/tests/does_not_exist:0",
-		expectedExitCode: 255,
-	},
-
-	// --allow-unauthenticated tests
-	{
-		desc:             "unsigned image allow unauthenticated",
-		srcURI:           "library://sylabs/tests/unsigned:1.0.0",
-		unauthenticated:  true,
-		expectedExitCode: 0,
-	},
-
-	// --force tests
-	{
-		desc:             "force existing file",
-		srcURI:           "library://alpine:3.11.5",
-		force:            true,
-		createDst:        true,
-		unauthenticated:  true,
-		expectedExitCode: 0,
-	},
-	{
-		desc:             "force non-existing file",
-		srcURI:           "library://alpine:3.11.5",
-		force:            true,
-		createDst:        false,
-		unauthenticated:  true,
-		expectedExitCode: 0,
-	},
-	{
-		// --force should not have an effect on --allow-unauthenticated=false
-		desc:             "unsigned image force require authenticated",
-		srcURI:           "library://sylabs/tests/unsigned:1.0.0",
-		force:            true,
-		unauthenticated:  false,
-		expectedExitCode: 0,
-	},
-
-	// test version specifications
-	{
-		desc:             "image with specific hash",
-		srcURI:           "library://alpine:sha256.03883ca565b32e58fa0a496316d69de35741f2ef34b5b4658a6fec04ed8149a8",
-		unauthenticated:  true,
-		expectedExitCode: 0,
-	},
-	{
-		desc:             "latest tag",
-		srcURI:           "library://alpine:latest",
-		unauthenticated:  true,
-		expectedExitCode: 0,
-	},
-
-	// --dir tests
-	{
-		desc:             "dir no image path",
-		srcURI:           "library://alpine:3.11.5",
-		unauthenticated:  true,
-		setPullDir:       true,
-		setImagePath:     false,
-		expectedExitCode: 0,
-	},
-	{
-		// XXX(mem): this specific test is passing both --path and an image path to
-		// singularity pull. The current behavior is that the code is joining both paths and
-		// failing to find the image in the expected location indicated by image path
-		// because image path is absolute, so after joining /tmp/a/b/c and
-		// /tmp/a/b/image.sif, the code expects to find /tmp/a/b/c/tmp/a/b/image.sif. Since
-		// the directory /tmp/a/b/c/tmp/a/b does not exist, it fails to create the file
-		// image.sif in there.
-		desc:             "dir image path",
-		srcURI:           "library://alpine:3.11.5",
-		unauthenticated:  true,
-		setPullDir:       true,
-		setImagePath:     true,
-		expectedExitCode: 255,
-	},
-
-	// transport tests
-	{
-		desc:             "bare image name",
-		srcURI:           "alpine:3.11.5",
-		force:            true,
-		unauthenticated:  true,
-		expectedExitCode: 0,
-	},
-	// TODO(mem): reenable this; disabled while shub is down
-	// {
-	// 	desc:            "image from shub",
-	// 	srcURI:          "shub://GodloveD/busybox",
-	// 	force:           true,
-	// 	unauthenticated: false,
-	// 	expectSuccess:   true,
-	// },
-	// Finalized v1 layer mediaType (3.7 and onward)
-	{
-		desc:             "oras transport for SIF from registry",
-		srcURI:           "oras://localhost:5000/pull_test_sif:latest", // TODO(mem): obtain registry from context
-		force:            true,
-		unauthenticated:  false,
-		expectedExitCode: 0,
-	},
-	// Original/prototype layer mediaType (<3.7)
-	{
-		desc:             "oras transport for SIF from registry (SifLayerMediaTypeProto)",
-		srcURI:           "oras://localhost:5000/pull_test_sif_mediatypeproto:latest", // TODO(mem): obtain registry from context
-		force:            true,
-		unauthenticated:  false,
-		expectedExitCode: 0,
-	},
-
-	// pulling of invalid images with oras
-	{
-		desc:             "oras pull of non SIF file",
-		srcURI:           "oras://localhost:5000/pull_test_:latest", // TODO(mem): obtain registry from context
-		force:            true,
-		expectedExitCode: 255,
-	},
-	{
-		desc:             "oras pull of packed dir",
-		srcURI:           "oras://localhost:5000/pull_test_invalid_file:latest", // TODO(mem): obtain registry from context
-		force:            true,
-		expectedExitCode: 255,
-	},
-
-	// pulling with library URI argument
-	{
-		desc:             "bad library URI",
-		srcURI:           "library://busybox:1.31.1",
-		library:          "https://bad-library.sylabs.io",
-		expectedExitCode: 255,
-	},
-	{
-		desc:             "default library URI",
-		srcURI:           "library://busybox:1.31.1",
-		library:          "https://library.sylabs.io",
-		force:            true,
-		expectedExitCode: 0,
-	},
-
-	// pulling with library URI containing host name and library argument
-	{
-		desc:             "library URI containing host name and library argument",
-		srcURI:           "library://notlibrary.sylabs.io/library/default/busybox:1.31.1",
-		library:          "https://notlibrary.sylabs.io",
-		expectedExitCode: 255,
-	},
-
-	// pulling with library URI containing host name
-	{
-		desc:             "library URI containing bad host name",
-		srcURI:           "library://notlibrary.sylabs.io/library/default/busybox:1.31.1",
-		expectedExitCode: 255,
-	},
-	{
-		desc:             "library URI containing host name",
-		srcURI:           "library://library.sylabs.io/library/default/busybox:1.31.1",
-		force:            true,
-		expectedExitCode: 0,
-	},
-}
-
 func (c *ctx) imagePull(t *testing.T, tt testStruct) {
 	// Use a one-time cache directory specific to this pull. This ensures we are always
 	// testing an entire pull operation, performing the download into an empty cache.
 	cacheDir, cleanup := e2e.MakeCacheDir(t, "")
-	defer cleanup(t)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			cleanup(t)
+		}
+	})
 	c.env.UnprivCacheDir = cacheDir
 
 	// We use a string rather than a slice of strings to avoid having an empty
 	// element in the slice, which would cause the command to fail, without
 	// over-complicating the code.
 	argv := ""
+
+	if tt.arch != "" {
+		argv += "--arch " + tt.arch + " "
+	}
 
 	if tt.force {
 		argv += "--force "
@@ -282,7 +129,6 @@ func getImageNameFromURI(imgURI string) string {
 
 func (c *ctx) setup(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
-	e2e.EnsureRegistry(t)
 
 	// setup file and dir to use as invalid images
 	orasInvalidDir, err := os.MkdirTemp(c.env.TestDir, "oras_push_dir-")
@@ -334,13 +180,181 @@ func (c *ctx) setup(t *testing.T) {
 }
 
 func (c ctx) testPullCmd(t *testing.T) {
+	tests := []testStruct{
+		{
+			desc:             "non existent image",
+			srcURI:           "library://sylabs/tests/does_not_exist:0",
+			expectedExitCode: 255,
+		},
+
+		// --allow-unauthenticated tests
+		{
+			desc:             "unsigned image allow unauthenticated",
+			srcURI:           "library://sylabs/tests/unsigned:1.0.0",
+			unauthenticated:  true,
+			expectedExitCode: 0,
+		},
+
+		// --force tests
+		{
+			desc:             "force existing file",
+			srcURI:           "library://alpine:3.11.5",
+			force:            true,
+			createDst:        true,
+			unauthenticated:  true,
+			expectedExitCode: 0,
+		},
+		{
+			desc:             "force non-existing file",
+			srcURI:           "library://alpine:3.11.5",
+			force:            true,
+			createDst:        false,
+			unauthenticated:  true,
+			expectedExitCode: 0,
+		},
+		{
+			// --force should not have an effect on --allow-unauthenticated=false
+			desc:             "unsigned image force require authenticated",
+			srcURI:           "library://sylabs/tests/unsigned:1.0.0",
+			force:            true,
+			unauthenticated:  false,
+			expectedExitCode: 0,
+		},
+
+		// test version specifications
+		{
+			desc:             "image with specific hash",
+			srcURI:           "library://alpine:sha256.03883ca565b32e58fa0a496316d69de35741f2ef34b5b4658a6fec04ed8149a8",
+			arch:             "amd64",
+			unauthenticated:  true,
+			expectedExitCode: 0,
+		},
+		{
+			desc:             "latest tag",
+			srcURI:           "library://alpine:latest",
+			unauthenticated:  true,
+			expectedExitCode: 0,
+		},
+
+		// --dir tests
+		{
+			desc:             "dir no image path",
+			srcURI:           "library://alpine:3.11.5",
+			unauthenticated:  true,
+			setPullDir:       true,
+			setImagePath:     false,
+			expectedExitCode: 0,
+		},
+		{
+			// XXX(mem): this specific test is passing both --path and an image path to
+			// singularity pull. The current behavior is that the code is joining both paths and
+			// failing to find the image in the expected location indicated by image path
+			// because image path is absolute, so after joining /tmp/a/b/c and
+			// /tmp/a/b/image.sif, the code expects to find /tmp/a/b/c/tmp/a/b/image.sif. Since
+			// the directory /tmp/a/b/c/tmp/a/b does not exist, it fails to create the file
+			// image.sif in there.
+			desc:             "dir image path",
+			srcURI:           "library://alpine:3.11.5",
+			unauthenticated:  true,
+			setPullDir:       true,
+			setImagePath:     true,
+			expectedExitCode: 255,
+		},
+
+		// transport tests
+		{
+			desc:             "bare image name",
+			srcURI:           "alpine:3.11.5",
+			force:            true,
+			unauthenticated:  true,
+			expectedExitCode: 0,
+		},
+		// TODO(mem): reenable this; disabled while shub is down
+		// {
+		// 	desc:            "image from shub",
+		// 	srcURI:          "shub://GodloveD/busybox",
+		// 	force:           true,
+		// 	unauthenticated: false,
+		// 	expectSuccess:   true,
+		// },
+		// Finalized v1 layer mediaType (3.7 and onward)
+		{
+			desc:             "oras transport for SIF from registry",
+			srcURI:           "oras://" + c.env.TestRegistry + "/pull_test_sif:latest", // TODO(mem): obtain registry from context
+			force:            true,
+			unauthenticated:  false,
+			expectedExitCode: 0,
+		},
+		// Original/prototype layer mediaType (<3.7)
+		{
+			desc:             "oras transport for SIF from registry (SifLayerMediaTypeProto)",
+			srcURI:           "oras://" + c.env.TestRegistry + "/pull_test_sif_mediatypeproto:latest", // TODO(mem): obtain registry from context
+			force:            true,
+			unauthenticated:  false,
+			expectedExitCode: 0,
+		},
+
+		// pulling of invalid images with oras
+		{
+			desc:             "oras pull of non SIF file",
+			srcURI:           "oras://" + c.env.TestRegistry + "/pull_test_:latest", // TODO(mem): obtain registry from context
+			force:            true,
+			expectedExitCode: 255,
+		},
+		{
+			desc:             "oras pull of packed dir",
+			srcURI:           "oras://" + c.env.TestRegistry + "/pull_test_invalid_file:latest", // TODO(mem): obtain registry from context
+			force:            true,
+			expectedExitCode: 255,
+		},
+
+		// pulling with library URI argument
+		{
+			desc:             "bad library URI",
+			srcURI:           "library://busybox:1.31.1",
+			library:          "https://bad-library.sylabs.io",
+			expectedExitCode: 255,
+		},
+		{
+			desc:             "default library URI",
+			srcURI:           "library://busybox:1.31.1",
+			library:          "https://library.sylabs.io",
+			force:            true,
+			expectedExitCode: 0,
+		},
+
+		// pulling with library URI containing host name and library argument
+		{
+			desc:             "library URI containing host name and library argument",
+			srcURI:           "library://notlibrary.sylabs.io/library/default/busybox:1.31.1",
+			library:          "https://notlibrary.sylabs.io",
+			expectedExitCode: 255,
+		},
+
+		// pulling with library URI containing host name
+		{
+			desc:             "library URI containing bad host name",
+			srcURI:           "library://notlibrary.sylabs.io/library/default/busybox:1.31.1",
+			expectedExitCode: 255,
+		},
+		{
+			desc:             "library URI containing host name",
+			srcURI:           "library://library.sylabs.io/library/default/busybox:1.31.1",
+			force:            true,
+			expectedExitCode: 0,
+		},
+	}
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
 			tmpdir, err := os.MkdirTemp(c.env.TestDir, "pull_test.")
 			if err != nil {
 				t.Fatalf("Failed to create temporary directory for pull test: %+v", err)
 			}
-			defer os.RemoveAll(tmpdir)
+			t.Cleanup(func() {
+				if !t.Failed() {
+					os.RemoveAll(tmpdir)
+				}
+			})
 
 			if tt.setPullDir {
 				tt.pullDir, err = os.MkdirTemp(tmpdir, "pull_dir.")
@@ -470,12 +484,14 @@ func (c ctx) testPullDisableCacheCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temporary directory: %s", err)
 	}
-	defer func() {
-		err := os.RemoveAll(cacheDir)
-		if err != nil {
-			t.Fatalf("failed to delete temporary directory %s: %s", cacheDir, err)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			err := os.RemoveAll(cacheDir)
+			if err != nil {
+				t.Fatalf("failed to delete temporary directory %s: %s", cacheDir, err)
+			}
 		}
-	}()
+	})
 
 	c.env.UnprivCacheDir = cacheDir
 
@@ -492,7 +508,7 @@ func (c ctx) testPullDisableCacheCmd(t *testing.T) {
 		{
 			name:      "oras",
 			imagePath: filepath.Join(c.env.TestDir, "oras.sif"),
-			imageSrc:  "oras://localhost:5000/pull_test_sif:latest",
+			imageSrc:  "oras://" + c.env.TestRegistry + "/pull_test_sif:latest",
 		},
 	}
 
@@ -525,6 +541,11 @@ func (c ctx) testPullDisableCacheCmd(t *testing.T) {
 // testPullUmask will run some pull tests with different umasks, and
 // ensure the output file has the correct permissions.
 func (c ctx) testPullUmask(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, c.env.ImagePath)
+	}))
+	defer srv.Close()
+
 	umask22Image := "0022-umask-pull"
 	umask77Image := "0077-umask-pull"
 	umask27Image := "0027-umask-pull"
@@ -599,7 +620,7 @@ func (c ctx) testPullUmask(t *testing.T) {
 		if tc.force {
 			cmdArgs = append(cmdArgs, "--force")
 		}
-		cmdArgs = append(cmdArgs, tc.imagePath, "library://alpine")
+		cmdArgs = append(cmdArgs, tc.imagePath, srv.URL)
 
 		c.env.RunSingularity(
 			t,

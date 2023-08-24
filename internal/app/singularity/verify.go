@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2020-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -8,16 +8,21 @@ package singularity
 
 import (
 	"context"
+	"crypto"
+	"crypto/x509"
 	"encoding/hex"
-	"errors"
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/pkg/errors"
+	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sylabs/scs-key-client/client"
 	"github.com/sylabs/sif/v2/pkg/integrity"
 	"github.com/sylabs/sif/v2/pkg/sif"
 	"github.com/sylabs/singularity/internal/pkg/buildcfg"
+	"github.com/sylabs/singularity/pkg/sylog"
 	"github.com/sylabs/singularity/pkg/sypgp"
 )
 
@@ -27,22 +32,73 @@ var errNotSignedByRequired = errors.New("image not signed by required entities")
 type VerifyCallback func(*sif.FileImage, integrity.VerifyResult) bool
 
 type verifier struct {
-	opts      []client.Option
-	groupIDs  []uint32
-	objectIDs []uint32
-	all       bool
-	legacy    bool
-	cb        VerifyCallback
+	certs         []*x509.Certificate
+	intermediates *x509.CertPool
+	roots         *x509.CertPool
+	ocsp          bool
+	svs           []signature.Verifier
+	pgp           bool
+	pgpOpts       []client.Option
+	groupIDs      []uint32
+	objectIDs     []uint32
+	all           bool
+	legacy        bool
+	cb            VerifyCallback
 }
 
 // VerifyOpt are used to configure v.
 type VerifyOpt func(v *verifier) error
 
-// OptVerifyUseKeyServer specifies that the keyserver specified by opts be used as a source of key
-// material, in addition to the local public keyring.
-func OptVerifyUseKeyServer(opts ...client.Option) VerifyOpt {
+// OptVerifyWithCertificate appends c as a source of key material to verify signatures.
+func OptVerifyWithCertificate(c *x509.Certificate) VerifyOpt {
 	return func(v *verifier) error {
-		v.opts = opts
+		v.certs = append(v.certs, c)
+		return nil
+	}
+}
+
+// OptVerifyWithIntermediates specifies p as the pool of certificates that can be used to form a
+// chain from the leaf certificate to a root certificate.
+func OptVerifyWithIntermediates(p *x509.CertPool) VerifyOpt {
+	return func(v *verifier) error {
+		v.intermediates = p
+		return nil
+	}
+}
+
+// OptVerifyWithRoots specifies p as the pool of root certificates to use, instead of the system
+// roots or the platform verifier.
+func OptVerifyWithRoots(p *x509.CertPool) VerifyOpt {
+	return func(v *verifier) error {
+		v.roots = p
+		return nil
+	}
+}
+
+// OptVerifyWithVerifier appends sv as a source of key material to verify signatures.
+func OptVerifyWithVerifier(sv signature.Verifier) VerifyOpt {
+	return func(v *verifier) error {
+		v.svs = append(v.svs, sv)
+		return nil
+	}
+}
+
+// OptVerifyWithPGP adds the local public keyring as a source of key material to verify signatures.
+// If supplied, opts specify a keyserver to use in addition to the local public keyring.
+func OptVerifyWithPGP(opts ...client.Option) VerifyOpt {
+	return func(v *verifier) error {
+		v.pgp = true
+		v.pgpOpts = opts
+		return nil
+	}
+}
+
+// OptVerifyWithOCSP subjects the x509 certificate chains to online revocation checks,
+// before the leaf certificate is deemed as trusted for validating the signature.
+func OptVerifyWithOCSP() VerifyOpt {
+	return func(v *verifier) error {
+		v.ocsp = true
+
 		return nil
 	}
 }
@@ -102,35 +158,91 @@ func newVerifier(opts []VerifyOpt) (verifier, error) {
 	return v, nil
 }
 
+// verifyCertificate attempts to verify c is a valid code signing certificate by building one or
+// more chains from c to a certificate in roots, using certificates in intermediates if needed.
+// This function does not do any revocation checking.
+func verifyCertificate(c *x509.Certificate, intermediates, roots *x509.CertPool) (chains [][]*x509.Certificate, err error) {
+	opts := x509.VerifyOptions{
+		Intermediates: intermediates,
+		Roots:         roots,
+		KeyUsages: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageCodeSigning,
+		},
+	}
+
+	return c.Verify(opts)
+}
+
 // getOpts returns integrity.VerifierOpt necessary to validate f.
 func (v verifier) getOpts(ctx context.Context, f *sif.FileImage) ([]integrity.VerifierOpt, error) {
-	var iopts []integrity.VerifierOpt
+	iopts := []integrity.VerifierOpt{
+		integrity.OptVerifyWithContext(ctx),
+	}
 
-	// Add keyring.
-	var kr openpgp.KeyRing
-	if v.opts != nil {
-		hkr, err := sypgp.NewHybridKeyRing(ctx, v.opts...)
+	// Add key material from certificate(s).
+	for _, c := range v.certs {
+		// verify that the leaf certificate is not tampered and that is adequate for signing purposes.
+		chain, err := verifyCertificate(c, v.intermediates, v.roots)
 		if err != nil {
 			return nil, err
 		}
-		kr = hkr
-	} else {
-		pkr, err := sypgp.PublicKeyRing()
+
+		// Verify that the certificate is issued by a trustworthy CA (i.e the certificate chain is not revoked or expired).
+		if v.ocsp {
+			if len(chain) != 1 {
+				return nil, fmt.Errorf("unhandled OCSP condition, chain length %d != 1", len(chain))
+			}
+
+			ocspErr := OCSPVerify(chain[0]...)
+			if ocspErr != nil {
+				// TODO: We need to decide whether this should be strict or permissive.
+				return nil, ocspErr
+			}
+
+			sylog.Debugf("OCSP validation has passed")
+		}
+
+		// verify the signature by using the certificate.
+		sv, err := signature.LoadVerifier(c.PublicKey, crypto.SHA256)
 		if err != nil {
 			return nil, err
 		}
-		kr = pkr
+
+		iopts = append(iopts, integrity.OptVerifyWithVerifier(sv))
 	}
 
-	// wrap the global keyring around
-	global := sypgp.NewHandle(buildcfg.SINGULARITY_CONFDIR, sypgp.GlobalHandleOpt())
-	gkr, err := global.LoadPubKeyring()
-	if err != nil {
-		return nil, err
+	// Add explicitly provided key material source(s).
+	for _, sv := range v.svs {
+		iopts = append(iopts, integrity.OptVerifyWithVerifier(sv))
 	}
-	kr = sypgp.NewMultiKeyRing(gkr, kr)
 
-	iopts = append(iopts, integrity.OptVerifyWithKeyRing(kr))
+	// Add PGP key material, if applicable.
+	if v.pgp {
+		var kr openpgp.KeyRing
+		if v.pgpOpts != nil {
+			hkr, err := sypgp.NewHybridKeyRing(ctx, v.pgpOpts...)
+			if err != nil {
+				return nil, err
+			}
+			kr = hkr
+		} else {
+			pkr, err := sypgp.PublicKeyRing()
+			if err != nil {
+				return nil, err
+			}
+			kr = pkr
+		}
+
+		// wrap the global keyring around
+		global := sypgp.NewHandle(buildcfg.SINGULARITY_CONFDIR, sypgp.GlobalHandleOpt())
+		gkr, err := global.LoadPubKeyring()
+		if err != nil {
+			return nil, err
+		}
+		kr = sypgp.NewMultiKeyRing(gkr, kr)
+
+		iopts = append(iopts, integrity.OptVerifyWithKeyRing(kr))
+	}
 
 	// Add group IDs, if applicable.
 	for _, groupID := range v.groupIDs {
@@ -173,8 +285,13 @@ func (v verifier) getOpts(ctx context.Context, f *sif.FileImage) ([]integrity.Ve
 
 // Verify verifies digital signature(s) in the SIF image found at path, according to opts.
 //
-// By default, the singularity public keyring provides key material. To supplement this with a
-// keyserver, use OptVerifyUseKeyServer.
+// To use key material from an x.509 certificate, use OptVerifyWithCertificate. The system roots or
+// the platform verifier will be used to verify the certificate, unless OptVerifyWithIntermediates
+// and/or OptVerifyWithRoots are specified.
+//
+// To use raw key material, use OptVerifyWithVerifier.
+//
+// To use PGP key material, use OptVerifyWithPGP.
 //
 // By default, non-legacy signatures for all object groups are verified. To override the default
 // behavior, consider using OptVerifyGroup, OptVerifyObject, OptVerifyAll, and/or OptVerifyLegacy.
@@ -202,13 +319,20 @@ func Verify(ctx context.Context, path string, opts ...VerifyOpt) error {
 	if err != nil {
 		return err
 	}
+
 	return iv.Verify()
 }
 
-// VerifyFingerprints verifies an image and checks it was signed by *all* of the provided fingerprints
+// VerifyFingerprints verifies an image and checks it was signed by *all* of the provided
+// fingerprints.
 //
-// By default, the singularity public keyring provides key material. To supplement this with a
-// keyserver, use OptVerifyUseKeyServer.
+// To use key material from an x.509 certificate, use OptVerifyWithCertificate. The system roots or
+// the platform verifier will be used to verify the certificate, unless OptVerifyWithIntermediates
+// and/or OptVerifyWithRoots are specified.
+//
+// To use raw key material, use OptVerifyWithVerifier.
+//
+// To use PGP key material, use OptVerifyWithPGP.
 //
 // By default, non-legacy signatures for all object groups are verified. To override the default
 // behavior, consider using OptVerifyGroup, OptVerifyObject, OptVerifyAll, and/or OptVerifyLegacy.

@@ -147,10 +147,11 @@ mount slave = {{ if eq .MountSlave true }}yes{{ else }}no{{ end }}
 
 
 # SESSIONDIR MAXSIZE: [STRING]
-# DEFAULT: 16
-# This specifies how large the default sessiondir should be (in MB) and it will
-# only affect users who use the "--contain" options and don't also specify a
-# location to do default read/writes to (e.g. "--workdir" or "--home").
+# DEFAULT: 64
+# This specifies how large the default tmpfs sessiondir should be (in MB).
+# The sessiondir is used to hold data written to isolated directories when
+# running with --contain, ephemeral changes when running with --writable-tmpfs.
+# In --oci mode, each tmpfs mount in the container can be up to this size.
 sessiondir max size = {{ .SessiondirMaxSize }}
 
 
@@ -209,10 +210,11 @@ always use nv = {{ if eq .AlwaysUseNv true }}yes{{ else }}no{{ end }}
 
 
 # ROOT DEFAULT CAPABILITIES: [full/file/no]
-# DEFAULT: no
+# DEFAULT: full
 # Define default root capability set kept during runtime
 # - full: keep all capabilities (same as --keep-privs)
-# - file: keep capabilities configured in ${prefix}/etc/singularity/capabilities/user.root
+# - file: keep capabilities configured for root in
+#         ${prefix}/etc/singularity/capability.json
 # - no: no capabilities (same as --no-privs)
 root default capabilities = {{ .RootDefaultCapabilities }}
 

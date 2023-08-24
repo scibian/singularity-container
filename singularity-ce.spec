@@ -25,39 +25,49 @@
 #   file in debugsourcefiles.list on Fedora
 %undefine _debugsource_packages
 
-Summary: Application and environment virtualization
 Name: singularity-ce
-Version: 3.10.5
+Version: 3.11.4
 Release: 1%{?dist}
+Summary: Application and environment virtualization
+
 # See LICENSE.md for first party code (BSD-3-Clause and LBNL BSD)
 # See LICENSE_THIRD_PARTY.md for incorporated code (ASL 2.0)
 # See LICENSE_DEPENDENCIES.md for dependencies
 # License identifiers taken from: https://fedoraproject.org/wiki/Licensing
 License: BSD-3-Clause and LBNL BSD and ASL 2.0
-URL: https://www.sylabs.io/singularity/
-Source: %{name}-3.10.5.tar.gz
-ExclusiveOS: linux
 
-BuildRequires: git
+URL: https://www.sylabs.io/singularity/
+Source: %{name}-3.11.4.tar.gz
+
+# Note - we do not require Golang. It can be too old in distros, and we assume it
+# may be provided outside of a distro package here. This does break building via
+# mock. Distro packages derived from this spec need to require it.
 BuildRequires: gcc
 BuildRequires: make
+# Paths to runtime dependencies detected by mconfig, so must be present at build time.
+BuildRequires: cryptsetup
+%if "%{_target_vendor}" == "suse"
+BuildRequires: squashfs
+%else
+BuildRequires: squashfs-tools
+%endif
+# Required for building bundled conmon
 BuildRequires: libseccomp-devel
 BuildRequires: glib2-devel
-BuildRequires: cryptsetup
 
-Requires: cryptsetup
-Requires: glib2
+# crun requirement not satisfied on EL7 or SLES default repos - use runc there.
+%if "%{_target_vendor}" == "suse" || 0%{?rhel} < 8
 Requires: runc
+%else
+Requires: crun
+%endif
 %if "%{_target_vendor}" == "suse"
 Requires: squashfs
-Requires: libseccomp2
 %else
+Requires: shadow-utils
 Requires: squashfs-tools
-Requires: libseccomp
 %endif
-
-# there's no golang for ppc64, just ppc64le
-ExcludeArch: ppc64
+Requires: cryptsetup
 
 Provides: %{name}-runtime
 
@@ -78,31 +88,10 @@ Conflicts: singularitypro39
 SingularityCE is the Community Edition of Singularity, an open source
 container platform designed to be simple, fast, and secure.
 
-%debug_package
-
 %prep
-%if "%{?buildroot}"
-export RPM_BUILD_ROOT="%{buildroot}"
-%endif
-
-# Create our build root
-chmod -R +w %{name}-%{version} || true
-rm -rf %{name}-%{version}
-mkdir %{name}-%{version}
+%autosetup -n %{name}-3.11.4
 
 %build
-cd %{name}-%{version}
-
-# Setup an empty GOPATH for the build
-export GOPATH=$PWD/gopath
-mkdir -p "$GOPATH"
-
-# Extract the source
-tar -xf "%SOURCE0"
-cd %{name}-3.10.5
-
-# Not all of these parameters currently have an effect, but they might be
-#  used someday.  They are the same parameters as in the configure macro.
 ./mconfig -V %{version}-%{release} \
         --prefix=%{_prefix} \
         --exec-prefix=%{_exec_prefix} \
@@ -118,23 +107,20 @@ cd %{name}-3.10.5
         --mandir=%{_mandir} \
         --infodir=%{_infodir}
 
-make -C builddir old_config=
+%make_build -C builddir old_config= V=
 
 %install
-cd %{name}-%{version}
-
-export GOPATH=$PWD/gopath
-cd %{name}-3.10.5
-
-make -C builddir DESTDIR=$RPM_BUILD_ROOT install
+%make_install -C builddir V=
 
 %files
 %attr(4755, root, root) %{_libexecdir}/singularity/bin/starter-suid
 %{_bindir}/singularity
 %{_bindir}/run-singularity
 %dir %{_libexecdir}/singularity
-%{_libexecdir}/singularity/bin/starter
+%dir %{_libexecdir}/singularity/bin
 %{_libexecdir}/singularity/bin/conmon
+%{_libexecdir}/singularity/bin/starter
+%dir %{_libexecdir}/singularity/cni
 %{_libexecdir}/singularity/cni/*
 %dir %{_sysconfdir}/singularity
 %config(noreplace) %{_sysconfdir}/singularity/*.conf
@@ -142,8 +128,11 @@ make -C builddir DESTDIR=$RPM_BUILD_ROOT install
 %config(noreplace) %{_sysconfdir}/singularity/*.json
 %config(noreplace) %{_sysconfdir}/singularity/*.yaml
 %config(noreplace) %{_sysconfdir}/singularity/global-pgp-public
+%dir %{_sysconfdir}/singularity/cgroups
 %config(noreplace) %{_sysconfdir}/singularity/cgroups/*
+%dir %{_sysconfdir}/singularity/network
 %config(noreplace) %{_sysconfdir}/singularity/network/*
+%dir %{_sysconfdir}/singularity/seccomp-profiles
 %config(noreplace) %{_sysconfdir}/singularity/seccomp-profiles/*
 %dir %{_sysconfdir}/bash_completion.d
 %{_sysconfdir}/bash_completion.d/*
@@ -151,13 +140,11 @@ make -C builddir DESTDIR=$RPM_BUILD_ROOT install
 %dir %{_localstatedir}/singularity/mnt
 %dir %{_localstatedir}/singularity/mnt/session
 %{_mandir}/man1/singularity*
-%license %{name}-%{version}/%{name}-3.10.5/LICENSE.md
-%license %{name}-%{version}/%{name}-3.10.5/LICENSE_THIRD_PARTY.md
-%license %{name}-%{version}/%{name}-3.10.5/LICENSE_DEPENDENCIES.md
-%doc %{name}-%{version}/%{name}-3.10.5/README.md
-%doc %{name}-%{version}/%{name}-3.10.5/CHANGELOG.md
-%doc %{name}-%{version}/%{name}-3.10.5/CONTRIBUTING.md
-%doc %{name}-%{version}/%{name}-3.10.5/CONTRIBUTORS.md
+%license LICENSE.md
+%license LICENSE_THIRD_PARTY.md
+%license LICENSE_DEPENDENCIES.md
+%doc README.md
+%doc CHANGELOG.md
+%doc CONTRIBUTING.md
 
 %changelog
-

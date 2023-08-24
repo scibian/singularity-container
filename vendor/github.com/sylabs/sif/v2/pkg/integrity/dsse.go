@@ -1,4 +1,4 @@
-// Copyright (c) 2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2022-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -7,6 +7,7 @@ package integrity
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"encoding/json"
 	"errors"
@@ -40,7 +41,7 @@ func newDSSEEncoder(ss []signature.Signer, opts ...signature.SignOption) (*dsseE
 		opts = append(opts, options.WithCryptoSignerOpts(so))
 	}
 
-	dss := make([]dsse.SignVerifier, 0, len(ss))
+	dss := make([]dsse.SignerVerifier, 0, len(ss))
 	for _, s := range ss {
 		ds, err := newDSSESigner(s, opts...)
 		if err != nil {
@@ -64,13 +65,13 @@ func newDSSEEncoder(ss []signature.Signer, opts ...signature.SignOption) (*dsseE
 
 // signMessage signs the message from r in DSSE format, and writes the result to w. On success, the
 // hash function is returned.
-func (en *dsseEncoder) signMessage(w io.Writer, r io.Reader) (crypto.Hash, error) {
+func (en *dsseEncoder) signMessage(ctx context.Context, w io.Writer, r io.Reader) (crypto.Hash, error) {
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return 0, err
 	}
 
-	e, err := en.es.SignPayload(en.payloadType, body)
+	e, err := en.es.SignPayload(ctx, en.payloadType, body)
 	if err != nil {
 		return 0, err
 	}
@@ -101,7 +102,7 @@ var (
 
 // verifyMessage reads a message from r, verifies its signature(s), and returns the message
 // contents. On success, the accepted public keys are set in vr.
-func (de *dsseDecoder) verifyMessage(r io.Reader, h crypto.Hash, vr *VerifyResult) ([]byte, error) {
+func (de *dsseDecoder) verifyMessage(ctx context.Context, r io.Reader, h crypto.Hash, vr *VerifyResult) ([]byte, error) { //nolint:lll
 	vs := make([]dsse.Verifier, 0, len(de.vs))
 	for _, v := range de.vs {
 		dv, err := newDSSEVerifier(v, options.WithCryptoSignerOpts(h))
@@ -122,7 +123,7 @@ func (de *dsseDecoder) verifyMessage(r io.Reader, h crypto.Hash, vr *VerifyResul
 		return nil, err
 	}
 
-	vr.aks, err = v.Verify(&e)
+	vr.aks, err = v.Verify(ctx, &e)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errDSSEVerifyEnvelopeFailed, err)
 	}
@@ -140,7 +141,7 @@ type dsseSigner struct {
 	pub  crypto.PublicKey
 }
 
-// newDSSESigner returns a dsse.SignVerifier that uses s to sign according to opts. Note that the
+// newDSSESigner returns a dsse.SignerVerifier that uses s to sign according to opts. Note that the
 // returned value is suitable only for signing, and not verification.
 func newDSSESigner(s signature.Signer, opts ...signature.SignOption) (*dsseSigner, error) {
 	pub, err := s.PublicKey()
@@ -156,15 +157,18 @@ func newDSSESigner(s signature.Signer, opts ...signature.SignOption) (*dsseSigne
 }
 
 // Sign signs the supplied data.
-func (s *dsseSigner) Sign(data []byte) ([]byte, error) {
-	return s.s.SignMessage(bytes.NewReader(data), s.opts...)
+func (s *dsseSigner) Sign(ctx context.Context, data []byte) ([]byte, error) {
+	opts := s.opts
+	opts = append(opts, options.WithContext(ctx))
+
+	return s.s.SignMessage(bytes.NewReader(data), opts...)
 }
 
-var errSignNotImplemented = errors.New("sign not implemented")
+var errVerifyNotImplemented = errors.New("verify not implemented")
 
-// Verify is not implemented, but required for the dsse.SignVerifier interface.
-func (s *dsseSigner) Verify(data, sig []byte) error {
-	return errSignNotImplemented
+// Verify is not implemented, but required for the dsse.SignerVerifier interface.
+func (s *dsseSigner) Verify(_ context.Context, _, _ []byte) error {
+	return errVerifyNotImplemented
 }
 
 // Public returns the public key associated with s.
@@ -198,8 +202,11 @@ func newDSSEVerifier(v signature.Verifier, opts ...signature.VerifyOption) (*dss
 }
 
 // Verify verifies that sig is a valid signature of data.
-func (v *dsseVerifier) Verify(data, sig []byte) error {
-	return v.v.VerifySignature(bytes.NewReader(sig), bytes.NewReader(data), v.opts...)
+func (v *dsseVerifier) Verify(ctx context.Context, data, sig []byte) error {
+	opts := v.opts
+	opts = append(opts, options.WithContext(ctx))
+
+	return v.v.VerifySignature(bytes.NewReader(sig), bytes.NewReader(data), opts...)
 }
 
 // Public returns the public key associated with v.

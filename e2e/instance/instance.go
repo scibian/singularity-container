@@ -144,6 +144,12 @@ func (c *ctx) testBasicOptions(t *testing.T) {
 				t.Errorf("Hostname is %s, but expected %s", stdout, testHostname)
 			}
 
+			// Verify that the SINGULARITY_INSTANCE has been set correctly.
+			stdout, _, success = c.execInstance(t, instanceName, "sh", "-c", "echo $SINGULARITY_INSTANCE")
+			if success && !bytes.Equal([]byte(instanceName+"\n"), []byte(stdout)) {
+				t.Errorf("SINGULARITY_INSTANCE is %s, but expected %s", stdout, instanceName)
+			}
+
 			// Stop the instance.
 			c.stopInstance(t, instanceName)
 		}),
@@ -198,8 +204,9 @@ func (c *ctx) testContain(t *testing.T) {
 
 // Test by running directly from URI
 func (c *ctx) testInstanceFromURI(t *testing.T) {
-	name := "test_from_library"
-	args := []string{"library://busybox:1.31.1", name}
+	e2e.EnsureORASImage(t, c.env)
+	name := "test_from_uri"
+	args := []string{c.env.OrasTestImage, name}
 	c.env.RunSingularity(
 		t,
 		e2e.WithProfile(c.profile),

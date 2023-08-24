@@ -23,10 +23,10 @@ import (
 func FindBin(name string) (path string, err error) {
 	switch name {
 	// Basic system executables that we assume are always on PATH
-	case "true", "mkfs.ext3", "cp", "rm", "dd":
+	case "true", "mkfs.ext3", "cp", "rm", "dd", "truncate":
 		return findOnPath(name)
 	// Bootstrap related executables that we assume are on PATH
-	case "mount", "mknod", "debootstrap", "pacstrap", "dnf", "yum", "rpm", "curl", "uname", "zypper", "SUSEConnect", "rpmkeys":
+	case "mount", "mknod", "debootstrap", "pacstrap", "dnf", "yum", "rpm", "curl", "uname", "zypper", "SUSEConnect", "rpmkeys", "proot":
 		return findOnPath(name)
 	// Configurable executables that are found at build time, can be overridden
 	// in singularity.conf. If config value is "" will look on PATH.
@@ -36,7 +36,7 @@ func FindBin(name string) (path string, err error) {
 	case "newuidmap", "newgidmap":
 		return findOnPath(name)
 	// distro provided OCI runtime
-	case "runc":
+	case "crun", "runc":
 		return findOnPath(name)
 	// our, or distro provided conmon
 	case "conmon":
@@ -66,7 +66,7 @@ func findOnPath(name string) (path string, err error) {
 	os.Setenv("PATH", oldPath+":"+env.DefaultPath)
 
 	path, err = exec.LookPath(name)
-	if err != nil {
+	if err == nil {
 		sylog.Debugf("Found %q at %q", name, path)
 	}
 	return path, err

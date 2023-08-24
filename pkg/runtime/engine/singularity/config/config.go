@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2019-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -12,6 +12,7 @@ import (
 
 	"github.com/sylabs/singularity/internal/pkg/runtime/engine/config/oci"
 	"github.com/sylabs/singularity/pkg/image"
+	"github.com/sylabs/singularity/pkg/util/bind"
 	"github.com/sylabs/singularity/pkg/util/singularityconf"
 )
 
@@ -69,7 +70,7 @@ type JSONConfig struct {
 	LibrariesPath         []string          `json:"librariesPath,omitempty"`
 	FuseMount             []FuseMount       `json:"fuseMount,omitempty"`
 	ImageList             []image.Image     `json:"imageList,omitempty"`
-	BindPath              []BindPath        `json:"bindpath,omitempty"`
+	BindPath              []bind.Path       `json:"bindpath,omitempty"`
 	SingularityEnv        map[string]string `json:"singularityEnv,omitempty"`
 	UnixSocketPair        [2]int            `json:"unixSocketPair,omitempty"`
 	OpenFd                []int             `json:"openFd,omitempty"`
@@ -126,6 +127,7 @@ type JSONConfig struct {
 	XdgRuntimeDir         string            `json:"xdgRuntimeDir,omitempty"`
 	DbusSessionBusAddress string            `json:"dbusSessionBusAddress,omitempty"`
 	NoEval                bool              `json:"noEval,omitempty"`
+	NoSetgroups           bool              `json:"noSetgroups,omitempty"`
 }
 
 // SetImage sets the container image path to be used by EngineConfig.JSON.
@@ -269,12 +271,12 @@ func (e *EngineConfig) GetCustomHome() bool {
 }
 
 // SetBindPath sets the paths to bind into container.
-func (e *EngineConfig) SetBindPath(bindpath []BindPath) {
+func (e *EngineConfig) SetBindPath(bindpath []bind.Path) {
 	e.JSON.BindPath = bindpath
 }
 
 // GetBindPath retrieves the bind paths.
-func (e *EngineConfig) GetBindPath() []BindPath {
+func (e *EngineConfig) GetBindPath() []bind.Path {
 	return e.JSON.BindPath
 }
 
@@ -484,7 +486,7 @@ func (e *EngineConfig) SetSkipBinds(val []string) {
 }
 
 // GetSkipBinds gets bind paths to skip
-func (e *EngineConfig) GetNoBinds() []string {
+func (e *EngineConfig) GetSkipBinds() []string {
 	return e.JSON.SkipBinds
 }
 
@@ -832,4 +834,16 @@ func (e *EngineConfig) SetNoEval(noEval bool) {
 // runscripts generated from OCI containers CMD/ENTRYPOINT.
 func (e *EngineConfig) GetNoEval() bool {
 	return e.JSON.NoEval
+}
+
+// SetNoSetgroups sets whether to skip the setgroups call for a container in a
+// user namespace.
+func (e *EngineConfig) SetNoSetgroups(noSetgroups bool) {
+	e.JSON.NoSetgroups = noSetgroups
+}
+
+// GetNoSetgroups gets whether to skip the setgroups call for a container in a
+// user namespace.
+func (e *EngineConfig) GetNoSetgroups() bool {
+	return e.JSON.NoSetgroups
 }

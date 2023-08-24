@@ -1,5 +1,270 @@
 # SingularityCE Changelog
 
+## 3.11.4 \[2023-06-22\]
+
+### Changed defaults / behaviours
+
+- Add `xino=on` mount option for writable kernel overlay mount points to fix
+  inode numbers consistency after kernel cache flush.
+
+### New Features & Functionality
+
+- The `tap` CNI plugin, new to github.com/containernetworking/plugins v1.3.0,
+  is now provided.
+- Added `remote get-login-password` subcommand that allows the user to
+  retrieve a CLI token to interact with the OCI registry of a
+  Singularity Enterprise instance.
+- Added `--no-setgroups` flag for `--fakeroot` builds and run/shell/exec. This
+  prevents the `setgroups` syscall being used on the container process in the
+  fakeroot user namespace. Maintains access from within the user namespace to
+  files on the host that have permissions based on supplementary group
+  membership. Note that supplementary groups are mapped to `nobody` in the
+  container, and `chgrp`, `newgrp`, etc. cannot be used.
+- Added ability to set a custom user config directory (default
+  `$HOME/.singularity`) via the new `SINGULARITY_CONFIGDIR` environment
+  variable.
+
+### Bug Fixes
+
+- In `--oci` mode, do not attempt to use unprivileged overlay on systems that do
+  not support it.
+- Fix dropped "n" characters on some platforms in definition file stored as part
+  of SIF metadata.
+- Pass STDIN to `--oci` containers correctly, to fix piping input to a container.
+- Fix compilation on 32-bit systems.
+- Fix seccomp filters to allow mknod/mknodat syscalls to create pipe/socket
+  and character devices with device number 0 for fakeroot builds.
+- Fix freeze when copying files between stages in an unprivileged proot build.
+- Fix non-POSIX sh operator in mconfig.
+- Correct internal name for CAP_BLOCK_SUSPEND.
+
+## 3.11.3 \[2023-05-04\]
+
+### Changed defaults / behaviours
+
+- `--oci` mode now provides a writable container by default, using a tmpfs
+  overlay. This improves parity with `--compat` mode in the native runtime, as
+  `--compat` enables `--writable-tmpfs`.
+
+### Bug Fixes
+
+- Ensure the `allow kernel squashfs` directive in `singularity.conf` applies to
+  encrypted squashfs filesystems in a SIF.
+
+## 3.11.2 \[2023-04-27\]
+
+### New Features & Functionality
+
+- OCI mode now supports `--hostname` (requires UTS namespace, therefore this
+  flag will infer `--uts`).
+- OCI mode now supports `--scratch` (shorthand: `-S`) to mount a tmpfs scratch
+  directory in the container.
+- Support `--pwd` in OCI mode.
+- OCI mode now supports `--home`. Supplying a single location (e.g.
+  `--home /myhomedir`) will result in a new tmpfs directory being created at the
+  specified location inside the container, and that dir being set as the
+  in-container user's home dir. Supplying two locations separated by a colon
+  (e.g. `--home /home/user:/myhomedir`) will result in the first location on the
+  host being bind-mounted as the second location in-container, and set as
+  the in-container user's home dir.
+- OCI mode now handles `--dns` and `resolv.conf` on par with native mode: the
+  `--dns` flag can be used to pass a comma-separated list of DNS servers that
+  will be used in the container; if this flag is not used, the container will
+  use the same `resolv.conf` settings as the host.
+- Added `allow kernel squashfs` directive to `singularity.conf`. Defaults to
+  `yes`. When set to no, Singularity will not mount squashfs filesystems using
+  the kernel squashfs driver.
+- Added `allow kernel extfs` directive to `singularity.conf`. Defaults to `yes`.
+  When set to no, Singularity will not mount extfs filesystems using the kernel
+  extfs driver.
+
+### Bug Fixes
+
+- Require `runc` in RPM packages built on SLES, not `crun`, because `crun` is
+  part of the Package Hub community repository that may not be enabled.
+  SingularityCE will still prefer `crun` if it has been installed.
+- Use `/dev/loop-control` for loop device creation, to avoid issues with recent
+  kernel patch where `max_loop` is not set.
+- Always request inner userns in `--oci` mode without `--fakeroot`, so that
+  inner id mapping is applied correctly.
+- Use correct target uid/gid for inner id mappings in `--oci` mode.
+- Avoid `runc` cgroup creation error when using `--oci` from a root-owned cgroup
+  (e.g. ssh login session scope).
+- Pass host's `TERM` environment variable to container in OCI mode. Can be
+  overridden by setting `SINGULARITYENV_TERM` on host.
+- Honour `config passwd` and `config group` directives from `singularity.conf`
+  in `--oci` mode.
+- Honour `mount proc` / `mount sys` / `mount tmp` / `mount home` directives from
+  `singularity.conf` in `--oci` mode.
+- Corrected `singularity.conf` comment, to refer to correct file as source
+  of default capabilities when `root default capabilities = file`.
+
+## 3.11.1 \[2023-03-14\]
+
+### New Features & Functionality
+
+- Add `setopt` definition file header for the `yum` bootstrap agent. The
+  `setopt` value is passed to `yum / dnf` using the `--setopt` flag. This
+  permits setting e.g. `install_weak_deps=False` to bootstrap recent versions of
+  Fedora, where `systemd` (a weak dependency) cannot install correctly in the
+  container. See `examples/Fedora` for an example defintion file.
+- Warn user that a `yum` bootstrap of an older distro may fail if the host rpm
+  `_db_backend` is not `bdb`.
+
+### Bug Fixes
+
+- Fix implied `--writable-tmpfs` with `--nvccli`, to avoid r/o filesytem
+  error.
+- Avoid incorrect error when requesting fakeroot network.
+- Pass computed `LD_LIBRARY_PATH` to wrapped unsquashfs. Fixes issues where
+  `unsquashfs` on host uses libraries in non-default paths.
+- Show correct memory limit in `instance stats` when a limit is set.
+- Ensure consistent binding of libraries under `--nv/--rocm` when duplicate
+  `<library>.so[.version]` files are listed by `ldconfig -p`.
+- Fix systemd cgroup manager error when running a container as a non-root
+  user with `--oci`, on systems with cgroups v1 and `runc`.
+- Fix joining cgroup of instance started as root, with cgroups v1,
+  non-default cgroupfs manager, and no device rules.
+
+### Changed defaults / behaviours
+
+- Show standard output of yum bootstrap if log level is verbose or higher.
+
+## 3.11.0 \[2023-02-10\]
+
+### Changed defaults / behaviours
+
+- Image driver plugins, implementing the `RegisterImageDriver` callback, are
+  deprecated and will be removed in 4.0. Support for the example plugin,
+  permitting Ubuntu unprivileged overlay functionality, has been replaced with
+  direct support for kernel unprivileged overlay.
+- When the kernel supports unprivileged overlay mounts in a user namespace, the
+  container will be constructed using an overlay instead of underlay layout.
+- `crun` will be used as the low-level OCI runtime, when available, rather than
+  `runc`. If `crun` is not available, `runc` will be used.
+- `sessiondir maxsize` in `singularity.conf` now defaults to 64 MiB for new
+  installations. This is an increase from 16 MiB in prior versions.
+- Instances are started in a cgroup, by default, when run as root or when
+  unified cgroups v2 with systemd as manager is configured. This allows
+  `singularity instance stats` to be supported by default when possible.
+
+### New features / functionalities
+
+#### Image Building
+
+- Support for a custom hashbang in the `%test` section of a Singularity recipe
+  (akin to the runscript and start sections).
+- Non-root users can now build from a definition file, on systems that do not
+  support `--fakeroot`. This requires the statically built `proot` command
+  (<https://proot-me.github.io/>) to be available on the user `PATH`. These
+  builds:
+  - Do not support `arch` / `debootstrap` / `yum` / `zypper` bootstraps. Use
+    `localimage`, `library`, `oras`, or one of the docker/oci sources.
+  - Do not support `%pre` and `%setup` sections.
+  - Run the `%post` sections of a build in the container as an emulated root
+    user.
+  - Run the `%test` section of a build as the non-root user, like `singularity
+    test`.
+  - Are subject to any restrictions imposed in `singularity.conf`.
+  - Incur a performance penalty due to `proot`'s `ptrace` based interception of
+    syscalls.
+  - May fail if the `%post` script requires privileged operations that `proot`
+    cannot emulate.
+
+#### Instances
+
+- Instances started by a non-root user can use `--apply-cgroups` to apply
+  resource limits. Requires cgroups v2, and delegation configured via systemd.
+- A new `instance stats` command displays basic resource usage statistics for a
+  specified instance, running within a cgroup.
+
+#### Mounts & Overlays
+
+- `--writable-tmpfs` is now available when running unprivileged, or explicitly
+  requesting a user namespace, on systems with a kernel that supports
+  unprivileged overlay mounts in a user namespace.
+- The `--no-mount` flag now accepts the value `bind-paths` to disable mounting
+  of all `bind path` entries in `singularity.conf`.
+- Persistent overlays (`--overlay`) from a directory are now available when
+  running unprivileged, or explicitly requesting a user namespace, on systems
+  with a kernel that supports unprivileged overlay mounts in a user namespace.
+- Add `--sparse` flag to `overlay create` command to allow generation of a
+  sparse ext3 overlay image.
+
+#### OCI / Docker Compatibility
+
+- Support for `DOCKER_HOST` parsing when using `docker-daemon://`
+- `DOCKER_USERNAME` and `DOCKER_PASSWORD` supported without `SINGULARITY_` prefix.
+- A new `--oci` flag for `run/exec/shell` enables the experimental OCI runtime
+  mode. This mode:
+  - Runs OCI container images from an OCI bundle, using `runc` or `crun`.
+  - Supports `docker://`, `docker-archive:`, `docker-daemon:`, `oci:`,
+    `oci-archive:` image sources.
+  - Does not support running Singularity SIF, SquashFS, or EXT3 images.
+  - Provides an environment similar to Singularity's native runtime, running
+    with `--compat`.
+  - Supports the following options / flags. Other options are not yet supported:
+    - `--fakeroot` for effective root in the container. Requires subuid/subgid
+      mappings.
+    - Bind mounts via `--bind` or `--mount`. No image mounts.
+    - Additional namespaces requests with `--net`, `--uts`, `--user`.
+    - Container environment variables via `--env`, `--env-file`, and
+      `SINGULARITYENV_` host env vars.
+    - `--rocm` to bind ROCm GPU libraries and devices into the container.
+    - `--nv` to bind Nvidia driver / basic CUDA libraries and devices into the
+      container.
+    - `--apply-cgroups`, and the `--cpu*`, `--blkio*`, `--memory*`,
+      `--pids-limit` flags to apply resource limits.
+- Instance name is available inside an instance via the new
+  `SINGULARITY_INSTANCE` environment variable.
+
+#### Signing & Verification
+
+- The `sign` command now supports signing with non-PGP key material by
+  specifying the path to a private key via the `--key` flag.
+- The `verify` command now supports verification with non-PGP key material by
+  specifying the path to a public key via the `--key` flag.
+- The `verify` command now supports verification with X.509 certificates by
+  specifying the path to a certificate via the `--certificate` flag. By default,
+  the system root certificate pool is used as trust anchors unless overridden
+  via the `--certificate-roots` flag. A pool of intermediate certificates that
+  are not trust anchors, but can be used to form a certificate chain can also be
+  specified via the `--certificate-intermediates` flag.
+- Support for online verification checks of x509 certificates using OCSP
+  protocol. (introduced flag: `verify --ocsp-verify`)
+
+#### Other
+
+- Add new Linux capabilities: `CAP_PERFMON`, `CAP_BPF`,
+  `CAP_CHECKPOINT_RESTORE`.
+- A new `--reproducible` flag for `./mconfig` will configure Singularity so that
+  its binaries do not contain non-reproducible paths. This disables plugin
+  functionality.
+
+### Bug Fixes
+
+- In `--rocm` mode, the whole of `/dev/dri` is now bound into the container when
+  `--contain` is in use. This makes `/dev/dri/render` devices available,
+  required for later ROCm versions.
+- Overlay is blocked on the `panfs` filesystem, allowing sandbox directories to
+  be run from `panfs` without error.
+- Avoid UID / GID readonly var warnings with `--env-file`.
+
+### Development / Testing
+
+- Significant reduction in the use of network image sources in the e2e tests.
+- Improved parallelization and use of image caches in the e2e tests.
+- The `e2e-test` makefile target now accepts an argument `E2E_GROUPS` to only
+  run specified groups of end to end tests. E.g. `make -C builddir e2e-test
+  E2E_GROUPS=VERSION,HELP` will run end to end tests in the `VERSION` and `HELP`
+  groups only.
+- The `e2e-test` makefile target now accepts an argument `E2E_TESTS` which is a
+  regular expression specifying the names of (top level) end to end tests that
+  should be run. E.g. `make -C builddir e2e-test E2E_TESTS=^semantic` will only
+  run end to end tests with a name that begins with `semantic`. These `E2E_`
+  variables offer an alternative to the `-run` flag, which may be easier to use
+  given the structure of e2e tests.
+
 ## 3.10.5 \[2022-01-17\]
 
 ### Security Related Fixes
@@ -45,9 +310,9 @@
 
 ### Bug Fixes
 
-- Ensure no empty `if` branch is present in generated OCI image
-  runscripts. Would prevent execution of container by other tools that
-  are not using mvdan.cc/sh.
+- Ensure no empty `if` branch is present in generated OCI image runscripts.
+  Would prevent execution of container by other tools that are not using
+  mvdan.cc/sh.
 
 ## 3.10.1 \[2022-07-18\]
 
@@ -133,7 +398,10 @@
 - Correctly launch CleanupHost process only when needed in `--sif-fuse` flow.
 - Add specific error for unreadable image / overlay file.
 - Ensure cgroups device limits are default allow per past behavior.
-- Improve error message when remote build server does not support the `%files` section.
+- Improve error message when remote build server does not support the `%files`
+  section.
+- Fix non-root instance join with unprivileged systemd managed cgroups, when
+  join is from outside a user-owned cgroup.
 
 ## v3.9.9 \[2022-04-22\]
 
@@ -1231,7 +1499,7 @@ This point release addresses the following issues:
   the existing container ecosystem
 - Added support for new URIs (`build` & `run/exec/shell/start`):
   - `library://` - Supports the
-    [Sylabs Cloud Library](https://cloud.sylabs.io/library)
+    [Sylabs.io Cloud Library](https://cloud.sylabs.io/library)
   - `docker-daemon:` - Supports images managed by the locally running docker
     daemon
   - `docker-archive:` - Supports archived docker images
@@ -1266,7 +1534,7 @@ This point release addresses the following issues:
 - Added `singularity capability` command to allow fine grained control over the
   capabilities of running containers
 - Added `singularity push` command to push images to the
-  [Sylabs Cloud Library](https://cloud.sylabs.io/library)
+  [Sylabs.io Cloud Library](https://cloud.sylabs.io/library)
 
 ### Changed Commands
 
@@ -1325,14 +1593,14 @@ This point release addresses the following issues:
   supports `sandbox` image types\]
 - The `singularity build` command now supports the following flags for
   integration with the
-  [Sylabs Cloud Library](https://cloud.sylabs.io/library):
+  [Sylabs.io Cloud Library](https://cloud.sylabs.io/library):
   - `-r|--remote`: Build the image remotely on the Sylabs Remote Builder
     (currently unavailable)
   - `-d|--detached`: Detach from the `stdout` of the remote build \[requires
     `--remote`\]
   - `--builder <string>`: Specifies the URL of the remote builder to access
   - `--library <string>`: Specifies the URL of the
-    [Sylabs Cloud Library](https://cloud.sylabs.io/library) to push the built
+    [Sylabs.io Cloud Library](https://cloud.sylabs.io/library) to push the built
     image to when the build command destination is in the form
     `library://<reference>`
 - The `bootstrap` keyword in the definition file now supports the following

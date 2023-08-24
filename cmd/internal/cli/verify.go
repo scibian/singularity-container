@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2017-2020, Sylabs Inc. All rights reserved.
+// Copyright (c) 2017-2022, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,9 +7,10 @@
 package cli
 
 import (
-	"fmt"
+	"crypto"
 	"os"
 
+	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/spf13/cobra"
 	"github.com/sylabs/singularity/docs"
 	"github.com/sylabs/singularity/internal/app/singularity"
@@ -19,12 +20,17 @@ import (
 )
 
 var (
-	sifGroupID   uint32 // -g groupid specification
-	sifDescID    uint32 // -i id specification
-	localVerify  bool   // -l flag
-	jsonVerify   bool   // -j flag
-	verifyAll    bool
-	verifyLegacy bool
+	sifGroupID                   uint32 // -g groupid specification
+	sifDescID                    uint32 // -i id specification
+	certificatePath              string // --certificate flag
+	certificateIntermediatesPath string // --certificate-intermediates flag
+	certificateRootsPath         string // --certificate-roots flag
+	ocspVerify                   bool   // --ocsp-verify flag
+	pubKeyPath                   string // --key flag
+	localVerify                  bool   // -l flag
+	jsonVerify                   bool   // -j flag
+	verifyAll                    bool
+	verifyLegacy                 bool
 )
 
 // -u|--url
@@ -78,6 +84,56 @@ var verifySifDescIDFlag = cmdline.Flag{
 	Deprecated:   "use '--sif-id'",
 }
 
+// --certificate
+var verifyCertificateFlag = cmdline.Flag{
+	ID:           "certificateFlag",
+	Value:        &certificatePath,
+	DefaultValue: "",
+	Name:         "certificate",
+	Usage:        "path to the certificate",
+	EnvKeys:      []string{"VERIFY_CERTIFICATE"},
+}
+
+// --certificate-intermediates
+var verifyCertificateIntermediatesFlag = cmdline.Flag{
+	ID:           "certificateIntermediatesFlag",
+	Value:        &certificateIntermediatesPath,
+	DefaultValue: "",
+	Name:         "certificate-intermediates",
+	Usage:        "path to pool of intermediate certificates",
+	EnvKeys:      []string{"VERIFY_INTERMEDIATES"},
+}
+
+// --certificate-roots
+var verifyCertificateRootsFlag = cmdline.Flag{
+	ID:           "certificateRootsFlag",
+	Value:        &certificateRootsPath,
+	DefaultValue: "",
+	Name:         "certificate-roots",
+	Usage:        "path to pool of root certificates",
+	EnvKeys:      []string{"VERIFY_ROOTS"},
+}
+
+// --ocsp-verify
+var verifyOCSPFlag = cmdline.Flag{
+	ID:           "ocspVerifyFlag",
+	Value:        &ocspVerify,
+	DefaultValue: false,
+	Name:         "ocsp-verify",
+	Usage:        "enable online revocation check for certificates",
+	EnvKeys:      []string{"VERIFY_OCSP"},
+}
+
+// --key
+var verifyPublicKeyFlag = cmdline.Flag{
+	ID:           "publicKeyFlag",
+	Value:        &pubKeyPath,
+	DefaultValue: "",
+	Name:         "key",
+	Usage:        "path to the public key file",
+	EnvKeys:      []string{"VERIFY_KEY"},
+}
+
 // -l|--local
 var verifyLocalFlag = cmdline.Flag{
 	ID:           "verifyLocalFlag",
@@ -127,6 +183,11 @@ func init() {
 		cmdManager.RegisterFlagForCmd(&verifyOldSifGroupIDFlag, VerifyCmd)
 		cmdManager.RegisterFlagForCmd(&verifySifDescSifIDFlag, VerifyCmd)
 		cmdManager.RegisterFlagForCmd(&verifySifDescIDFlag, VerifyCmd)
+		cmdManager.RegisterFlagForCmd(&verifyCertificateFlag, VerifyCmd)
+		cmdManager.RegisterFlagForCmd(&verifyCertificateIntermediatesFlag, VerifyCmd)
+		cmdManager.RegisterFlagForCmd(&verifyCertificateRootsFlag, VerifyCmd)
+		cmdManager.RegisterFlagForCmd(&verifyOCSPFlag, VerifyCmd)
+		cmdManager.RegisterFlagForCmd(&verifyPublicKeyFlag, VerifyCmd)
 		cmdManager.RegisterFlagForCmd(&verifyLocalFlag, VerifyCmd)
 		cmdManager.RegisterFlagForCmd(&verifyJSONFlag, VerifyCmd)
 		cmdManager.RegisterFlagForCmd(&verifyAllFlag, VerifyCmd)
@@ -153,14 +214,58 @@ var VerifyCmd = &cobra.Command{
 func doVerifyCmd(cmd *cobra.Command, cpath string) {
 	var opts []singularity.VerifyOpt
 
-	// Set keyserver option, if applicable.
-	if !localVerify {
-		co, err := getKeyserverClientOpts(keyServerURI, endpoint.KeyserverVerifyOp)
+	switch {
+	case cmd.Flag(verifyCertificateFlag.Name).Changed:
+		sylog.Infof("Verifying image with key material from certificate '%v'", certificatePath)
+
+		c, err := loadCertificate(certificatePath)
 		if err != nil {
-			sylog.Fatalf("Error while getting keyserver client config: %v", err)
+			sylog.Fatalf("Failed to load certificate: %v", err)
+		}
+		opts = append(opts, singularity.OptVerifyWithCertificate(c))
+
+		if cmd.Flag(verifyCertificateIntermediatesFlag.Name).Changed {
+			p, err := loadCertificatePool(certificateIntermediatesPath)
+			if err != nil {
+				sylog.Fatalf("Failed to load intermediate certificates: %v", err)
+			}
+			opts = append(opts, singularity.OptVerifyWithIntermediates(p))
 		}
 
-		opts = append(opts, singularity.OptVerifyUseKeyServer(co...))
+		if cmd.Flag(verifyCertificateRootsFlag.Name).Changed {
+			p, err := loadCertificatePool(certificateRootsPath)
+			if err != nil {
+				sylog.Fatalf("Failed to load root certificates: %v", err)
+			}
+			opts = append(opts, singularity.OptVerifyWithRoots(p))
+		}
+
+		if cmd.Flag(verifyOCSPFlag.Name).Changed {
+			opts = append(opts, singularity.OptVerifyWithOCSP())
+		}
+
+	case cmd.Flag(verifyPublicKeyFlag.Name).Changed:
+		sylog.Infof("Verifying image with key material from '%v'", pubKeyPath)
+
+		v, err := signature.LoadVerifierFromPEMFile(pubKeyPath, crypto.SHA256)
+		if err != nil {
+			sylog.Fatalf("Failed to load key material: %v", err)
+		}
+		opts = append(opts, singularity.OptVerifyWithVerifier(v))
+
+	default:
+		sylog.Infof("Verifying image with PGP key material")
+
+		// Set keyserver option, if applicable.
+		if localVerify {
+			opts = append(opts, singularity.OptVerifyWithPGP())
+		} else {
+			co, err := getKeyserverClientOpts(keyServerURI, endpoint.KeyserverVerifyOp)
+			if err != nil {
+				sylog.Fatalf("Error while getting keyserver client config: %v", err)
+			}
+			opts = append(opts, singularity.OptVerifyWithPGP(co...))
+		}
 	}
 
 	// Set group option, if applicable.
@@ -197,17 +302,15 @@ func doVerifyCmd(cmd *cobra.Command, cpath string) {
 		}
 
 		if verifyErr != nil {
-			sylog.Fatalf("Failed to verify container: %s", verifyErr)
+			sylog.Fatalf("Failed to verify container: %v", verifyErr)
 		}
 	} else {
 		opts = append(opts, singularity.OptVerifyCallback(outputVerify))
 
-		fmt.Printf("Verifying image: %s\n", cpath)
-
 		if err := singularity.Verify(cmd.Context(), cpath, opts...); err != nil {
-			sylog.Fatalf("Failed to verify container: %s", err)
+			sylog.Fatalf("Failed to verify container: %v", err)
 		}
 
-		fmt.Printf("Container verified: %s\n", cpath)
+		sylog.Infof("Verified signature(s) from image '%v'", cpath)
 	}
 }

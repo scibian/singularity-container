@@ -41,8 +41,10 @@ The following have contributed code and/or documentation to this repository.
 - Divya Cote <divya.cote@gmail.com>
 - Eduardo Arango <eduardo@sylabs.io>, <arangogutierrez@gmail.com>
 - Egbert Eich <eich@suse.com>
+- Eng Zer Jun <engzerjun@gmail.com>
 - Eric Müller <mueller@kip.uni-heidelberg.de>
 - Felix Abecassis <fabecassis@nvidia.com>
+- Fotis Nikolaidis <nikolaidis.fotis@gmail.com>
 - Geoffroy Vallee <geoffroy@sylabs.io>, <geoffroy.vallee@gmail.com>
 - George Hartzell <hartzell@alerce.com>
 - Gert Hulselmans <gert.hulselmans@kuleuven.vib.be>
@@ -53,6 +55,7 @@ The following have contributed code and/or documentation to this repository.
 - Ian Kaneshiro <ian@ctrliq.com>, <iankane@umich.edu>
 - Jack Morrison <morrisonjc@ornl.gov>, <jack@rescale.com>
 - Jacob Chappell <chappellind@gmail.com>, <jacob.chappell@uky.edu>
+- Jarrett Dixon <jarrett@sylabs.io>
 - Jarrod Johnson <jjohnson2@lenovo.com>
 - Jason Stover <jms@sylabs.io>, <jason.stover@gmail.com>
 - Jeff Kriske <jekriske@gmail.com>
@@ -66,6 +69,7 @@ The following have contributed code and/or documentation to this repository.
 - Kundan Kumar <iamkundankumar28@gmail.com>
 - Maciej Sieczka <msieczka@sieczka.org>
 - Marcelo Magallon <marcelo@sylabs.io>
+- Marco Rubin <marco.rubin@protonmail.com>
 - Mark Egan-Fuller <markeganfuller@googlemail.com>
 - Matt Wiens <mwiens91@gmail.com>
 - Michael Bauer <m@sylabs.io>, <bauerm@umich.edu>
@@ -81,6 +85,7 @@ The following have contributed code and/or documentation to this repository.
 - Oliver Breitwieser <obreitwi@kip.uni-heidelberg.de>, <oliver@breitwieser.eu>
 - Oliver Freyermuth <freyermuth@physik.uni-bonn.de>
 - Olivier Sallou <olivier.sallou@irisa.fr>
+- Omer Preminger <omer@sylabs.io>
 - Peter Steinbach <steinbach@scionics.de>
 - Petr Votava <votava.petr@gene.com>
 - Rafal Gumienny <rafal.gumienny@gmail.com>
@@ -103,4 +108,5 @@ The following have contributed code and/or documentation to this repository.
 - Yaroslav Halchenko <debian@onerussian.com>
 - Onur Yılmaz <csonuryilmaz@gmail.com>
 - Pranathi Locula <locula@deshaw.com>
+- Filip Gorczyca <filip.gorczyca141@gmail.com>
 ```

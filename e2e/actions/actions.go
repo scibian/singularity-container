@@ -1,4 +1,6 @@
 // Copyright (c) 2019-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) Contributors to the Apptainer project, established as
+//   Apptainer a Series of LF Projects LLC.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -90,7 +92,11 @@ func (c actionTests) actionExec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(testdata)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			os.RemoveAll(testdata)
+		}
+	})
 
 	testdataTmp := filepath.Join(testdata, "tmp")
 	if err := os.Mkdir(testdataTmp, 0o755); err != nil {
@@ -110,9 +116,10 @@ func (c actionTests) actionExec(t *testing.T) {
 	homePath := filepath.Join("/home", basename)
 
 	tests := []struct {
-		name string
-		argv []string
-		exit int
+		name        string
+		argv        []string
+		exit        int
+		wantOutputs []e2e.SingularityCmdResultOp
 	}{
 		{
 			name: "NoCommand",
@@ -218,7 +225,10 @@ func (c actionTests) actionExec(t *testing.T) {
 		},
 		{
 			name: "Home",
-			argv: []string{"--home", testdata, c.env.ImagePath, "test", "-f", tmpfile.Name()},
+			argv: []string{"--home", "/myhomeloc", c.env.ImagePath, "env"},
+			wantOutputs: []e2e.SingularityCmdResultOp{
+				e2e.ExpectOutput(e2e.RegexMatch, `\bHOME=/myhomeloc\b`),
+			},
 			exit: 0,
 		},
 		{
@@ -251,6 +261,30 @@ func (c actionTests) actionExec(t *testing.T) {
 			argv: []string{"--no-home", c.env.ImagePath, "ls", "-ld", user.Dir},
 			exit: 1,
 		},
+		{
+			name: "Hostname",
+			argv: []string{"--hostname", "whats-in-a-native-name", c.env.ImagePath, "hostname"},
+			exit: 0,
+			wantOutputs: []e2e.SingularityCmdResultOp{
+				e2e.ExpectOutput(e2e.ExactMatch, "whats-in-a-native-name"),
+			},
+		},
+		{
+			name: "ResolvConfGoogle",
+			argv: []string{"--dns", "8.8.8.8,8.8.4.4", c.env.ImagePath, "nslookup", "w3.org"},
+			exit: 0,
+			wantOutputs: []e2e.SingularityCmdResultOp{
+				e2e.ExpectOutput(e2e.RegexMatch, `^(\s*)Server:(\s+)(8\.8\.8\.8|8\.8\.4\.4)(\s*)\n`),
+			},
+		},
+		{
+			name: "ResolvConfCloudflare",
+			argv: []string{"--dns", "1.1.1.1", c.env.ImagePath, "nslookup", "w3.org"},
+			exit: 0,
+			wantOutputs: []e2e.SingularityCmdResultOp{
+				e2e.ExpectOutput(e2e.RegexMatch, `^(\s*)Server:(\s+)(1\.1\.1\.1)(\s*)\n`),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -261,7 +295,7 @@ func (c actionTests) actionExec(t *testing.T) {
 			e2e.WithCommand("exec"),
 			e2e.WithDir("/tmp"),
 			e2e.WithArgs(tt.argv...),
-			e2e.ExpectExit(tt.exit),
+			e2e.ExpectExit(tt.exit, tt.wantOutputs...),
 		)
 	}
 }
@@ -461,7 +495,7 @@ func (c actionTests) STDPipe(t *testing.T) {
 
 // RunFromURI tests min fuctionality for singularity run/exec URI://
 func (c actionTests) RunFromURI(t *testing.T) {
-	e2e.EnsureRegistry(t)
+	e2e.EnsureORASImage(t, c.env)
 
 	runScript := "testdata/runscript.sh"
 	bind := fmt.Sprintf("%s:/.singularity.d/runscript", runScript)
@@ -903,7 +937,7 @@ func (c actionTests) actionBasicProfiles(t *testing.T) {
 		},
 	}
 
-	for _, profile := range e2e.Profiles {
+	for _, profile := range e2e.NativeProfiles {
 		profile := profile
 
 		t.Run(profile.String(), func(t *testing.T) {
@@ -918,6 +952,74 @@ func (c actionTests) actionBasicProfiles(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// PersistentOverlayUnpriv tests the --overlay function with kernel unpriv overlay support
+func (c actionTests) PersistentOverlayUnpriv(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	require.Filesystem(t, "overlay")
+	require.Kernel(t, 5, 13)
+
+	testdir, cleanup := e2e.MakeTempDir(t, c.env.TestDir, "persistent-overlay-", "")
+	defer cleanup(t)
+
+	// create an overlay directory
+	dir, err := os.MkdirTemp(testdir, "overlay-dir-")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		argv    []string
+		dir     string
+		exit    int
+		profile e2e.Profile
+	}{
+		{
+			name:    "overlay_create",
+			argv:    []string{"--overlay", dir, c.env.ImagePath, "touch", "/dir_overlay"},
+			exit:    0,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "overlay_find",
+			argv:    []string{"--overlay", dir, c.env.ImagePath, "test", "-f", "/dir_overlay"},
+			exit:    0,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "overlay_find_with_writable_fail",
+			argv:    []string{"--overlay", dir, "--writable", c.env.ImagePath, "true"},
+			exit:    255,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "overlay_find_with_writable_tmpfs",
+			argv:    []string{"--overlay", dir + ":ro", "--writable-tmpfs", c.env.ImagePath, "test", "-f", "/dir_overlay"},
+			exit:    0,
+			profile: e2e.UserNamespaceProfile,
+		},
+		{
+			name:    "overlay_find_with_writable_tmpfs_fail",
+			argv:    []string{"--overlay", dir, "--writable-tmpfs", c.env.ImagePath, "true"},
+			exit:    255,
+			profile: e2e.UserNamespaceProfile,
+		},
+	}
+
+	for _, tt := range tests {
+		c.env.RunSingularity(
+			t,
+			e2e.AsSubtest(tt.name),
+			e2e.WithProfile(tt.profile),
+			e2e.WithDir(tt.dir),
+			e2e.WithCommand("exec"),
+			e2e.WithArgs(tt.argv...),
+			e2e.ExpectExit(tt.exit),
+		)
 	}
 }
 
@@ -1064,10 +1166,11 @@ func (c actionTests) actionBinds(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		args    []string
-		postRun func(*testing.T)
-		exit    int
+		name        string
+		args        []string
+		wantOutputs []e2e.SingularityCmdResultOp
+		postRun     func(*testing.T)
+		exit        int
 	}{
 		{
 			name: "NonExistentSource",
@@ -1378,6 +1481,28 @@ func (c actionTests) actionBinds(t *testing.T) {
 			exit:    0,
 		},
 		{
+			name: "IsScratchTmpfs",
+			args: []string{
+				"--scratch", "/name-of-a-scratch",
+				sandbox,
+				"mount",
+			},
+			wantOutputs: []e2e.SingularityCmdResultOp{
+				e2e.ExpectOutput(e2e.RegexMatch, `\btmpfs on /name-of-a-scratch\b`),
+			},
+			exit: 0,
+		},
+		{
+			name: "BindOverScratch",
+			args: []string{
+				"--scratch", "/name-of-a-scratch",
+				"--bind", hostCanaryDir + ":/name-of-a-scratch",
+				sandbox,
+				"test", "-f", "/name-of-a-scratch/file",
+			},
+			exit: 0,
+		},
+		{
 			name: "ScratchTmpfsBind",
 			args: []string{
 				"--scratch", "/scratch",
@@ -1426,7 +1551,7 @@ func (c actionTests) actionBinds(t *testing.T) {
 		},
 	}
 
-	for _, profile := range e2e.Profiles {
+	for _, profile := range e2e.NativeProfiles {
 		profile := profile
 		createWorkspaceDirs(t)
 
@@ -1439,7 +1564,7 @@ func (c actionTests) actionBinds(t *testing.T) {
 					e2e.WithCommand("exec"),
 					e2e.WithArgs(tt.args...),
 					e2e.PostRun(tt.postRun),
-					e2e.ExpectExit(tt.exit),
+					e2e.ExpectExit(tt.exit, tt.wantOutputs...),
 				)
 			}
 		})
@@ -1551,7 +1676,10 @@ func (c actionTests) fuseMount(t *testing.T) {
 	}()
 
 	// terminate ssh server once done
-	defer stdinWriter.Write([]byte("bye"))
+	defer func() {
+		stdinWriter.Write([]byte("bye"))
+		stdinWriter.Close()
+	}()
 
 	// wait until ssh server is up and running
 	retry := 0
@@ -2026,6 +2154,7 @@ func (c actionTests) bindImage(t *testing.T) {
 }
 
 // actionUmask tests that the within-container umask is correct in action flows
+// Must be run in sequential section as it modifies host process umask.
 func (c actionTests) actionUmask(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
@@ -2166,6 +2295,23 @@ func (c actionTests) actionNoMount(t *testing.T) {
 			testContained: true,
 			exit:          0,
 		},
+		// bind-paths should disable all of the bind path mounts - including both defaults
+		{
+			name:          "binds-paths-hosts",
+			noMount:       "bind-paths",
+			noMatch:       "on /etc/hosts",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
+		{
+			name:          "bind-paths-localtime",
+			noMount:       "bind-paths",
+			noMatch:       "on /etc/localtime",
+			testDefault:   true,
+			testContained: true,
+			exit:          0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2199,6 +2345,7 @@ func (c actionTests) actionNoMount(t *testing.T) {
 
 // actionCompat checks that the --compat flag sets up the expected environment
 // for improved oci/docker compatibility
+// Must be run in sequential section as it modifies host process umask.
 func (c actionTests) actionCompat(t *testing.T) {
 	e2e.EnsureImage(t, c.env)
 
@@ -2321,6 +2468,26 @@ func countSquashfuseMounts(t *testing.T) int {
 	return count
 }
 
+// actionNoSetgoups checks that supplementary groups are visible, mapped to
+// nobody, in the container with --fakeroot --no-setgroups.
+func (c actionTests) actionNoSetgroups(t *testing.T) {
+	e2e.EnsureImage(t, c.env)
+
+	// Inside the e2e-tests we will be a member of our user group + single supplementary group.
+	// With `--fakeroot --no-setgroups` we should see these map to:
+	//    root nobody
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.FakerootProfile),
+		e2e.WithCommand("exec"),
+		e2e.WithArgs("--no-setgroups", c.env.ImagePath, "sh", "-c", "groups"),
+		e2e.ExpectExit(
+			0,
+			e2e.ExpectOutput(e2e.ExactMatch, "root nobody"),
+		),
+	)
+}
+
 // E2ETests is the main func to trigger the test suite
 func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	c := actionTests{
@@ -2330,40 +2497,53 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 	np := testhelper.NoParallel
 
 	return testhelper.Tests{
-		"action URI":            c.RunFromURI,          // action_URI
-		"exec":                  c.actionExec,          // singularity exec
-		"persistent overlay":    c.PersistentOverlay,   // Persistent Overlay
-		"run":                   c.actionRun,           // singularity run
-		"shell":                 c.actionShell,         // shell interaction
-		"STDPIPE":               c.STDPipe,             // stdin/stdout pipe
-		"action basic profiles": c.actionBasicProfiles, // run basic action under different profiles
-		"issue 4488":            c.issue4488,           // https://github.com/sylabs/singularity/issues/4488
-		"issue 4587":            c.issue4587,           // https://github.com/sylabs/singularity/issues/4587
-		"issue 4755":            c.issue4755,           // https://github.com/sylabs/singularity/issues/4755
-		"issue 4768":            c.issue4768,           // https://github.com/sylabs/singularity/issues/4768
-		"issue 4797":            c.issue4797,           // https://github.com/sylabs/singularity/issues/4797
-		"issue 4823":            c.issue4823,           // https://github.com/sylabs/singularity/issues/4823
-		"issue 4836":            c.issue4836,           // https://github.com/sylabs/singularity/issues/4836
-		"issue 5211":            c.issue5211,           // https://github.com/sylabs/singularity/issues/5211
-		"issue 5228":            c.issue5228,           // https://github.com/sylabs/singularity/issues/5228
-		"issue 5271":            c.issue5271,           // https://github.com/sylabs/singularity/issues/5271
-		"issue 5307":            c.issue5307,           // https://github.com/sylabs/singularity/issues/5307
-		"issue 5399":            c.issue5399,           // https://github.com/sylabs/singularity/issues/5399
-		"issue 5455":            c.issue5455,           // https://github.com/sylabs/singularity/issues/5455
-		"issue 5465":            c.issue5465,           // https://github.com/sylabs/singularity/issues/5465
-		"issue 5599":            c.issue5599,           // https://github.com/sylabs/singularity/issues/5599
-		"issue 5631":            c.issue5631,           // https://github.com/sylabs/singularity/issues/5631
-		"issue 5690":            c.issue5690,           // https://github.com/sylabs/singularity/issues/5690
-		"network":               c.actionNetwork,       // test basic networking
-		"binds":                 c.actionBinds,         // test various binds with --bind and --mount
-		"exit and signals":      c.exitSignals,         // test exit and signals propagation
-		"fuse mount":            c.fuseMount,           // test fusemount option
-		"bind image":            c.bindImage,           // test bind image with --bind and --mount
-		"umask":                 c.actionUmask,         // test umask propagation
-		"no-mount":              c.actionNoMount,       // test --no-mount
-		"compat":                c.actionCompat,        // test --compat
-		"invalidRemote":         np(c.invalidRemote),   // GHSA-5mv9-q7fq-9394
-		"SIFFUSE":               np(c.actionSIFFUSE),   // test --sif-fuse
-		"NoSIFFUSE":             np(c.actionNoSIFFUSE), // test absence of squashfs and CleanupHost()
+		"action URI":                c.RunFromURI,              // action_URI
+		"exec":                      c.actionExec,              // singularity exec
+		"persistent overlay":        c.PersistentOverlay,       // Persistent Overlay
+		"persistent overlay unpriv": c.PersistentOverlayUnpriv, // Persistent Overlay Unprivileged
+		"run":                       c.actionRun,               // singularity run
+		"shell":                     c.actionShell,             // shell interaction
+		"STDPIPE":                   c.STDPipe,                 // stdin/stdout pipe
+		"action basic profiles":     c.actionBasicProfiles,     // run basic action under different profiles
+		"issue 4488":                c.issue4488,               // https://github.com/sylabs/singularity/issues/4488
+		"issue 4587":                c.issue4587,               // https://github.com/sylabs/singularity/issues/4587
+		"issue 4755":                c.issue4755,               // https://github.com/sylabs/singularity/issues/4755
+		"issue 4768":                c.issue4768,               // https://github.com/sylabs/singularity/issues/4768
+		"issue 4797":                c.issue4797,               // https://github.com/sylabs/singularity/issues/4797
+		"issue 4823":                c.issue4823,               // https://github.com/sylabs/singularity/issues/4823
+		"issue 4836":                c.issue4836,               // https://github.com/sylabs/singularity/issues/4836
+		"issue 5211":                c.issue5211,               // https://github.com/sylabs/singularity/issues/5211
+		"issue 5228":                c.issue5228,               // https://github.com/sylabs/singularity/issues/5228
+		"issue 5271":                c.issue5271,               // https://github.com/sylabs/singularity/issues/5271
+		"issue 5307":                c.issue5307,               // https://github.com/sylabs/singularity/issues/5307
+		"issue 5399":                c.issue5399,               // https://github.com/sylabs/singularity/issues/5399
+		"issue 5455":                c.issue5455,               // https://github.com/sylabs/singularity/issues/5455
+		"issue 5465":                c.issue5465,               // https://github.com/sylabs/singularity/issues/5465
+		"issue 5599":                c.issue5599,               // https://github.com/sylabs/singularity/issues/5599
+		"issue 5631":                c.issue5631,               // https://github.com/sylabs/singularity/issues/5631
+		"issue 5690":                c.issue5690,               // https://github.com/sylabs/singularity/issues/5690
+		"network":                   c.actionNetwork,           // test basic networking
+		"binds":                     c.actionBinds,             // test various binds with --bind and --mount
+		"exit and signals":          c.exitSignals,             // test exit and signals propagation
+		"fuse mount":                c.fuseMount,               // test fusemount option
+		"bind image":                c.bindImage,               // test bind image with --bind and --mount
+		"no-mount":                  c.actionNoMount,           // test --no-mount
+		"no-setgroups":              c.actionNoSetgroups,       // test --no-setgroups
+		"compat":                    np(c.actionCompat),        // test --compat
+		"umask":                     np(c.actionUmask),         // test umask propagation
+		"invalidRemote":             np(c.invalidRemote),       // GHSA-5mv9-q7fq-9394
+		"SIFFUSE":                   np(c.actionSIFFUSE),       // test --sif-fuse
+		"NoSIFFUSE":                 np(c.actionNoSIFFUSE),     // test absence of squashfs and CleanupHost()
+		//
+		// OCI Runtime Mode
+		//
+		"ociRun":     c.actionOciRun,        // singularity run --oci
+		"ociExec":    c.actionOciExec,       // singularity exec --oci
+		"ociShell":   c.actionOciShell,      // singularity shell --oci
+		"ociSTDPIPE": c.ociSTDPipe,          // stdin/stdout pipe --oci
+		"ociNetwork": c.actionOciNetwork,    // singularity exec --oci --net
+		"ociBinds":   c.actionOciBinds,      // singularity exec --oci --bind / --mount
+		"ociIDMaps":  c.actionOciIDMaps,     // check uid/gid mapping on host for --oci as user / --fakeroot
+		"ociCompat":  np(c.actionOciCompat), // --oci equivalence to native mode --compat
 	}
 }

@@ -9,154 +9,168 @@
 package singularity
 
 import (
+	"context"
 	"fmt"
-	"io"
-	"os"
-	"path"
-	"path/filepath"
-	"time"
 
-	securejoin "github.com/cyphar/filepath-securejoin"
-	"github.com/sylabs/singularity/internal/pkg/util/fs"
-	"github.com/sylabs/singularity/internal/pkg/util/user"
-	"github.com/sylabs/singularity/pkg/syfs"
-	"github.com/sylabs/singularity/pkg/util/fs/lock"
-)
-
-const (
-	// Absolute path for the runc state
-	RuncStateDir = "/run/singularity-oci"
-	// Relative path inside ~/.singularity for conmon and singularity state
-	ociPath = "oci"
-	// State directory files
-	containerPidFile = "container.pid"
-	containerLogFile = "container.log"
-	runcLogFile      = "runc.log"
-	conmonPidFile    = "conmon.pid"
-	bundleLink       = "bundle"
-	// Files in the OCI bundle root
-	bundleLock   = ".singularity-oci.lock"
-	attachSocket = "attach"
-	// Timeouts
-	createTimeout = 30 * time.Second
+	lccgroups "github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/sylabs/singularity/internal/pkg/buildcfg"
+	"github.com/sylabs/singularity/internal/pkg/runtime/launcher/oci"
+	ocibundle "github.com/sylabs/singularity/pkg/ocibundle/sif"
+	"github.com/sylabs/singularity/pkg/util/namespaces"
+	"github.com/sylabs/singularity/pkg/util/singularityconf"
 )
 
 // OciArgs contains CLI arguments
 type OciArgs struct {
-	BundlePath   string
-	LogPath      string
-	LogFormat    string
-	PidFile      string
-	FromFile     string
-	KillSignal   string
-	KillTimeout  uint32
-	EmptyProcess bool
-	ForceKill    bool
+	BundlePath    string
+	LogPath       string
+	LogFormat     string
+	PidFile       string
+	FromFile      string
+	KillSignal    string
+	KillTimeout   uint32
+	EmptyProcess  bool
+	ForceKill     bool
+	WritableTmpfs bool
 }
 
-// AttachStreams contains streams that will be attached to the container
-type AttachStreams struct {
-	// OutputStream will be attached to container's STDOUT
-	OutputStream io.Writer
-	// ErrorStream will be attached to container's STDERR
-	ErrorStream io.Writer
-	// InputStream will be attached to container's STDIN
-	InputStream io.Reader
-	// AttachOutput is whether to attach to STDOUT
-	// If false, stdout will not be attached
-	AttachOutput bool
-	// AttachError is whether to attach to STDERR
-	// If false, stdout will not be attached
-	AttachError bool
-	// AttachInput is whether to attach to STDIN
-	// If false, stdout will not be attached
-	AttachInput bool
+// OciRun runs a container (equivalent to create/start/delete)
+func OciRun(ctx context.Context, containerID string, args *OciArgs) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.Run(ctx, containerID, args.BundlePath, args.PidFile, systemdCgroups)
 }
 
-/* Sync with stdpipe_t in conmon.c */
-const (
-	AttachPipeStdin  = 1
-	AttachPipeStdout = 2
-	AttachPipeStderr = 3
-)
-
-type ociError struct {
-	Level string `json:"level,omitempty"`
-	Time  string `json:"time,omitempty"`
-	Msg   string `json:"msg,omitempty"`
+// OciRun runs a container via the OCI runtime, wrapped with prep / cleanup steps.
+func OciRunWrapped(ctx context.Context, containerID string, args *OciArgs) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.RunWrapped(ctx, containerID, args.BundlePath, args.PidFile, systemdCgroups, args.WritableTmpfs)
 }
 
-// stateDir returns the path to container state handled by conmon/singularity
-// (as opposed to runc's state in RuncStateDir)
-func stateDir(containerID string) (string, error) {
-	hostname, err := os.Hostname()
+// OciCreate creates a container from an OCI bundle
+func OciCreate(containerID string, args *OciArgs) error {
+	systemdCgroups, err := systemdCgroups()
 	if err != nil {
-		return "", err
+		return err
 	}
-
-	u, err := user.CurrentOriginal()
-	if err != nil {
-		return "", err
-	}
-
-	configDir, err := syfs.ConfigDirForUsername(u.Name)
-	if err != nil {
-		return "", err
-	}
-
-	rootPath := filepath.Join(configDir, ociPath)
-	containerPath := filepath.Join(hostname, containerID)
-	path, err := securejoin.SecureJoin(rootPath, containerPath)
-	if err != nil {
-		return "", err
-	}
-	return path, err
+	return oci.Create(containerID, args.BundlePath, systemdCgroups)
 }
 
-// lockBundle creates a lock file in a bundle directory
-func lockBundle(bundlePath string) error {
-	bl := path.Join(bundlePath, bundleLock)
-	_, err := os.Stat(bl)
-	if err == nil {
-		return fmt.Errorf("bundle is locked by another process")
-	}
-	if !os.IsNotExist(err) {
-		return fmt.Errorf("while stat-ing lock file: %w", err)
-	}
-
-	fd, err := lock.Exclusive(bundlePath)
+// OciStart starts a previously create container
+func OciStart(containerID string) error {
+	systemdCgroups, err := systemdCgroups()
 	if err != nil {
-		return fmt.Errorf("while acquiring directory lock: %w", err)
+		return err
 	}
-	defer lock.Release(fd)
-
-	err = fs.EnsureFileWithPermission(bl, 0o600)
-	if err != nil {
-		return fmt.Errorf("while creating lock file: %w", err)
-	}
-	return nil
+	return oci.Start(containerID, systemdCgroups)
 }
 
-// releaseBundle removes a lock file in a bundle directory
-func releaseBundle(bundlePath string) error {
-	bl := path.Join(bundlePath, bundleLock)
-	_, err := os.Stat(bl)
-	if os.IsNotExist(err) {
-		return fmt.Errorf("bundle is not locked")
-	}
+// OciDelete deletes container resources
+func OciDelete(ctx context.Context, containerID string) error {
+	systemdCgroups, err := systemdCgroups()
 	if err != nil {
-		return fmt.Errorf("while stat-ing lock file: %w", err)
+		return err
+	}
+	return oci.Delete(ctx, containerID, systemdCgroups)
+}
+
+// OciExec executes a command in a container
+func OciExec(containerID string, cmdArgs []string) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.Exec(containerID, cmdArgs, systemdCgroups)
+}
+
+// OciKill kills container process
+func OciKill(containerID string, killSignal string) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.Kill(containerID, killSignal, systemdCgroups)
+}
+
+// OciPause pauses processes in a container
+func OciPause(containerID string) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.Pause(containerID, systemdCgroups)
+}
+
+// OciResume pauses processes in a container
+func OciResume(containerID string) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.Resume(containerID, systemdCgroups)
+}
+
+// OciState queries container state
+func OciState(containerID string, args *OciArgs) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.State(containerID, systemdCgroups)
+}
+
+// OciUpdate updates container cgroups resources
+func OciUpdate(containerID string, args *OciArgs) error {
+	systemdCgroups, err := systemdCgroups()
+	if err != nil {
+		return err
+	}
+	return oci.Update(containerID, args.FromFile, systemdCgroups)
+}
+
+// OciMount mount a SIF image to create an OCI bundle
+func OciMount(ctx context.Context, image string, bundle string) error {
+	d, err := ocibundle.FromSif(image, bundle, true)
+	if err != nil {
+		return err
+	}
+	return d.Create(ctx, nil)
+}
+
+// OciUmount umount SIF and delete OCI bundle
+func OciUmount(bundle string) error {
+	d, err := ocibundle.FromSif("", bundle, true)
+	if err != nil {
+		return err
+	}
+	return d.Delete()
+}
+
+func systemdCgroups() (use bool, err error) {
+	cfg := singularityconf.GetCurrentConfig()
+	if cfg == nil {
+		cfg, err = singularityconf.Parse(buildcfg.SINGULARITY_CONF_FILE)
+		if err != nil {
+			return false, fmt.Errorf("unable to parse singularity configuration file: %w", err)
+		}
 	}
 
-	fd, err := lock.Exclusive(bundlePath)
-	if err != nil {
-		return fmt.Errorf("while acquiring directory lock: %w", err)
-	}
-	defer lock.Release(fd)
+	useSystemd := cfg.SystemdCgroups
 
-	err = os.Remove(bl)
+	// As non-root, we need cgroups v2 unified mode for systemd support.
+	// Fall back to cgroupfs if this is not available.
+	hostUID, err := namespaces.HostUID()
 	if err != nil {
-		return fmt.Errorf("while removing lock file: %w", err)
+		return false, fmt.Errorf("while finding host uid: %w", err)
 	}
-	return nil
+	if hostUID != 0 && !lccgroups.IsCgroup2UnifiedMode() {
+		useSystemd = false
+	}
+
+	return useSystemd, nil
 }

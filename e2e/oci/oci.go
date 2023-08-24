@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -18,16 +19,6 @@ import (
 	"github.com/sylabs/singularity/internal/pkg/test/tool/require"
 	"github.com/sylabs/singularity/pkg/ociruntime"
 )
-
-//  NOTE
-//  ----
-//  Tests in this package/topic are run in a a mount namespace only. There is
-//  no PID namespace, in order that the systemd cgroups manager functionality
-//  can be exercised.
-//
-//  You must take extra care not to leave detached process etc. that will
-//  pollute the host PID namespace.
-//
 
 func randomContainerID(t *testing.T) string {
 	t.Helper()
@@ -44,6 +35,8 @@ type ctx struct {
 }
 
 func (c *ctx) checkOciState(t *testing.T, containerID, state string) {
+	ok := false
+
 	checkStateFn := func(t *testing.T, r *e2e.SingularityCmdResult) {
 		s := &ociruntime.State{}
 		if err := json.Unmarshal(r.Stdout, s); err != nil {
@@ -52,8 +45,10 @@ func (c *ctx) checkOciState(t *testing.T, containerID, state string) {
 			return
 		}
 		if s.Status != specs.ContainerState(state) {
-			t.Errorf("bad container state returned, got %s instead of %s", s.Status, state)
+			t.Logf("bad container state returned, got %s instead of %s", s.Status, state)
+			return
 		}
+		ok = true
 	}
 
 	c.env.RunSingularity(
@@ -63,6 +58,24 @@ func (c *ctx) checkOciState(t *testing.T, containerID, state string) {
 		e2e.WithArgs(containerID),
 		e2e.ExpectExit(0, checkStateFn),
 	)
+	if ok {
+		return
+	}
+
+	// State transition is slow on EL7/8 ARM64, check again in 1s
+	// https://github.com/sylabs/singularity/issues/1437
+	t.Logf("Retrying state check in 1s...")
+	time.Sleep(time.Second)
+	c.env.RunSingularity(
+		t,
+		e2e.WithProfile(e2e.RootProfile),
+		e2e.WithCommand("oci state"),
+		e2e.WithArgs(containerID),
+		e2e.ExpectExit(0, checkStateFn),
+	)
+	if !ok {
+		t.Errorf("Expected state %s not found after retrying", state)
+	}
 }
 
 func genericOciMount(t *testing.T, c *ctx) (string, func()) {
@@ -76,6 +89,7 @@ func genericOciMount(t *testing.T, c *ctx) (string, func()) {
 	}
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("mount"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci mount"),
 		e2e.WithArgs(c.env.ImagePath, bundleDir),
@@ -85,6 +99,7 @@ func genericOciMount(t *testing.T, c *ctx) (string, func()) {
 	cleanup := func() {
 		c.env.RunSingularity(
 			t,
+			e2e.AsSubtest("umount"),
 			e2e.WithProfile(e2e.RootProfile),
 			e2e.WithCommand("oci umount"),
 			e2e.WithArgs(bundleDir),
@@ -141,6 +156,7 @@ func (c ctx) testOciAttach(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("create"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci create"),
 		e2e.WithArgs("-b", bundleDir, containerID),
@@ -159,6 +175,7 @@ func (c ctx) testOciAttach(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("start"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci start"),
 		e2e.WithArgs(containerID),
@@ -172,6 +189,7 @@ func (c ctx) testOciAttach(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("attach"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci attach"),
 		e2e.WithArgs(containerID),
@@ -190,6 +208,7 @@ func (c ctx) testOciAttach(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("delete"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci delete"),
 		e2e.WithArgs(containerID),
@@ -208,6 +227,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("create"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci create"),
 		e2e.WithArgs("-b", bundleDir, containerID),
@@ -226,6 +246,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("start"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci start"),
 		e2e.WithArgs(containerID),
@@ -239,6 +260,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("pause"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci pause"),
 		e2e.WithArgs(containerID),
@@ -256,6 +278,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("resume"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci resume"),
 		e2e.WithArgs(containerID),
@@ -273,6 +296,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("start again"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci start"),
 		e2e.WithArgs(containerID),
@@ -281,6 +305,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("exec"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci exec"),
 		e2e.WithArgs(containerID, "hostname"),
@@ -290,6 +315,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("kill"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci kill"),
 		e2e.WithArgs(containerID, "KILL"),
@@ -303,6 +329,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("delete"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci delete"),
 		e2e.WithArgs(containerID),
@@ -311,6 +338,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("state fail"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci state"),
 		e2e.WithArgs(containerID),
@@ -318,6 +346,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 	)
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("kill fail"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci kill"),
 		e2e.WithArgs(containerID),
@@ -325,6 +354,7 @@ func (c ctx) testOciBasic(t *testing.T) {
 	)
 	c.env.RunSingularity(
 		t,
+		e2e.AsSubtest("start fail"),
 		e2e.WithProfile(e2e.RootProfile),
 		e2e.WithCommand("oci start"),
 		e2e.WithArgs(containerID),
@@ -416,7 +446,7 @@ func E2ETests(env e2e.TestEnv) testhelper.Tests {
 				t.Run("basic", c.testOciBasic)
 				t.Run("attach", c.testOciAttach)
 				t.Run("run", c.testOciRun)
-				t.Run("help", c.testOciHelp)
 			})),
+		"help": c.testOciHelp,
 	}
 }

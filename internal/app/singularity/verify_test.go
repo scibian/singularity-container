@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021, Sylabs Inc. All rights reserved.
+// Copyright (c) 2020-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the LICENSE.md file
 // distributed with the sources of this project regarding your rights to use or distribute this
 // software.
@@ -6,7 +6,11 @@
 package singularity
 
 import (
+	"bytes"
 	"context"
+	"crypto"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +21,7 @@ import (
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sylabs/scs-key-client/client"
 	"github.com/sylabs/sif/v2/pkg/integrity"
 	"github.com/sylabs/sif/v2/pkg/sif"
@@ -27,25 +32,69 @@ const (
 	invalidFingerPrint = "0000000000000000000000000000000000000000"
 )
 
-// getTestEntity returns a fixed test PGP entity.
-func getTestEntity(t *testing.T) *openpgp.Entity {
+// getTestVerifier returns a fixed test Verifier.
+func getTestVerifier(t *testing.T, file string) signature.Verifier {
 	t.Helper()
 
-	f, err := os.Open(filepath.Join("testdata", "keys", "private.asc"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	path := filepath.Join("..", "..", "..", "test", "keys", file)
 
-	el, err := openpgp.ReadArmoredKeyRing(f)
+	sv, err := signature.LoadVerifierFromPEMFile(path, crypto.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got, want := len(el), 1; got != want {
-		t.Fatalf("got %v entities, want %v", got, want)
+	return sv
+}
+
+// getCertificate returns the certificate read from the specified file.
+func getCertificate(t *testing.T, file string) *x509.Certificate {
+	t.Helper()
+
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "test", "certs", file))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return el[0]
+
+	p, _ := pem.Decode(b)
+	if p == nil {
+		t.Fatal("failed to decode PEM")
+	}
+
+	c, err := x509.ParseCertificate(p.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return c
+}
+
+// getCertificatePool returns a pool of certificates read from the specified file.
+func getCertificatePool(t *testing.T, file string) *x509.CertPool {
+	t.Helper()
+
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "test", "certs", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pool := x509.NewCertPool()
+
+	for rest := bytes.TrimSpace(b); len(rest) > 0; {
+		var p *pem.Block
+
+		if p, rest = pem.Decode(rest); p == nil {
+			t.Fatal("failed to decode PEM")
+		}
+
+		c, err := x509.ParseCertificate(p.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		pool.AddCert(c)
+	}
+
+	return pool
 }
 
 type mockHKP struct {
@@ -68,7 +117,13 @@ func (m mockHKP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func Test_newVerifier(t *testing.T) {
-	opts := []client.Option{client.OptBearerToken("token")}
+	cert := getCertificate(t, "leaf.pem")
+	intermediates := getCertificatePool(t, "intermediate.pem")
+	roots := getCertificatePool(t, "root.pem")
+
+	sv := getTestVerifier(t, "ed25519-public.pem")
+
+	pgpOpts := []client.Option{client.OptBearerToken("token")}
 
 	tests := []struct {
 		name         string
@@ -81,9 +136,35 @@ func Test_newVerifier(t *testing.T) {
 			wantVerifier: verifier{},
 		},
 		{
-			name:         "OptVerifyUseKeyServerOpts",
-			opts:         []VerifyOpt{OptVerifyUseKeyServer(opts...)},
-			wantVerifier: verifier{opts: opts},
+			name: "OptVerifyWithCertificate",
+			opts: []VerifyOpt{
+				OptVerifyWithCertificate(cert),
+				OptVerifyWithIntermediates(intermediates),
+				OptVerifyWithRoots(roots),
+			},
+			wantVerifier: verifier{
+				certs:         []*x509.Certificate{cert},
+				intermediates: intermediates,
+				roots:         roots,
+			},
+		},
+		{
+			name:         "OptVerifyWithVerifier",
+			opts:         []VerifyOpt{OptVerifyWithVerifier(sv)},
+			wantVerifier: verifier{svs: []signature.Verifier{sv}},
+		},
+		{
+			name:         "OptVerifyWithPGP",
+			opts:         []VerifyOpt{OptVerifyWithPGP()},
+			wantVerifier: verifier{pgp: true},
+		},
+		{
+			name: "OptVerifyWithPGPOpts",
+			opts: []VerifyOpt{OptVerifyWithPGP(pgpOpts...)},
+			wantVerifier: verifier{
+				pgp:     true,
+				pgpOpts: pgpOpts,
+			},
 		},
 		{
 			name:         "OptVerifyGroup",
@@ -124,7 +205,11 @@ func Test_newVerifier(t *testing.T) {
 }
 
 func Test_verifier_getOpts(t *testing.T) {
-	emptyImage, err := sif.LoadContainerFromPath(filepath.Join("testdata", "images", "empty.sif"),
+	cert := getCertificate(t, "leaf.pem")
+	intermediates := getCertificatePool(t, "intermediate.pem")
+	roots := getCertificatePool(t, "root.pem")
+
+	emptyImage, err := sif.LoadContainerFromPath(filepath.Join("..", "..", "..", "test", "images", "empty.sif"),
 		sif.OptLoadWithFlag(os.O_RDONLY),
 	)
 	if err != nil {
@@ -132,7 +217,7 @@ func Test_verifier_getOpts(t *testing.T) {
 	}
 	defer emptyImage.UnloadContainer()
 
-	oneGroupImage, err := sif.LoadContainerFromPath(filepath.Join("testdata", "images", "one-group.sif"),
+	oneGroupImage, err := sif.LoadContainerFromPath(filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
 		sif.OptLoadWithFlag(os.O_RDONLY),
 	)
 	if err != nil {
@@ -153,7 +238,8 @@ func Test_verifier_getOpts(t *testing.T) {
 			name: "TLSRequired",
 			f:    emptyImage,
 			v: verifier{
-				opts: []client.Option{
+				pgp: true,
+				pgpOpts: []client.Option{
 					client.OptBaseURL("hkp://pool.sks-keyservers.net"),
 					client.OptBearerToken("blah"),
 				},
@@ -167,19 +253,43 @@ func Test_verifier_getOpts(t *testing.T) {
 			wantErr: sif.ErrNoObjects,
 		},
 		{
-			name:     "Defaults",
+			name: "Certificate",
+			v: verifier{
+				certs:         []*x509.Certificate{cert},
+				intermediates: intermediates,
+				roots:         roots,
+			},
 			f:        oneGroupImage,
-			wantOpts: 1,
+			wantOpts: 2,
 		},
 		{
-			name: "ClientConfig",
+			name: "Verifier",
 			v: verifier{
-				opts: []client.Option{
+				svs: []signature.Verifier{
+					getTestVerifier(t, "ed25519-public.pem"),
+				},
+			},
+			f:        oneGroupImage,
+			wantOpts: 2,
+		},
+		{
+			name: "PGP",
+			v: verifier{
+				pgp: true,
+			},
+			f:        oneGroupImage,
+			wantOpts: 2,
+		},
+		{
+			name: "PGPOpts",
+			v: verifier{
+				pgp: true,
+				pgpOpts: []client.Option{
 					client.OptBearerToken("token"),
 				},
 			},
 			f:        oneGroupImage,
-			wantOpts: 1,
+			wantOpts: 2,
 		},
 		{
 			name:     "Group1",
@@ -247,99 +357,187 @@ func Test_verifier_getOpts(t *testing.T) {
 	}
 }
 
-func TestVerify(t *testing.T) {
+func TestVerify(t *testing.T) { //nolint:maintidx
+	cert := getCertificate(t, "leaf.pem")
+	intermediates := getCertificatePool(t, "intermediate.pem")
+	roots := getCertificatePool(t, "root.pem")
+
+	ed25519 := getTestVerifier(t, "ed25519-public.pem")
+	ed25519Pub, err := ed25519.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rsa := getTestVerifier(t, "rsa-public.pem")
+	rsaPub, err := rsa.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// Start up a mock HKP server.
 	e := getTestEntity(t)
 	s := httptest.NewServer(mockHKP{e: e})
 	defer s.Close()
 
-	// Create an option that points to the mock HKP server.
-	keyServerOpt := OptVerifyUseKeyServer(client.OptBaseURL(s.URL))
-
 	tests := []struct {
-		name         string
-		path         string
-		opts         []VerifyOpt
-		wantVerified [][]uint32
-		wantEntity   *openpgp.Entity
-		wantErr      error
+		name           string
+		path           string
+		opts           []VerifyOpt
+		wantVerified   [][]uint32
+		wantEntity     *openpgp.Entity
+		wantPublicKeys []crypto.PublicKey
+		wantErr        error
 	}{
 		{
 			name:    "SignatureNotFound",
-			path:    filepath.Join("testdata", "images", "one-group.sif"),
-			opts:    []VerifyOpt{keyServerOpt},
+			path:    filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
 			wantErr: &integrity.SignatureNotFoundError{},
 		},
 		{
-			name:    "SignatureNotFoundNonLegacy",
-			path:    filepath.Join("testdata", "images", "one-group-signed.sif"),
-			opts:    []VerifyOpt{keyServerOpt, OptVerifyLegacy()},
+			name:    "SignatureNotFoundDSSE",
+			path:    filepath.Join("..", "..", "..", "test", "images", "one-group-signed-dsse.sif"),
+			opts:    []VerifyOpt{OptVerifyLegacy()},
+			wantErr: &integrity.SignatureNotFoundError{},
+		},
+		{
+			name:    "SignatureNotFoundPGP",
+			path:    filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
+			opts:    []VerifyOpt{OptVerifyLegacy()},
 			wantErr: &integrity.SignatureNotFoundError{},
 		},
 		{
 			name:    "SignatureNotFoundLegacy",
-			path:    filepath.Join("testdata", "images", "one-group-signed-legacy.sif"),
-			opts:    []VerifyOpt{keyServerOpt},
+			path:    filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy.sif"),
 			wantErr: &integrity.SignatureNotFoundError{},
 		},
 		{
 			name:    "SignatureNotFoundLegacyAll",
-			path:    filepath.Join("testdata", "images", "one-group-signed-legacy-all.sif"),
-			opts:    []VerifyOpt{keyServerOpt},
+			path:    filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-all.sif"),
 			wantErr: &integrity.SignatureNotFoundError{},
 		},
 		{
 			name:    "SignatureNotFoundLegacyGroup",
-			path:    filepath.Join("testdata", "images", "one-group-signed-legacy-group.sif"),
-			opts:    []VerifyOpt{keyServerOpt},
+			path:    filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-group.sif"),
 			wantErr: &integrity.SignatureNotFoundError{},
 		},
 		{
-			name:         "Defaults",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
-			opts:         []VerifyOpt{keyServerOpt},
+			name: "Certificate",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-dsse.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithCertificate(cert),
+				OptVerifyWithIntermediates(intermediates),
+				OptVerifyWithRoots(roots),
+			},
+			wantVerified:   [][]uint32{{1, 2}},
+			wantPublicKeys: []crypto.PublicKey{rsaPub},
+		},
+		{
+			name: "VerifierEd25519",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-dsse.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithVerifier(ed25519),
+			},
+			wantVerified:   [][]uint32{{1, 2}},
+			wantPublicKeys: []crypto.PublicKey{ed25519Pub},
+		},
+		{
+			name: "VerifierRSA",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-dsse.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithVerifier(rsa),
+			},
+			wantVerified:   [][]uint32{{1, 2}},
+			wantPublicKeys: []crypto.PublicKey{rsaPub},
+		},
+		{
+			name: "PGP",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 		},
 		{
-			name:         "OptVerifyGroup",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyGroup(1)},
+			name: "OptVerifyGroupVerifier",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-dsse.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithVerifier(ed25519),
+				OptVerifyGroup(1),
+			},
+			wantVerified:   [][]uint32{{1, 2}},
+			wantPublicKeys: []crypto.PublicKey{ed25519Pub},
+		},
+		{
+			name: "OptVerifyGroupPGP",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyGroup(1),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 		},
 		{
-			name:         "OptVerifyObject",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyObject(1)},
+			name: "OptVerifyObjectVerifier",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-dsse.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithVerifier(ed25519),
+				OptVerifyObject(1),
+			},
+			wantVerified:   [][]uint32{{1}},
+			wantPublicKeys: []crypto.PublicKey{ed25519Pub},
+		},
+		{
+			name: "OptVerifyObjectPGP",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyObject(1),
+			},
 			wantVerified: [][]uint32{{1}},
 			wantEntity:   e,
 		},
 		{
-			name:         "LegacyDefaults",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy.sif"),
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy()},
+			name: "Legacy",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+			},
 			wantVerified: [][]uint32{{2}},
 			wantEntity:   e,
 		},
 		{
-			name:         "LegacyOptVerifyObject",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-all.sif"),
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy(), OptVerifyObject(1)},
+			name: "LegacyOptVerifyObject",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-all.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+				OptVerifyObject(1),
+			},
 			wantVerified: [][]uint32{{1}},
 			wantEntity:   e,
 		},
 		{
-			name:         "LegacyOptVerifyAll",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-all.sif"),
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy(), OptVerifyAll()},
+			name: "LegacyOptVerifyAll",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-all.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+				OptVerifyAll(),
+			},
 			wantVerified: [][]uint32{{1}, {2}},
 			wantEntity:   e,
 		},
 		{
-			name:         "LegacyOptVerifyGroup",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-group.sif"),
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy(), OptVerifyGroup(1)},
+			name: "LegacyOptVerifyGroup",
+			path: filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-group.sif"),
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+				OptVerifyGroup(1),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 		},
@@ -367,8 +565,16 @@ func TestVerify(t *testing.T) {
 					}
 				}
 
-				if got, want := r.Entity().PrimaryKey, tt.wantEntity.PrimaryKey; !reflect.DeepEqual(got, want) {
-					t.Errorf("got entity public key %+v, want %+v", got, want)
+				if tt.wantEntity != nil {
+					if got, want := r.Entity().PrimaryKey, tt.wantEntity.PrimaryKey; !reflect.DeepEqual(got, want) {
+						t.Errorf("got entity public key %+v, want %+v", got, want)
+					}
+				}
+
+				if tt.wantPublicKeys != nil {
+					if got, want := r.Keys(), tt.wantPublicKeys; !reflect.DeepEqual(got, want) {
+						t.Errorf("got public keys %+v, want %+v", got, want)
+					}
 				}
 
 				if got, want := r.Error(), tt.wantErr; !errors.Is(got, want) {
@@ -394,9 +600,6 @@ func TestVerifyFingerPrint(t *testing.T) {
 	s := httptest.NewServer(mockHKP{e: e})
 	defer s.Close()
 
-	// Create an option that points to the mock HKP server.
-	keyServerOpt := OptVerifyUseKeyServer(client.OptBaseURL(s.URL))
-
 	tests := []struct {
 		name         string
 		path         string
@@ -408,109 +611,132 @@ func TestVerifyFingerPrint(t *testing.T) {
 	}{
 		{
 			name:         "SignatureNotFound",
-			path:         filepath.Join("testdata", "images", "one-group.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt},
 			wantErr:      &integrity.SignatureNotFoundError{},
 		},
 		{
 			name:         "SignatureNotFoundNonLegacy",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy()},
+			opts:         []VerifyOpt{OptVerifyLegacy()},
 			wantErr:      &integrity.SignatureNotFoundError{},
 		},
 		{
 			name:         "SignatureNotFoundLegacy",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt},
 			wantErr:      &integrity.SignatureNotFoundError{},
 		},
 		{
 			name:         "SignatureNotFoundLegacyAll",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-all.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-all.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt},
 			wantErr:      &integrity.SignatureNotFoundError{},
 		},
 		{
 			name:         "SignatureNotFoundLegacyGroup",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-group.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-group.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt},
 			wantErr:      &integrity.SignatureNotFoundError{},
 		},
 		{
-			name:         "Defaults",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
+			name:         "PGP",
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 		},
 		{
-			name:         "OptVerifyGroup",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
+			name:         "OptVerifyGroupPGP",
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyGroup(1)},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyGroup(1),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 		},
 		{
-			name:         "OptVerifyObject",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
+			name:         "OptVerifyObjectPGP",
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyObject(1)},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyObject(1),
+			},
 			wantVerified: [][]uint32{{1}},
 			wantEntity:   e,
 		},
 		{
-			name:         "LegacyDefaults",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy.sif"),
+			name:         "Legacy",
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy()},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+			},
 			wantVerified: [][]uint32{{2}},
 			wantEntity:   e,
 		},
 		{
 			name:         "LegacyOptVerifyObject",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-all.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-all.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy(), OptVerifyObject(1)},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+				OptVerifyObject(1),
+			},
 			wantVerified: [][]uint32{{1}},
 			wantEntity:   e,
 		},
 		{
 			name:         "LegacyOptVerifyAll",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-all.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-all.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy(), OptVerifyAll()},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+				OptVerifyAll(),
+			},
 			wantVerified: [][]uint32{{1}, {2}},
 			wantEntity:   e,
 		},
 		{
 			name:         "LegacyOptVerifyGroup",
-			path:         filepath.Join("testdata", "images", "one-group-signed-legacy-group.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-legacy-group.sif"),
 			fingerprints: []string{testFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt, OptVerifyLegacy(), OptVerifyGroup(1)},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+				OptVerifyLegacy(),
+				OptVerifyGroup(1),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 		},
 		{
 			name:         "SingleFingerprintWrong",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
 			fingerprints: []string{invalidFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 			wantErr:      errNotSignedByRequired,
 		},
 		{
 			name:         "MultipleFingerprintOneWrong",
-			path:         filepath.Join("testdata", "images", "one-group-signed.sif"),
+			path:         filepath.Join("..", "..", "..", "test", "images", "one-group-signed-pgp.sif"),
 			fingerprints: []string{testFingerPrint, invalidFingerPrint},
-			opts:         []VerifyOpt{keyServerOpt},
+			opts: []VerifyOpt{
+				OptVerifyWithPGP(client.OptBaseURL(s.URL)),
+			},
 			wantVerified: [][]uint32{{1, 2}},
 			wantEntity:   e,
 			wantErr:      errNotSignedByRequired,

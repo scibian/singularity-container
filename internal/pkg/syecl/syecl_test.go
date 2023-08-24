@@ -1,5 +1,5 @@
 // Copyright (c) 2020, Control Command Inc. All rights reserved.
-// Copyright (c) 2018-2022, Sylabs Inc. All rights reserved.
+// Copyright (c) 2018-2023, Sylabs Inc. All rights reserved.
 // This software is licensed under a 3-clause BSD license. Please consult the
 // LICENSE.md file distributed with the sources of this project regarding your
 // rights to use or distribute this software.
@@ -7,6 +7,7 @@
 package syecl
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -214,7 +215,7 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestValidateConfig(t *testing.T) {
-	dirPath, err := filepath.Abs(filepath.Join("testdata", "images"))
+	dirPath, err := filepath.Abs(filepath.Join("..", "..", "..", "test", "images"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +329,7 @@ func TestValidateConfig(t *testing.T) {
 func getTestEntity(t *testing.T) *openpgp.Entity {
 	t.Helper()
 
-	f, err := os.Open(filepath.Join("testdata", "keys", "private.asc"))
+	f, err := os.Open(filepath.Join("..", "..", "..", "test", "keys", "pgp-public.asc"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +347,7 @@ func getTestEntity(t *testing.T) *openpgp.Entity {
 }
 
 func TestShouldRun(t *testing.T) {
-	dirPath, err := filepath.Abs(filepath.Join("testdata", "images"))
+	dirPath, err := filepath.Abs(filepath.Join("..", "..", "..", "test", "images"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,8 +394,8 @@ func TestShouldRun(t *testing.T) {
 	}
 
 	unsigned := filepath.Join(dirPath, "one-group.sif")
-	signed := filepath.Join(dirPath, "one-group-signed.sif")
-	legacySigned := filepath.Join(dirPath, "one-group-legacy-signed.sif")
+	signed := filepath.Join(dirPath, "one-group-signed-pgp.sif")
+	legacySigned := filepath.Join(dirPath, "one-group-signed-legacy.sif")
 
 	//nolint:maligned // the aligned form, with eg first, is not as easy to read
 	tests := []struct {
@@ -435,7 +436,7 @@ func TestShouldRun(t *testing.T) {
 			}
 
 			// Test ShouldRun (takes path).
-			got, err := c.ShouldRun(tt.path, openpgp.EntityList{getTestEntity(t)})
+			got, err := c.ShouldRun(context.Background(), tt.path, openpgp.EntityList{getTestEntity(t)})
 
 			if want := !tt.wantErr; got != want {
 				t.Errorf("got run %v, want %v", got, want)
@@ -452,7 +453,7 @@ func TestShouldRun(t *testing.T) {
 			}
 			defer f.Close()
 
-			got, err = c.ShouldRunFp(f, openpgp.EntityList{getTestEntity(t)})
+			got, err = c.ShouldRunFp(context.Background(), f, openpgp.EntityList{getTestEntity(t)})
 
 			if want := !tt.wantErr; got != want {
 				t.Errorf("got run %v, want %v", got, want)
