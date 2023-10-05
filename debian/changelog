@@ -1,3 +1,27 @@
+singularity-container (3.11.4-0sci9u1) scibian9; urgency=medium
+
+  [ Nilce BOUSSAMBA ]
+  * New upstream version 3.9.9
+  * New upstream version 3.10.5
+  * New upstream version 3.11.4
+
+ -- Nilce BOUSSAMBA <nilce-externe.boussamba@edf.fr>  Thu, 24 Aug 2023 18:03:15 +0200
+
+singularity-container (3.10.5-0sci9u1) scibian9; urgency=medium
+
+  [ Nilce BOUSSAMBA ]
+  * New upstream version 3.9.9
+  * New upstream version 3.10.5
+
+ -- Nilce BOUSSAMBA <nilce-externe.boussamba@edf.fr>  Thu, 24 Aug 2023 17:26:23 +0200
+
+singularity-container (3.9.9-0sci9u1) scibian9; urgency=medium
+
+  [ Nilce BOUSSAMBA ]
+  * New upstream version 3.9.9
+
+ -- Nilce BOUSSAMBA <nilce-externe.boussamba@edf.fr>  Thu, 24 Aug 2023 17:05:29 +0200
+
 singularity-container (3.7.3-0sci9u3) scibian9; urgency=medium
 
   * remove again requirements patch
