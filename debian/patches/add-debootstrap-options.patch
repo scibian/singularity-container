@@ -1,10 +1,6 @@
-Add a way to set additional deboostrap options
-
-Parse SING_DEBOOTSTRAP_OPTS environment variables to set
-additional deboostrap arguments from its content.
 --- a/internal/pkg/build/sources/conveyorPacker_debootstrap.go
 +++ b/internal/pkg/build/sources/conveyorPacker_debootstrap.go
-@@ -66,6 +66,17 @@
+@@ -185,6 +185,17 @@ func (cp *DebootstrapConveyorPacker) Get
  	if os.Getenv("DEB_GPG_KEYRING") != ""{
  		cmd_line = append(cmd_line,`--keyring=`+os.Getenv("DEB_GPG_KEYRING"))
  	}
@@ -22,11 +18,3 @@ additional deboostrap arguments from its content.
  	cmd_line = append(cmd_line,`--arch=`+runtime.GOARCH)
  	cmd_line = append(cmd_line,cp.osversion)
  	cmd_line = append(cmd_line,cp.b.RootfsPath)
-@@ -73,6 +84,7 @@
- 	cmd := exec.Command(debootstrapPath,cmd_line...)
- 
- 	sylog.Debugf("\n\tDebootstrap Path: %s\n\tIncludes: apt(default),%s\n\tDetected Arch: %s\n\tOSVersion: %s\n\tMirrorURL: %s\n", debootstrapPath, cp.include, runtime.GOARCH, cp.osversion, cp.mirrorurl)
-+	sylog.Debugf("\n\tDebootstrap Command: %s", cmd_line)
- 
- 	// run debootstrap
- 	out, err := cmd.CombinedOutput()

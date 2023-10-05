@@ -3,16 +3,16 @@ Add DEB_GPG_KEYRING env variable management
 This environment variable can be set to provide keyring to deboostrap
 command called by singularity.Index: singularity-container/internal/pkg/build/sources/conveyorPacker_debootstrap.go
 ===================================================================
---- singularity-container.orig/internal/pkg/build/sources/conveyorPacker_debootstrap.go
-+++ singularity-container/internal/pkg/build/sources/conveyorPacker_debootstrap.go
-@@ -60,7 +60,17 @@ func (cp *DebootstrapConveyorPacker) Get
+--- a/internal/pkg/build/sources/conveyorPacker_debootstrap.go
++++ b/internal/pkg/build/sources/conveyorPacker_debootstrap.go
+@@ -179,7 +179,17 @@ func (cp *DebootstrapConveyorPacker) Get
  	}
  
  	// run debootstrap command
--	cmd := exec.Command(debootstrapPath, `--variant=minbase`, `--exclude=openssl,udev,debconf-i18n,e2fsprogs`, `--include=apt,`+cp.include, `--arch=`+runtime.GOARCH, cp.osversion, cp.b.RootfsPath, cp.mirrorurl)
-+	cmd_line:= []string{`--variant=minbase`, `--exclude=openssl,udev,debconf-i18n,e2fsprogs`}
+-	cmd := exec.Command(debootstrapPath, `--variant=minbase`, `--exclude=openssl,udev,debconf-i18n,e2fsprogs`, `--include=apt,`+cp.include, `--arch=`+debArch, cp.osversion, cp.b.RootfsPath, cp.mirrorurl)
++	cmd_line:= []string{`--variant=minbase`, `--exclude=openssl,udev,debconf-i18n,e2fsprogs`, `--arch=`+debArch}
 +	cmd_line = append(cmd_line,`--include=apt,`+cp.include)
-+
++	
 +	if os.Getenv("DEB_GPG_KEYRING") != ""{
 +		cmd_line = append(cmd_line,`--keyring=`+os.Getenv("DEB_GPG_KEYRING"))
 +	}
