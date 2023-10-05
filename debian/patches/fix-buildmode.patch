@@ -1,0 +1,14 @@
+Description: buildmode=pie is not available on mips, hence fixing it
+Author: Nilesh Patra <nilesh@debian.org>
+Last-Update: 2022-02-24
+--- a/mlocal/frags/go_common_opts.mk
++++ b/mlocal/frags/go_common_opts.mk
+@@ -8,7 +8,7 @@
+ # Need to disable race detector on ppc64le
+ # https://github.com/hpcng/singularity/issues/5914
+ uname_m := $(shell uname -m)
+-ifeq ($(uname_m),ppc64le)
++ifeq ($(uname_m), $(filter $(uname_m), mips mips64 ppc64le))
+ GO_BUILDMODE := -buildmode=default
+ GO_RACE :=
+ else

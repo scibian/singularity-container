@@ -1,2 +1,8 @@
 add-gpgkeyring_option.patch
 add-debootstrap-options.patch
+cni_plugin_path.patch
+conveyorPacker_oci.patch
+skip_tests_needing_privilege.patch
+fix-buildmode.patch
+disable-test-needing-internet.patch
+fix-jose-v2-path.patch

@@ -1,0 +1,17 @@
+Description: Network access is prohibited during build-time tests
+Author: Nilesh Patra <nilesh@debian.org>
+Forwarded: not-needed
+Last-Update: 2023-03-03 <YYYY-MM-DD, last update of the meta-information, optional>
+--- a/pkg/ocibundle/native/bundle_linux_test.go
++++ b/pkg/ocibundle/native/bundle_linux_test.go
+@@ -66,9 +66,7 @@
+ }
+ 
+ func TestFromImageRef(t *testing.T) {
+-	if testing.Short() {
+-		t.SkipNow()
+-	}
++	t.Skip()
+ 
+ 	// Prepare docker-archive source
+ 	dockerArchive, err := getTestTar(dockerArchiveURI)

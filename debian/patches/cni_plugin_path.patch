@@ -1,0 +1,38 @@
+Last-Update: 2019-11-14
+Forwarded: not-needed
+Author: Dmitry Smirnov <onlyjob@debian.org>
+Description: set path to CNI plugins as provided by "containernetworking-plugins" package.
+
+--- a/internal/pkg/runtime/engine/singularity/container_linux.go
++++ b/internal/pkg/runtime/engine/singularity/container_linux.go
+@@ -63,7 +63,7 @@
+ var defaultCNIConfPath = filepath.Join(buildcfg.SYSCONFDIR, "singularity", "network")
+ 
+ // defaultCNIPluginPath is the default directory to CNI plugins executables.
+-var defaultCNIPluginPath = filepath.Join(buildcfg.LIBEXECDIR, "singularity", "cni")
++var defaultCNIPluginPath = filepath.Join("/usr/lib/cni")
+ 
+ type lastMount struct {
+ 	dest  string
+--- a/internal/pkg/test/tool/require/require.go
++++ b/internal/pkg/test/tool/require/require.go
+@@ -96,7 +96,7 @@
+ 
+ 		cniPath := new(network.CNIPath)
+ 		cniPath.Conf = filepath.Join(buildcfg.SYSCONFDIR, "singularity", "network")
+-		cniPath.Plugin = filepath.Join(buildcfg.LIBEXECDIR, "singularity", "cni")
++		cniPath.Plugin = filepath.Join("/usr/lib/cni")
+ 
+ 		setup, err := network.NewSetup([]string{"bridge"}, "_test_", nsPath, cniPath)
+ 		if err != nil {
+--- a/pkg/network/network_linux_test.go
++++ b/pkg/network/network_linux_test.go
+@@ -112,7 +112,7 @@
+ var defaultCNIConfPath = ""
+ 
+ // defaultCNIPluginPath is the default directory to CNI plugins executables
+-var defaultCNIPluginPath = filepath.Join(buildcfg.LIBEXECDIR, "singularity", "cni")
++var defaultCNIPluginPath = filepath.Join("/usr/lib/cni")
+ 
+ // testNetworks will contains configured network
+ var testNetworks []string

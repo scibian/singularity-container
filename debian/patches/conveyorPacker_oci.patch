@@ -1,0 +1,17 @@
+Last-Update: 2022-06-17
+Forwarded: not-needed
+Author: Benda Xu <orv@debian.org>, Nilesh Patra <nilesh@debian.org>
+Description: build with OCI packages in sid.
+Explicitly try casting into imgspecv1
+
+--- a/internal/pkg/build/sources/conveyorPacker_oci.go
++++ b/internal/pkg/build/sources/conveyorPacker_oci.go
+@@ -294,7 +294,7 @@
+ 	if err != nil {
+ 		return imgspecv1.ImageConfig{}, err
+ 	}
+-	return imgSpec.Config, nil
++	return imgspecv1.ImageConfig(imgSpec.Config), nil
+ }
+ 
+ func (cp *OCIConveyorPacker) insertOCIConfig() error {

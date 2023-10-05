@@ -1,0 +1,26 @@
+Description: Add patch to fix jose import path as per debian package
+Author: Nilesh Patra <nilesh@debian.org>
+Forwarded: not-needed
+Last-Update: 2023-08-01
+--- a/vendor/github.com/letsencrypt/boulder/core/objects.go
++++ b/vendor/github.com/letsencrypt/boulder/core/objects.go
+@@ -11,7 +11,7 @@
+ 	"time"
+ 
+ 	"golang.org/x/crypto/ocsp"
+-	"gopkg.in/go-jose/go-jose.v2"
++	"gopkg.in/square/go-jose.v2"
+ 
+ 	"github.com/letsencrypt/boulder/identifier"
+ 	"github.com/letsencrypt/boulder/probs"
+--- a/vendor/github.com/letsencrypt/boulder/core/util.go
++++ b/vendor/github.com/letsencrypt/boulder/core/util.go
+@@ -23,7 +23,7 @@
+ 	"time"
+ 	"unicode"
+ 
+-	jose "gopkg.in/go-jose/go-jose.v2"
++	jose "gopkg.in/square/go-jose.v2"
+ )
+ 
+ const Unspecified = "Unspecified"

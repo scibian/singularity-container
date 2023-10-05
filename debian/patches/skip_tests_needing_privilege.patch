@@ -1,0 +1,37 @@
+Description: Avoid running tests that need escalated permissions since this is not possible in
+ our build environment
+Author: Nilesh Patra <nilesh@debian.org>
+Forwarded: not-needed
+Last-Update: 2022-02-18
+--- a/pkg/util/archive/copy_test.go
++++ b/pkg/util/archive/copy_test.go
+@@ -16,11 +16,6 @@
+ )
+ 
+ func TestCopyWithTar(t *testing.T) {
+-	t.Run("privileged", func(t *testing.T) {
+-		test.EnsurePrivilege(t)
+-		testCopyWithTar(t)
+-	})
+-
+ 	t.Run("unprivileged", func(t *testing.T) {
+ 		test.DropPrivilege(t)
+ 		defer test.ResetPrivilege(t)
+--- a/pkg/util/capabilities/process_linux_test.go
++++ b/pkg/util/capabilities/process_linux_test.go
+@@ -13,6 +13,7 @@
+ )
+ 
+ func TestGetProcess(t *testing.T) {
++        t.Skip("Skipping test as this needs privilege containers")
+ 	test.EnsurePrivilege(t)
+ 
+ 	runtime.LockOSThread()
+@@ -51,6 +52,7 @@
+ }
+ 
+ func TestSetProcessEffective(t *testing.T) {
++        t.Skip("Skipping test as this needs privilege containers")
+ 	test.EnsurePrivilege(t)
+ 
+ 	runtime.LockOSThread()
